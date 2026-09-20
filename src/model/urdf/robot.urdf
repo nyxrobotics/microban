@@ -388,9 +388,9 @@
   <!-- Link foot -->
   <link name="foot">
     <inertial>
-      <origin xyz="-0 -0.0168869 0.0347422" rpy="0 0 0"/>
-      <mass value="0.016823"/>
-      <inertia ixx="1.15605e-05" ixy="0" ixz="-0" iyy="1.2167e-05" iyz="5.67932e-07" izz="2.53496e-06"/>
+      <origin xyz="-0 -0.0186088 0.0331897" rpy="0 0 0"/>
+      <mass value="0.0271664"/>
+      <inertia ixx="1.33936e-05" ixy="0" ixz="0" iyy="1.39046e-05" iyz="7.21051e-07" izz="3.9707e-06"/>
     </inertial>
     <!-- Part stp39__configuration__2x6_57 -->
     <!-- Part stp39__configuration__2x6_58 -->
@@ -412,7 +412,7 @@
     </inertial>
   </link>
   <joint name="right_foot_frame" type="fixed">
-    <origin xyz="-0 -0.023 0.042" rpy="-1.5708 -1.5708 0"/>
+    <origin xyz="-0 -0.0265 0.042" rpy="-1.5708 -1.5708 0"/>
     <parent link="foot"/>
     <child link="right_foot"/>
     <axis xyz="0 0 0"/>
@@ -657,9 +657,9 @@
   <!-- Link foot_2 -->
   <link name="foot_2">
     <inertial>
-      <origin xyz="-0 -0.0168869 0.0347422" rpy="0 0 0"/>
-      <mass value="0.016823"/>
-      <inertia ixx="1.15605e-05" ixy="0" ixz="-0" iyy="1.2167e-05" iyz="5.67932e-07" izz="2.53496e-06"/>
+      <origin xyz="-0 -0.0186088 0.0331897" rpy="0 0 0"/>
+      <mass value="0.0271664"/>
+      <inertia ixx="1.33936e-05" ixy="0" ixz="0" iyy="1.39046e-05" iyz="7.21051e-07" izz="3.9707e-06"/>
     </inertial>
     <!-- Part stp39__configuration__2x6_117 -->
     <!-- Part stp39__configuration__2x6_118 -->
@@ -681,7 +681,7 @@
     </inertial>
   </link>
   <joint name="left_foot_frame" type="fixed">
-    <origin xyz="-0 -0.023 0.042" rpy="-1.5708 -1.5708 0"/>
+    <origin xyz="-0 -0.0265 0.042" rpy="-1.5708 -1.5708 0"/>
     <parent link="foot_2"/>
     <child link="left_foot"/>
     <axis xyz="0 0 0"/>
