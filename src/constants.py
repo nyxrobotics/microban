@@ -23,6 +23,8 @@ MOTOR_TO_ID = {
     "right_shoulder_roll": 42,
     "right_elbow": 43,
     "head": 51,
+    "neck_roll": 52,
+    "neck_pitch": 53,
 }
 
 ID_TO_MOTOR = {v: k for k, v in MOTOR_TO_ID.items()}
@@ -47,6 +49,8 @@ NEUTRAL_POSE = {
     "right_shoulder_roll": float(np.deg2rad(-10.0)),
     "right_elbow": float(np.deg2rad(-20.0)),
     "head": float(np.deg2rad(0.0)),
+    "neck_roll": float(np.deg2rad(0.0)),
+    "neck_pitch": float(np.deg2rad(0.0)),
 }
 
 MOTOR_SIGN = {
@@ -69,6 +73,15 @@ MOTOR_SIGN = {
     "right_shoulder_roll": -1.0,
     "right_elbow": -1.0,
     "head": 1.0,
+    # neck_roll / neck_pitch signs are CAD-inferred (2026-09-20), not yet measured on real
+    # hardware: on both servos, the idler-horn/idle-cap hardware sits at the low end of the
+    # joint's rotation axis (x for roll, y for pitch), so the driven/output face was taken to
+    # be the high end, matching the +X / +Y directions already used as the joint axes in the
+    # URDF. Combined with DYNAMIXEL's positive-direction convention (CCW viewed from the horn
+    # side), that gives +1.0 for both. Verify with a small test motion before trusting this for
+    # full-range moves.
+    "neck_roll": 1.0,
+    "neck_pitch": 1.0,
 }
 
 # Position P Gain (Dynamixel register value)
