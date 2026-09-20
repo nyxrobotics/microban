@@ -87,19 +87,25 @@ MOTOR_SIGN = {
 # Position P Gain (Dynamixel register value)
 KP_DEFAULT: int = 400        # ~0.886 Nm/rad in MuJoCo
 KP_RL: int = 125             # ~0.277 Nm/rad in MuJoCo
-KP_GAIN_PRM: float = 0.0022  # Nm/rad per register unit (for Xl330)
+KP_GAIN_PRM: float = 0.0022  # Nm/rad per register unit (for Xl330). NOT updated for XC330-T288-T: likely scales with the ~3.1x higher torque constant (see PROXY_KT) but the exact derivation (register-to-PWM/current scaling) is not confident enough here to rescale blindly. Needs review.
 
-# BAM motor model (bam package, XL330 m6)
-BAM_VIN: float = 7.5
-BAM_VIN_MIN: float = 6.0
-BAM_VOLTAGE_DROP_GAIN: float = 0.2
-BAM_MAX_CURRENT: float = 1.75 # XL330 firmware current limit [A]: clips motor torque to ±BAM_MAX_CURRENT * kt
+# BAM motor model (bam package). MIXED provenance as of 2026-09-20 -- see per-line notes.
+# All 21 servos are now XC330-T288-T (previously XL330-M288-T), and the battery is now 3S
+# (previously 2S). The bam project (github.com/Rhoban/bam) has no published identification
+# for XC330-T288-T (only XL330-M288-T, MX-64, MX-106, XL-320, STS3215), so the values below
+# marked "Robotis datasheet" are official spec-sheet numbers, NOT a proper bam system-ID fit.
+# Re-running bam's identification procedure on the actual XC330 servos is the correct long-term
+# fix; until then treat BAM_MAX_CURRENT / PROXY_KT below as a reasonable approximation only.
+BAM_VIN: float = 11.1        # 3S nominal (3x3.7V); matches XC330-T288-T's own rated voltage
+BAM_VIN_MIN: float = 9.0     # 3S practical minimum (3x3.0V/cell)
+BAM_VOLTAGE_DROP_GAIN: float = 0.2  # UNCHANGED: bam-fit for XL330, not re-identified for XC330/3S
+BAM_MAX_CURRENT: float = 0.91 # XC330-T288-T firmware current limit [A] (Robotis control table: 910 mA default/max; was 1.75A for XL330-M288-T)
 
 # Overcurrent safety: emergency torque-off when the summed |present_current| of all
 # motors stays above OVERCURRENT_CUTOFF_A for OVERCURRENT_DEBOUNCE_TICKS consecutive ticks.
 # Goal: cut the robot before a current spike (e.g. all motors snapping during a fall) trips the BMS.
 PRESENT_CURRENT_UNIT_A: float = 0.001   # XL330 present_current register unit (1.0 mA/LSB)
-OVERCURRENT_CUTOFF_A: float = 15.0      # total pack current threshold (CALIBRATE: below BMS trip, above normal walk peak)
+OVERCURRENT_CUTOFF_A: float = 15.0      # total pack current threshold (CALIBRATE: below BMS trip, above normal walk peak). Re-check against the actual 3S BMS in use (the BOM-listed candidate is rated 40A) now that both the battery and motors changed.
 OVERCURRENT_DEBOUNCE_TICKS: int = 2     # consecutive over-threshold ticks before cutting
 
 # Current proxy used when present_current is NOT read (Observer.observe_current = False), so the
@@ -107,10 +113,10 @@ OVERCURRENT_DEBOUNCE_TICKS: int = 2     # consecutive over-threshold ticks befor
 # data already read (present_position, present_velocity) and the command target:
 #   duty = clip(PROXY_KP * PROXY_ERROR_GAIN * (target - q), ±PROXY_MAX_PWM)
 #   I    = (PROXY_VIN * duty - PROXY_KT * dq) / PROXY_R      then |I| capped at BAM_MAX_CURRENT
-PROXY_KT: float = 0.366                  # XL330 m6 torque constant [Nm/A]
-PROXY_R: float = 2.811                   # XL330 m6 motor resistance [Ohm]
+PROXY_KT: float = 1.150                  # XC330-T288-T torque constant [Nm/A] at 11.1V (Robotis datasheet; was 0.366 for XL330 m6)
+PROXY_R: float = 2.811                   # UNCHANGED: still XL330 m6 (bam-fit) value -- Robotis does not publish coil resistance for XC330, and bam has no XC330 identification yet. Needs re-identification.
 PROXY_VIN: float = BAM_VIN               # supply voltage [V]
-PROXY_ERROR_GAIN: float = 0.0028773775   # duty cycle per (kp * rad), XL330 encoder/gain scaling
+PROXY_ERROR_GAIN: float = 0.0028773775   # duty cycle per (kp * rad), XL330 encoder/gain scaling. Encoder resolution (4096 counts/rev, 12-bit) is the same across the X-series including XC330, so this may still be valid, but it has not been re-verified for XC330-T288-T.
 PROXY_MAX_PWM: float = 1.0               # max duty cycle magnitude
 PROXY_KP: int = KP_RL                    # firmware P gain assumed by the proxy (walking regime)
 OVERCURRENT_PROXY_DELAY_TICKS: int = 3   # number of ticks to delay the proxy current estimate
