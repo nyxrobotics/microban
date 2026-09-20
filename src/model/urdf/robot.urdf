@@ -200,8 +200,8 @@
   <link name="shoulder">
     <inertial>
       <origin xyz="4.19e-10 2.814e-09 -0.00850029" rpy="0 0 0"/>
-      <mass value="0.00898451"/>
-      <inertia ixx="1.06003e-06" ixy="0" ixz="0" iyy="1.78233e-06" iyz="-0" izz="1.86739e-06"/>
+      <mass value="0.0109729"/>
+      <inertia ixx="1.29462e-06" ixy="0" ixz="0" iyy="2.17678e-06" iyz="-0" izz="2.28066e-06"/>
     </inertial>
     <!-- Part stp39__configuration__2x6_5 -->
     <!-- Part stp39__configuration__2x6_6 -->
@@ -279,8 +279,8 @@
   <link name="hip">
     <inertial>
       <origin xyz="-0.0033694 -7.09956e-09 -0.00897196" rpy="0 0 0"/>
-      <mass value="0.0139732"/>
-      <inertia ixx="1.37988e-06" ixy="3.41404e-12" ixz="1.50644e-07" iyy="1.02769e-05" iyz="0" izz="9.8416e-06"/>
+      <mass value="0.0097555"/>
+      <inertia ixx="9.63375e-07" ixy="2.38354e-12" ixz="1.05173e-07" iyy="7.1749e-06" iyz="0" izz="6.87099e-06"/>
     </inertial>
     <!-- Part hip__configuration_right -->
     <!-- Part stp39__configuration__2x6_21 -->
@@ -321,8 +321,8 @@
   <link name="femur__configuration_right">
     <inertial>
       <origin xyz="-0.0109472 -0.0366847 -0.0147025" rpy="0 0 0"/>
-      <mass value="0.014726"/>
-      <inertia ixx="1.12665e-05" ixy="-1.12592e-06" ixz="1.333e-09" iyy="4.38335e-06" iyz="-4.521e-09" izz="8.95932e-06"/>
+      <mass value="0.0172732"/>
+      <inertia ixx="1.32153e-05" ixy="-1.32067e-06" ixz="1.56357e-09" iyy="5.14154e-06" iyz="-5.303e-09" izz="1.0509e-05"/>
     </inertial>
     <!-- Part stp39__configuration__2x6_33 -->
     <!-- Part femur__configuration_right -->
@@ -389,8 +389,8 @@
   <link name="foot">
     <inertial>
       <origin xyz="-0 -0.0186088 0.0331897" rpy="0 0 0"/>
-      <mass value="0.0271664"/>
-      <inertia ixx="1.33936e-05" ixy="0" ixz="0" iyy="1.39046e-05" iyz="7.21051e-07" izz="3.9707e-06"/>
+      <mass value="0.0301617"/>
+      <inertia ixx="1.48703e-05" ixy="0" ixz="0" iyy="1.54377e-05" iyz="8.00553e-07" izz="4.4085e-06"/>
     </inertial>
     <!-- Part stp39__configuration__2x6_57 -->
     <!-- Part stp39__configuration__2x6_58 -->
@@ -451,7 +451,7 @@
   </joint>
   <!-- Joint from hip to hip_block__configuration_right -->
   <joint name="right_hip_roll" type="revolute">
-    <origin xyz="-0.0375 0 -0.0214" rpy="-1.5708 -0 -1.5708"/>
+    <origin xyz="-0.02 0 -0.0214" rpy="-1.5708 -0 -1.5708"/>
     <parent link="hip"/>
     <child link="hip_block__configuration_right"/>
     <axis xyz="0 0 1"/>
@@ -469,8 +469,8 @@
   <link name="shoulder_2">
     <inertial>
       <origin xyz="-4.19e-10 2.814e-09 0.00850029" rpy="0 0 0"/>
-      <mass value="0.00898451"/>
-      <inertia ixx="1.06003e-06" ixy="-0" ixz="0" iyy="1.78233e-06" iyz="0" izz="1.86739e-06"/>
+      <mass value="0.0109729"/>
+      <inertia ixx="1.29462e-06" ixy="-0" ixz="0" iyy="2.17678e-06" iyz="0" izz="2.28066e-06"/>
     </inertial>
     <!-- Part stp39__configuration__2x6_65 -->
     <!-- Part stp39__configuration__2x6_66 -->
@@ -548,8 +548,8 @@
   <link name="hip_2">
     <inertial>
       <origin xyz="0.00336938 7.09956e-09 -0.00897196" rpy="0 0 0"/>
-      <mass value="0.0139732"/>
-      <inertia ixx="1.37988e-06" ixy="3.41404e-12" ixz="-1.50644e-07" iyy="1.02769e-05" iyz="-0" izz="9.8416e-06"/>
+      <mass value="0.0097555"/>
+      <inertia ixx="9.63375e-07" ixy="2.38354e-12" ixz="-1.05173e-07" iyy="7.1749e-06" iyz="-0" izz="6.87099e-06"/>
     </inertial>
     <!-- Part hip__configuration_right_2 -->
     <!-- Part stp39__configuration__2x6_81 -->
@@ -590,8 +590,8 @@
   <link name="femur__configuration_left">
     <inertial>
       <origin xyz="0.0109472 0.0366847 -0.0142975" rpy="0 0 0"/>
-      <mass value="0.014726"/>
-      <inertia ixx="1.12665e-05" ixy="-1.12592e-06" ixz="1.333e-09" iyy="4.38335e-06" iyz="-4.521e-09" izz="8.95932e-06"/>
+      <mass value="0.0172732"/>
+      <inertia ixx="1.32153e-05" ixy="-1.32067e-06" ixz="1.56357e-09" iyy="5.14154e-06" iyz="-5.303e-09" izz="1.0509e-05"/>
     </inertial>
     <!-- Part stp39__configuration__2x6_93 -->
     <!-- Part femur__configuration_left -->
@@ -658,8 +658,8 @@
   <link name="foot_2">
     <inertial>
       <origin xyz="-0 -0.0186088 0.0331897" rpy="0 0 0"/>
-      <mass value="0.0271664"/>
-      <inertia ixx="1.33936e-05" ixy="0" ixz="0" iyy="1.39046e-05" iyz="7.21051e-07" izz="3.9707e-06"/>
+      <mass value="0.0301617"/>
+      <inertia ixx="1.48703e-05" ixy="0" ixz="0" iyy="1.54377e-05" iyz="8.00553e-07" izz="4.4085e-06"/>
     </inertial>
     <!-- Part stp39__configuration__2x6_117 -->
     <!-- Part stp39__configuration__2x6_118 -->
@@ -720,7 +720,7 @@
   </joint>
   <!-- Joint from hip_2 to hip_block__configuration_left -->
   <joint name="left_hip_roll" type="revolute">
-    <origin xyz="0.0375 0 -0.0214" rpy="-1.5708 -0 1.5708"/>
+    <origin xyz="0.02 0 -0.0214" rpy="-1.5708 -0 1.5708"/>
     <parent link="hip_2"/>
     <child link="hip_block__configuration_left"/>
     <axis xyz="0 0 1"/>
