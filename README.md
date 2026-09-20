@@ -32,13 +32,14 @@ Here is a quick overview of what is in the robot:
 | Component | Quantity | Description / Notes |
 | :--- | :---: | :--- |
 | **3D Printed Parts** | ~30 | Check the CAD files. Recommended material is PLA. |
-| **Servo Motors** | 19 | Dynamixel XL330-M288-T servomotor. |
+| **Servo Motors** | 21 | Dynamixel XC330-T288-T servomotor. |
 | **Microcontroller**| 1 | Raspberry Pi Zero 2W. |
 | **Board Hat** | 1 | Pollen RPI Robot Hat for Raspberry Pi Zero 2W. |
-| **Power Supply** | 2 | 18650 3.7V Lithium-ion Batteries. |
-| **Battery Holder** | 1 | 2x18650 Battery Holder. |
+| **Stereo Camera** | 1 | ELP-3DGS1200P01-H120 dual-lens (binocular) USB camera module, ~59mm measured baseline, mounted in the neck. |
+| **Power Supply** | 3 | 18650 3.7V Lithium-ion Batteries. |
+| **Battery Holder** | 1 | 3x18650 Battery Holder. |
 | **USB-C Charger** | 1 | Standard USB-C charger. |
-| **BMS** | 1 | Battery Management System for 2x18650 batteries. |
+| **BMS** | 1 | Battery Management System for 3x18650 batteries. |
 | **Plastic Screws**| ~200 | Standard plastic screws for assembly. |
 | **Steel & POM Shims** | 12 | Alternative to needle bearings for motors without idler horns. | 
 
@@ -54,7 +55,7 @@ The CAD files for Microban are in the `cad/` directory of this repository. It co
 
 A visual representation of the 3D model can be found in the [Onshape assembly](https://cad.onshape.com/documents/d424992a192a8ce34ffce163/v/7de3e6e40f0e1185d169e6d9/e/b34620a03cc3a684006c5867?renderMode=0&uiState=6a2fccab8e6d9214d2644ca7). This interactive assembly allows you to explore the robot's design in detail, providing a better understanding of how the parts fit together. It also serves as a reference for assembly, helping you visualize the final product and ensuring that you can correctly identify each component during the build process.
 
-An emphasis is placed on the range of motion of the 19 degrees of freedom of the robot. It allows for a wide variety of movements, making it suitable for various applications. Stops are integrated into the design to control which self-collisions are likely to occur, ensuring that the robot can move safely without damaging itself. The design also takes into account the cable routing for the servo motors, ensuring that the wires are neatly organized and do not interfere with the robot's movements.
+An emphasis is placed on the range of motion of the 21 degrees of freedom of the robot, which now include a 2-DOF (roll + pitch) neck carrying a forward-facing stereo camera. It allows for a wide variety of movements, making it suitable for various applications. Stops are integrated into the design to control which self-collisions are likely to occur, ensuring that the robot can move safely without damaging itself. The design also takes into account the cable routing for the servo motors, ensuring that the wires are neatly organized and do not interfere with the robot's movements.
 
 ---
 

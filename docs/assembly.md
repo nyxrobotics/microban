@@ -40,6 +40,8 @@ The first step in the assembly process is to set up the motors. I highly recomme
 | Right Shoulder Roll | 42 |
 | Right Elbow | 43 |
 | Head | 51 |
+| Neck Roll | 52 |
+| Neck Pitch | 53 |
 
 To configure all the motors, connect one motor at a time to your PC using the U2D2 kit as presented in the image below. 
 
@@ -48,7 +50,7 @@ To configure all the motors, connect one motor at a time to your PC using the U2
 <br>
 <br>
 
-Then, launch [Dynamixel Wizard](https://emanual.robotis.com/docs/en/software/dynamixel/dynamixel_wizard2/). If your XL330 motor is not new, perform a factory reset by clicking on the "Recovery" button, selecting the XL-330-288 model and following the instructions. 
+Then, launch [Dynamixel Wizard](https://emanual.robotis.com/docs/en/software/dynamixel/dynamixel_wizard2/). If your motor is not new, perform a factory reset by clicking on the "Recovery" button, selecting the matching model (XL-330-288 for the legacy XL330-M288-T, or the closest XC330-T288-T entry shown in the Recovery dropdown) and following the instructions. 
 
 In the "Option" tab, select "Protocol 2.0", "57600 bps" as the baud rate, and verify that the correct COM port is selected. Then, click on the "Scan" button to detect the motor. Once the motor is detected, you can set the following parameters (and click on the "Save" button to save the settings):
 - ID: the ID of the motor as listed in the table above
@@ -63,7 +65,7 @@ Once the parameters are set, you can disconnect the motor and move on to the nex
 
 ## 2. Cable Setup
 
-The XL330 motors used in the Microban robot are daisy-chained, which means that the motors are connected in series. This allows to limit the number of cables that need to be routed through the robot. The only exception is near the board, where the first cables are split to connect to several links. The following diagram shows how the motors are connected to each other and to the board, and what cable lengths are used for each connection. 
+The Dynamixel X-series motors used in the Microban robot are daisy-chained, which means that the motors are connected in series. This allows to limit the number of cables that need to be routed through the robot. The only exception is near the board, where the first cables are split to connect to several links. The following diagram shows how the motors are connected to each other and to the board, and what cable lengths are used for each connection. 
 
 <img width="100%" alt="routing" src="https://github.com/user-attachments/assets/fd655925-4968-4892-afc6-e4fe00495b89" />
 
@@ -168,11 +170,13 @@ Once the torso is assembled, you can fix it to the pelvis and connect the splitt
 
 The objective of this section is to assemble the electronics of the robot, including the battery module and the trunk top. 
 
-The following schematic shows how the electronics are connected together. The battery module is composed of a 2S 18650 battery holder and a BMS board. It is connected to the trunk top with a xt30 connector. The trunk top contains the USB-C charger and the switch powering on the Raspberry Pi. The routing allows to charge the battery independently of the power state of the robot. The alimentation of the Raspberry Pi is done through one of the 2 JST EHR-4 connectors on the RPI Robot Hat. 
+The following schematic shows how the electronics are connected together. The battery module is composed of a 3S 18650 battery holder and a BMS board. It is connected to the trunk top with a xt30 connector. The trunk top contains the USB-C charger and the switch powering on the Raspberry Pi. The routing allows to charge the battery independently of the power state of the robot. The alimentation of the Raspberry Pi is done through one of the 2 JST EHR-4 connectors on the RPI Robot Hat. 
 
 <img width="100%" alt="microban_elec" src="https://github.com/user-attachments/assets/39c3846d-ec3d-447d-befe-7f4e0d7e2ca3" />
 
 ### 5.1 Battery Module
+
+> **Note (2026-09-20):** The steps below were written for the original 2S BMS. The pack is now 3S; a 3S BMS typically has 2 balance-tap wires (around 4.2V and 8.4V) instead of 1, in addition to the main pack +/- leads. Verify the exact pinout against the datasheet of whichever 3S BMS you actually buy -- do not assume the steps below map 1:1.
 
 To assemble the battery module, first connect the 4.2V pin of the BMS to the metal contact on the battery holder, located on the side opposite the red (8.4V) and black (0V) wires. To make this easier, you can melt a small hole in the holder using your soldering iron to reach and solder the wire to the contact. Next, solder the positive (+) and negative (-) wires from the BMS to the XT30 connector. Once the wiring is complete, secure the BMS to the back of the battery holder using double-sided tape. Finally, apply hot glue to insulate all the connections and prevent any short circuits. The pictures below show the fully assembled battery module.
 
