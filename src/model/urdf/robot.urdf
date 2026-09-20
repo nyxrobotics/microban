@@ -95,8 +95,8 @@
   <link name="head">
     <inertial>
       <origin xyz="-3e-06 -0.010105 0.015178" rpy="0 0 0"/>
-      <mass value="0.174049"/>
-      <inertia ixx="6.7995e-05" ixy="-6e-09" ixz="-0.000213825" iyy="3.2809e-05" iyz="-0.000198216" izz="5.0085e-05"/>
+      <mass value="0.0268341"/>
+      <inertia ixx="1.04832e-05" ixy="-9.25054e-10" ixz="-3.29666e-05" iyy="5.05835e-06" iyz="-3.05601e-05" izz="7.72189e-06"/>
     </inertial>
     <!-- Part roll_servo_cradle -->
     <!-- Part xl330_without_horn -->
