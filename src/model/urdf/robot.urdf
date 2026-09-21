@@ -94,7 +94,7 @@
   <!-- NOTE: head now only carries the base of the new 2-DOF neck (roll+pitch); mass/inertia recomputed from Fusion CAD (2026-09-20) -->
   <link name="head">
     <inertial>
-      <origin xyz="-3e-06 -0.010105 0.015178" rpy="0 0 0"/>
+      <origin xyz="-3e-06 0.004895 0.015178" rpy="0 0 0"/>
       <mass value="0.0268341"/>
       <inertia ixx="1.04832e-05" ixy="-9.25054e-10" ixz="-3.29666e-05" iyy="5.05835e-06" iyz="-3.05601e-05" izz="7.72189e-06"/>
     </inertial>
@@ -103,7 +103,7 @@
   </link>
   <!-- Joint from trunk to head -->
   <joint name="head" type="revolute">
-    <origin xyz="-0.00204165 -0 0.126" rpy="0 0 1.5708"/>
+    <origin xyz="0.01295835 0 0.126" rpy="0 0 1.5708"/>
     <parent link="trunk"/>
     <child link="head"/>
     <axis xyz="0 0 1"/>
@@ -134,7 +134,7 @@
   </link>
   <!-- Joint from head to roll_pitch_link -->
   <joint name="neck_roll" type="revolute">
-    <origin xyz="0 0.0424 0.0225" rpy="0 0 -1.5708"/>
+    <origin xyz="0 0.0574 0.0225" rpy="0 0 -1.5708"/>
     <parent link="head"/>
     <child link="roll_pitch_link"/>
     <axis xyz="1 0 0"/>
@@ -144,7 +144,7 @@
   <!-- Link camera_cover -->
   <link name="camera_cover">
     <inertial>
-      <origin xyz="0.041793 -0.012099 -0.004601" rpy="0 0 0"/>
+      <origin xyz="0.041793 -0.012099 -0.009601" rpy="0 0 0"/>
       <mass value="0.164569"/>
       <inertia ixx="0.000281011" ixy="1.1421e-05" ixz="0.001253298" iyy="0.000395159" iyz="-0.00139497" izz="0.000345614"/>
     </inertial>
@@ -156,7 +156,7 @@
   </link>
   <!-- Joint from roll_pitch_link to camera_cover -->
   <joint name="neck_pitch" type="revolute">
-    <origin xyz="0.0574 0.0125 -0.005" rpy="0 0 0"/>
+    <origin xyz="0.0574 0.0125 0" rpy="0 0 0"/>
     <parent link="roll_pitch_link"/>
     <child link="camera_cover"/>
     <axis xyz="0 1 0"/>
@@ -179,7 +179,7 @@
     </inertial>
   </link>
   <joint name="camera_left_frame" type="fixed">
-    <origin xyz="0.040002 0.017008 0.00503" rpy="0 0 0"/>
+    <origin xyz="0.040002 0.017008 0.00003" rpy="0 0 0"/>
     <parent link="camera_cover"/>
     <child link="camera_left"/>
     <axis xyz="0 0 0"/>
@@ -194,7 +194,7 @@
     </inertial>
   </link>
   <joint name="camera_right_frame" type="fixed">
-    <origin xyz="0.040002 -0.042008 0.004979" rpy="0 0 0"/>
+    <origin xyz="0.040002 -0.042008 -2.1e-05" rpy="0 0 0"/>
     <parent link="camera_cover"/>
     <child link="camera_right"/>
     <axis xyz="0 0 0"/>
@@ -281,7 +281,7 @@
   <!-- Link hip -->
   <link name="hip">
     <inertial>
-      <origin xyz="-0.0033694 -7.09956e-09 -0.00897196" rpy="0 0 0"/>
+      <origin xyz="-0.0208694 -7.09956e-09 -0.00897196" rpy="0 0 0"/>
       <mass value="0.0097555"/>
       <inertia ixx="9.63375e-07" ixy="2.38354e-12" ixz="1.05173e-07" iyy="7.1749e-06" iyz="0" izz="6.87099e-06"/>
     </inertial>
@@ -454,7 +454,7 @@
   </joint>
   <!-- Joint from hip to hip_block__configuration_right -->
   <joint name="right_hip_roll" type="revolute">
-    <origin xyz="-0.02 0 -0.0214" rpy="-1.5708 -0 -1.5708"/>
+    <origin xyz="-0.0375 0 -0.0214" rpy="-1.5708 -0 -1.5708"/>
     <parent link="hip"/>
     <child link="hip_block__configuration_right"/>
     <axis xyz="0 0 1"/>
@@ -551,7 +551,7 @@
   <!-- Link hip_2 -->
   <link name="hip_2">
     <inertial>
-      <origin xyz="0.00336938 7.09956e-09 -0.00897196" rpy="0 0 0"/>
+      <origin xyz="0.02086938 7.09956e-09 -0.00897196" rpy="0 0 0"/>
       <mass value="0.0097555"/>
       <inertia ixx="9.63375e-07" ixy="2.38354e-12" ixz="-1.05173e-07" iyy="7.1749e-06" iyz="-0" izz="6.87099e-06"/>
     </inertial>
@@ -724,7 +724,7 @@
   </joint>
   <!-- Joint from hip_2 to hip_block__configuration_left -->
   <joint name="left_hip_roll" type="revolute">
-    <origin xyz="0.02 0 -0.0214" rpy="-1.5708 -0 1.5708"/>
+    <origin xyz="0.0375 0 -0.0214" rpy="-1.5708 -0 1.5708"/>
     <parent link="hip_2"/>
     <child link="hip_block__configuration_left"/>
     <axis xyz="0 0 1"/>

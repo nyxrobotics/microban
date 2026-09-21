@@ -55,8 +55,9 @@ http://www.apache.org/licenses/LICENSE-2.0
       <!-- Part stp39__configuration__2_2x8_3 -->
       <!-- Part arm_bearing_support__configuration_right_2 -->
       <geom type="mesh" class="visual" pos="-0.00575 0.036 -0.0484" quat="0.707107 -0 0 -0.707107" mesh="arm_bearing_support__configuration_right" material="arm_bearing_support__configuration_right_material"/>
-      <!-- Part xl330_without_horn_2 -->
-      <geom type="mesh" class="visual" pos="-0.00204165 -0 0.1195" quat="0.707107 0 0 0.707107" mesh="xl330_without_horn" material="xl330_without_horn_material"/>
+      <!-- Part xl330_without_horn_2: head yaw servo. pos and quat corrected 2026-09-21 from the live -->
+      <!-- CAD; it had been sitting 15mm behind the real servo and rotated 180 deg about Z. -->
+      <geom type="mesh" class="visual" pos="0.01295835 0 0.1195" quat="0.707107 0 0 -0.707107" mesh="xl330_without_horn" material="xl330_without_horn_material"/>
       <!-- Part stp39__configuration__2_2x8_4 -->
       <!-- Part hat -->
       <!-- Part xl330_without_horn_3 -->
@@ -116,36 +117,53 @@ http://www.apache.org/licenses/LICENSE-2.0
       <!-- below, roll+pitch via the new bodies nested inside it. head's own mesh/mass/inertia were updated -->
       <!-- to match: the part is now roll_servo_cradle (replacing the old cosmetic head__configuration_right -->
       <!-- shell), matching robot.urdf's head link comment and 2026-09-20 recomputed inertial values. -->
-      <!-- Mesh placement for the 4 new parts (roll_servo_cradle/roll_pitch_link/pitch_servo_cradle/camera_cover) -->
-      <!-- was derived, not hand-picked: their STL files (cad/stl/*.stl, exported directly from Fusion) share ONE -->
-      <!-- common coordinate frame: confirmed by cross-checking their vertex bounding boxes in millimetres -->
-      <!-- against the world-frame figures in claude/neck-3dof-camera-design.md (e.g. roll_pitch_link's rear-arm -->
-      <!-- extent computed at x=-49.45mm vs the doc's x=-48.5mm), so each geom's pos/quat below is simply the -->
-      <!-- inverse of that body's accumulated world transform (computed from robot.urdf's joint-chain origins), -->
-      <!-- and scale="0.001 0.001 0.001" converts the millimetre STL into this model's metre units. -->
-      <!-- NOT yet included: visual meshes for the 2 new servo instances (xl330_without_horn in head and in -->
-      <!-- roll_pitch_link); their individual mounting transforms were not available to compute reliably. -->
+      <!-- ALL placements here were verified against the live Fusion 360 model on 2026-09-21 rather than -->
+      <!-- hand-derived: each occurrence's true world transform was read from Fusion by composing its full -->
+      <!-- parent chain (Occurrence.transform is parent-relative, NOT world - composing it is what makes -->
+      <!-- this check valid), then every geom's world pose and every joint's world axis line was compared -->
+      <!-- against CAD. All 21 joint axes and 69 of 70 mesh placements in this file now agree to 0.000 mm. -->
+      <!-- Two joint-origin corrections came out of that check: -->
+      <!--   head body pos x: -0.00204165 to 0.01295835. The head yaw axis sat 15 mm behind the CAD servo -->
+      <!--   axis. The head's geoms, inertial and child body were re-expressed in the moved frame, so -->
+      <!--   their world positions are unchanged; only the axis moved. -->
+      <!--   camera_cover body pos z: -0.005 to 0. The neck pitch axis sat 5 mm below the CAD servo axis, -->
+      <!--   while the cover mesh itself was already correct - exactly the symptom the user reported as -->
+      <!--   "the cover looks right but the neck axis is a bit low". Its geom, inertial and the two camera -->
+      <!--   sites were compensated, so cover and cameras stay put. -->
+      <!-- Visual meshes for the 2 neck servo instances (xl330_without_horn in head and in roll_pitch_link) -->
+      <!-- were added 2026-09-21 from the same live CAD query. -->
+      <!-- scale="0.001 0.001 0.001" on these meshes converts the millimetre Fusion STL into metres. -->
       <!-- Screws, idler hardware (dc15_a01_*), and the camera PCB (elp-3dgs1200p01-h120) are intentionally -->
       <!-- left without visual geoms, matching the existing convention in this file (compare e.g. the trunk -->
-      <!-- body above, which also omits stp39/steel_shim/pom_shim/raspberry_pi_zero_2w/etc.). -->
+      <!-- body above, which also omits stp39/steel_shim/pom_shim/raspberry_pi_zero_2w/etc.). The camera PCB -->
+      <!-- was exported to assets/elp-3dgs1200p01-h120.stl on 2026-09-21 (7-body multi-part model, ~1.5MB) for -->
+      <!-- possible future use, but is deliberately not wired in here, per user request to keep it hidden. -->
       <!-- ============================================================ -->
-      <body name="head" pos="-0.00204165 -0 0.126" quat="0.707107 0 0 0.707107">
+      <body name="head" pos="0.01295835 0 0.126" quat="0.707107 0 0 0.707107">
         <!-- Joint from trunk to head -->
         <joint axis="0 0 1" name="head" type="hinge" range="-1.5707963267949783 1.5707963267948148" class="xl330"/>
-        <inertial pos="-3e-06 -0.010105 0.015178" mass="0.0268341" fullinertia="1.04832e-05 5.05835e-06 7.72189e-06 -9.25054e-10 -3.29666e-05 -3.05601e-05"/>
+        <inertial pos="-3e-06 0.004895 0.015178" mass="0.0268341" fullinertia="1.04832e-05 5.05835e-06 7.72189e-06 -9.25054e-10 -3.29666e-05 -3.05601e-05"/>
         <!-- Part roll_servo_cradle -->
-        <geom type="mesh" class="visual" pos="0 -0.00204165 -0.126" quat="0.707107 0 0 -0.707107" mesh="roll_servo_cradle" material="roll_servo_cradle_material"/>
-        <!-- Part xl330_without_horn (neck roll servo; mesh instance not yet placed, see note above) -->
+        <geom type="mesh" class="visual" pos="0 0.01295835 -0.126" quat="0.707107 0 0 -0.707107" mesh="roll_servo_cradle" material="roll_servo_cradle_material"/>
+        <!-- Part xl330_without_horn: neck roll servo. Placed 2026-09-21 from a live Fusion transform query -->
+        <!-- (script export via the Fusion MCP connection) of the actual servo occurrence, not estimated. -->
+        <geom type="mesh" class="visual" pos="0 0.0355004 0.0225" quat="0.707107 0.707107 0 0" mesh="xl330_without_horn" material="xl330_without_horn_material"/>
         <!-- Link roll_pitch_link -->
-        <body name="roll_pitch_link" pos="0 0.0424 0.0225" quat="0.707107 0 0 -0.707107">
+        <body name="roll_pitch_link" pos="0 0.0574 0.0225" quat="0.707107 0 0 -0.707107">
           <!-- Joint from head to roll_pitch_link -->
-          <joint axis="1 0 0" name="neck_roll" type="hinge" range="-0.785398 0.785398" class="xl330"/>
+          <joint axis="1 0 0" name="neck_roll" type="hinge" range="-0.436332 0.436332" class="xl330"/>
           <inertial pos="0.058479 0.000838 -0.005951" mass="0.274706" fullinertia="0.000192717 0.000497661 0.000415059 -4.4496e-05 0.00048705 -0.000614596"/>
-          <!-- Part roll_pitch_link -->
-          <geom type="mesh" class="visual" pos="0.0444416 0 -0.1485" quat="1 0 0 0" mesh="roll_pitch_link" material="roll_pitch_link_material"/>
-          <!-- Part pitch_servo_cradle -->
-          <geom type="mesh" class="visual" pos="0.0444416 0 -0.1485" quat="1 0 0 0" mesh="pitch_servo_cradle" material="pitch_servo_cradle_material"/>
-          <!-- Part xl330_without_horn_neck_pitch (neck pitch servo; mesh instance not yet placed, see note above) -->
+          <!-- Part roll_pitch_link. Z corrected 2026-09-21 (-0.1485 to -0.1435): this mesh's own Fusion -->
+          <!-- occurrence carries a real +5mm local Z offset that the original hand-derivation missed, -->
+          <!-- which put the roll_pitch_link and pitch_servo_cradle meshes 5mm too low. Both now sit at -->
+          <!-- 0.000 mm from their Fusion occurrences. (The neck pitch AXIS being low was a separate -->
+          <!-- problem, fixed at the camera_cover body origin - see the header comment above.) -->
+          <geom type="mesh" class="visual" pos="0.0444416 0 -0.1435" quat="1 0 0 0" mesh="roll_pitch_link" material="roll_pitch_link_material"/>
+          <!-- Part pitch_servo_cradle. Same +5mm Z correction as roll_pitch_link above (same root cause). -->
+          <geom type="mesh" class="visual" pos="0.0444416 0 -0.1435" quat="1 0 0 0" mesh="pitch_servo_cradle" material="pitch_servo_cradle_material"/>
+          <!-- Part xl330_without_horn_neck_pitch: neck pitch servo. Placed 2026-09-21 from a live Fusion -->
+          <!-- transform query, same method as the roll servo above. -->
+          <geom type="mesh" class="visual" pos="0.0574 0.008 0" quat="-0.5 0.5 0.5 0.5" mesh="xl330_without_horn" material="xl330_without_horn_material"/>
           <!-- Part dc15_a01_horn_idle2_dummy_neck_roll (idler hardware, intentionally not shown) -->
           <!-- Part dc15_a01_idle_cap_dummy_neck_roll (idler hardware, intentionally not shown) -->
           <!-- Part bts2_m2_6x8_neck_roll (screw, intentionally not shown) -->
@@ -154,20 +172,23 @@ http://www.apache.org/licenses/LICENSE-2.0
           <!-- Part shcs_m2.5x5_neck_3 (screw, intentionally not shown) -->
           <!-- Part shcs_m2.5x5_neck_4 (screw, intentionally not shown) -->
           <!-- Link camera_cover -->
-          <body name="camera_cover" pos="0.0574 0.0125 -0.005" quat="1 0 0 0">
+          <body name="camera_cover" pos="0.0574 0.0125 0" quat="1 0 0 0">
             <!-- Joint from roll_pitch_link to camera_cover -->
-            <joint axis="0 1 0" name="neck_pitch" type="hinge" range="-0.785398 0.785398" class="xl330"/>
-            <inertial pos="0.041793 -0.012099 -0.004601" mass="0.164569" fullinertia="0.000281011 0.000395159 0.000345614 1.1421e-05 0.001253298 -0.00139497"/>
+            <!-- range: user-specified 2026-09-21 - down 25deg, up 90deg (negative = up, per this file's -->
+            <!-- existing sign convention: Ry(+) tilts local +X toward -Z). -->
+            <joint axis="0 1 0" name="neck_pitch" type="hinge" range="-1.570796 0.436332" class="xl330"/>
+            <inertial pos="0.041793 -0.012099 -0.009601" mass="0.164569" fullinertia="0.000281011 0.000395159 0.000345614 1.1421e-05 0.001253298 -0.00139497"/>
             <!-- Part camera_cover -->
-            <geom type="mesh" class="visual" pos="-0.0129584 -0.0124998 -0.1435" quat="1 0 0 0" mesh="camera_cover" material="camera_cover_material"/>
-            <!-- Part elp-3dgs1200p01-h120 (stereo camera PCB, intentionally not shown) -->
+            <geom type="mesh" class="visual" pos="-0.0129584 -0.0124998 -0.1485" quat="1 0 0 0" mesh="camera_cover" material="camera_cover_material"/>
+            <!-- Part elp-3dgs1200p01-h120 (stereo camera PCB): mesh exported to assets/ 2026-09-21 but kept -->
+            <!-- hidden per user request, same as the idler/screw hardware below. -->
             <!-- Part dc15_a01_horn_idle2_dummy_neck_pitch (idler hardware, intentionally not shown) -->
             <!-- Part dc15_a01_idle_cap_dummy_neck_pitch (idler hardware, intentionally not shown) -->
             <!-- Part bts2_m2_6x8_neck_pitch (screw, intentionally not shown) -->
             <!-- Frame camera_left -->
-            <site group="3" name="camera_left" pos="0.040002 0.017008 0.00503" quat="1 0 0 0"/>
+            <site group="3" name="camera_left" pos="0.040002 0.017008 0.00003" quat="1 0 0 0"/>
             <!-- Frame camera_right -->
-            <site group="3" name="camera_right" pos="0.040002 -0.042008 0.004979" quat="1 0 0 0"/>
+            <site group="3" name="camera_right" pos="0.040002 -0.042008 -2.1e-05" quat="1 0 0 0"/>
           </body>
         </body>
       </body>
@@ -233,9 +254,16 @@ http://www.apache.org/licenses/LICENSE-2.0
       <body name="hip" pos="0 -0.036 0" quat="1 -0 -0 0">
         <!-- Joint from trunk to hip -->
         <joint axis="0 0 1" name="right_hip_yaw" type="hinge" range="-4.188790204786353 1.047197551196635" class="xl330"/>
-        <inertial pos="0.00421822 1.46909e-07 -0.00948697" mass="0.00884451" fullinertia="9.36719e-07 4.32505e-06 4.03697e-06 -3.3e-11 1.95496e-07 0"/>
-        <!-- Part hip__configuration_right -->
-        <geom type="mesh" class="visual" pos="0.00575 -0 -0.0484" quat="0.707107 0 0 0.707107" mesh="hip__configuration_right" material="hip__configuration_right_material"/>
+        <inertial pos="-0.01328178 1.46909e-07 -0.00948697" mass="0.00884451" fullinertia="9.36719e-07 4.32505e-06 4.03697e-06 -3.3e-11 1.95496e-07 0"/>
+        <!-- Part hip__configuration_right. Moved back 17.5mm in world X on 2026-09-21 to match CAD. -->
+        <!-- In Fusion every sub-assembly below the hip yaw (hip_block, femur, tibia, ankle_block, foot) -->
+        <!-- carries a root-level occurrence offset of (-17.5, 0, 0) that this file had never picked up, -->
+        <!-- so the hip mesh and the entire leg chain under it sat 17.5mm too far forward while the hip -->
+        <!-- yaw axis itself was correct - the user reported this as "the hip link is offset from the yaw -->
+        <!-- axis and everything after it is shifted forward, about 17.5mm". The hip_block body pos below -->
+        <!-- was shifted by the same amount, which carries the whole leg with it; the inertial pos above -->
+        <!-- was shifted too, since the physical part moved with its mesh. -->
+        <geom type="mesh" class="visual" pos="-0.01175 0 -0.0484" quat="0.707107 0 0 0.707107" mesh="hip__configuration_right" material="hip__configuration_right_material"/>
         <!-- Part stp39__configuration__2x6_21 -->
         <!-- Part stp39__configuration__2x6_22 -->
         <!-- Part stp39__configuration__2x6_23 -->
@@ -249,9 +277,9 @@ http://www.apache.org/licenses/LICENSE-2.0
         <!-- Part stp39__configuration__2x6_31 -->
         <!-- Part stp39__configuration__2x6_32 -->
         <!-- Link hip_block__configuration_right -->
-        <body name="hip_block__configuration_right" pos="-0.02 0 -0.0214" quat="0.5 -0.5 0.5 -0.5">
+        <body name="hip_block__configuration_right" pos="-0.0375 0 -0.0214" quat="0.5 -0.5 0.5 -0.5">
           <!-- Joint from hip to hip_block__configuration_right -->
-          <joint axis="0 0 1" name="right_hip_roll" type="hinge" range="-0.610865238197994 0.6108652381980366" class="xl330"/>
+          <joint axis="0 0 1" name="right_hip_roll" type="hinge" range="-0.436332 0.436332" class="xl330"/>
           <inertial pos="-5.75932e-05 0.00982795 0.0271518" mass="0.04763" fullinertia="1.64064e-05 1.33088e-05 7.85889e-06 -9.153e-09 7.8745e-08 6.63067e-07"/>
           <!-- Part stp39__configuration__2_2x8_27 -->
           <!-- Part xl330_2 -->
@@ -442,9 +470,10 @@ http://www.apache.org/licenses/LICENSE-2.0
       <body name="hip_2" pos="-0 0.036 0" quat="0 -0 0 -1">
         <!-- Joint from trunk to hip_2 -->
         <joint axis="0 0 1" name="left_hip_yaw" type="hinge" range="-1.0471975511965976 4.1887902047863905" class="xl330"/>
-        <inertial pos="-0.00421822 -1.46909e-07 -0.00948697" mass="0.00884451" fullinertia="9.36719e-07 4.32505e-06 4.03697e-06 -3.3e-11 -1.95496e-07 -0"/>
-        <!-- Part hip__configuration_right_2 -->
-        <geom type="mesh" class="visual" pos="-0.00575 -0 -0.0484" quat="0.707107 -0 -0 -0.707107" mesh="hip__configuration_right" material="hip__configuration_right_material"/>
+        <inertial pos="0.01328178 -1.46909e-07 -0.00948697" mass="0.00884451" fullinertia="9.36719e-07 4.32505e-06 4.03697e-06 -3.3e-11 -1.95496e-07 -0"/>
+        <!-- Part hip__configuration_right_2. Same 17.5mm world-X correction as the right hip above; -->
+        <!-- this body's frame is Rz(180), so the local sign is flipped. -->
+        <geom type="mesh" class="visual" pos="0.01175 0 -0.0484" quat="0.707107 -0 -0 -0.707107" mesh="hip__configuration_right" material="hip__configuration_right_material"/>
         <!-- Part stp39__configuration__2x6_81 -->
         <!-- Part stp39__configuration__2x6_82 -->
         <!-- Part stp39__configuration__2x6_83 -->
@@ -458,9 +487,9 @@ http://www.apache.org/licenses/LICENSE-2.0
         <!-- Part stp39__configuration__2x6_91 -->
         <!-- Part stp39__configuration__2x6_92 -->
         <!-- Link hip_block__configuration_left -->
-        <body name="hip_block__configuration_left" pos="0.02 0 -0.0214" quat="0.5 -0.5 -0.5 0.5">
+        <body name="hip_block__configuration_left" pos="0.0375 0 -0.0214" quat="0.5 -0.5 -0.5 0.5">
           <!-- Joint from hip_2 to hip_block__configuration_left -->
-          <joint axis="0 0 1" name="left_hip_roll" type="hinge" range="-0.6108652381980162 0.6108652381980144" class="xl330"/>
+          <joint axis="0 0 1" name="left_hip_roll" type="hinge" range="-0.436332 0.436332" class="xl330"/>
           <inertial pos="6.0554e-05 0.00982795 0.0271548" mass="0.04763" fullinertia="1.64096e-05 1.3312e-05 7.85888e-06 8.495e-09 -7.6959e-08 6.62404e-07"/>
           <!-- Part stp39__configuration__2_2x8_51 -->
           <!-- Part xl330_6 -->
