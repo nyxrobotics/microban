@@ -321,8 +321,8 @@
   <link name="femur__configuration_right">
     <inertial>
       <origin xyz="-0.0109472 -0.0366847 -0.0147025" rpy="0 0 0"/>
-      <mass value="0.0172732"/>
-      <inertia ixx="1.32153e-05" ixy="-1.32067e-06" ixz="1.56357e-09" iyy="5.14154e-06" iyz="-5.303e-09" izz="1.0509e-05"/>
+      <mass value="0.017273"/>
+      <inertia ixx="1.32151e-05" ixy="-1.32065e-06" ixz="1.56355e-09" iyy="5.14148e-06" iyz="-5.30293e-09" izz="1.05089e-05"/>
     </inertial>
     <!-- Part stp39__configuration__2x6_33 -->
     <!-- Part femur__configuration_right -->
@@ -590,8 +590,8 @@
   <link name="femur__configuration_left">
     <inertial>
       <origin xyz="0.0109472 0.0366847 -0.0142975" rpy="0 0 0"/>
-      <mass value="0.0172732"/>
-      <inertia ixx="1.32153e-05" ixy="-1.32067e-06" ixz="1.56357e-09" iyy="5.14154e-06" iyz="-5.303e-09" izz="1.0509e-05"/>
+      <mass value="0.017273"/>
+      <inertia ixx="1.32151e-05" ixy="-1.32065e-06" ixz="1.56355e-09" iyy="5.14148e-06" iyz="-5.30293e-09" izz="1.05089e-05"/>
     </inertial>
     <!-- Part stp39__configuration__2x6_93 -->
     <!-- Part femur__configuration_left -->
