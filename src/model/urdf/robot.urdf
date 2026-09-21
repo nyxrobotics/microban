@@ -122,7 +122,6 @@
       <inertia ixx="0.000192717" ixy="-4.4496e-05" ixz="0.00048705" iyy="0.000497661" iyz="-0.000614596" izz="0.000415059"/>
     </inertial>
     <!-- Part roll_pitch_link -->
-    <!-- Part pitch_servo_cradle -->
     <!-- Part xl330_without_horn_neck_pitch -->
     <!-- Part dc15_a01_horn_idle2_dummy_neck_roll -->
     <!-- Part dc15_a01_idle_cap_dummy_neck_roll -->
@@ -148,6 +147,10 @@
       <mass value="0.164569"/>
       <inertia ixx="0.000281011" ixy="1.1421e-05" ixz="0.001253298" iyy="0.000395159" iyz="-0.00139497" izz="0.000345614"/>
     </inertial>
+    <!-- Part pitch_servo_cradle (the CAD's camera_yoke: driven by the pitch horn, carries the board, -->
+    <!-- camera_cover bolts to it). Moved here from roll_pitch_link 2026-09-21 so it pitches with the -->
+    <!-- camera; the pitch servo itself stays in roll_pitch_link. NOTE: the inertial values above and in -->
+    <!-- roll_pitch_link still reflect the old grouping and have not been re-split. -->
     <!-- Part camera_cover -->
     <!-- Part elp-3dgs1200p01-h120 -->
     <!-- Part dc15_a01_horn_idle2_dummy_neck_pitch -->

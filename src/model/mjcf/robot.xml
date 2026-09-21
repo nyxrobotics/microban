@@ -155,12 +155,10 @@ http://www.apache.org/licenses/LICENSE-2.0
           <inertial pos="0.058479 0.000838 -0.005951" mass="0.274706" fullinertia="0.000192717 0.000497661 0.000415059 -4.4496e-05 0.00048705 -0.000614596"/>
           <!-- Part roll_pitch_link. Z corrected 2026-09-21 (-0.1485 to -0.1435): this mesh's own Fusion -->
           <!-- occurrence carries a real +5mm local Z offset that the original hand-derivation missed, -->
-          <!-- which put the roll_pitch_link and pitch_servo_cradle meshes 5mm too low. Both now sit at -->
+          <!-- which put this mesh and pitch_servo_cradle 5mm too low. Both now sit at -->
           <!-- 0.000 mm from their Fusion occurrences. (The neck pitch AXIS being low was a separate -->
           <!-- problem, fixed at the camera_cover body origin - see the header comment above.) -->
           <geom type="mesh" class="visual" pos="0.0444416 0 -0.1435" quat="1 0 0 0" mesh="roll_pitch_link" material="roll_pitch_link_material"/>
-          <!-- Part pitch_servo_cradle. Same +5mm Z correction as roll_pitch_link above (same root cause). -->
-          <geom type="mesh" class="visual" pos="0.0444416 0 -0.1435" quat="1 0 0 0" mesh="pitch_servo_cradle" material="pitch_servo_cradle_material"/>
           <!-- Part xl330_without_horn_neck_pitch: neck pitch servo. Placed 2026-09-21 from a live Fusion -->
           <!-- transform query, same method as the roll servo above. -->
           <geom type="mesh" class="visual" pos="0.0574 0.008 0" quat="-0.5 0.5 0.5 0.5" mesh="xl330_without_horn" material="xl330_without_horn_material"/>
@@ -178,6 +176,14 @@ http://www.apache.org/licenses/LICENSE-2.0
             <!-- existing sign convention: Ry(+) tilts local +X toward -Z). -->
             <joint axis="0 1 0" name="neck_pitch" type="hinge" range="-1.570796 0.436332" class="xl330"/>
             <inertial pos="0.041793 -0.012099 -0.009601" mass="0.164569" fullinertia="0.000281011 0.000395159 0.000345614 1.1421e-05 0.001253298 -0.00139497"/>
+            <!-- Part pitch_servo_cradle. Despite the file name this is the CAD's camera_yoke: the part -->
+            <!-- driven BY the pitch horn (plus its idler) that carries the camera board, with camera_cover -->
+            <!-- bolted to its side walls. It therefore belongs to this body and pitches with the camera, -->
+            <!-- not to roll_pitch_link where it used to sit (moved 2026-09-21). The pitch servo itself -->
+            <!-- stays in roll_pitch_link, whose box holds the servo's rear end. World pose unchanged. -->
+            <!-- NOTE: the inertial values on this body and on roll_pitch_link still reflect the old -->
+            <!-- grouping (cradle counted in roll_pitch_link) and have not been re-split. -->
+            <geom type="mesh" class="visual" pos="-0.01295835 -0.0125 -0.1435" quat="1 0 0 0" mesh="pitch_servo_cradle" material="pitch_servo_cradle_material"/>
             <!-- Part camera_cover -->
             <geom type="mesh" class="visual" pos="-0.0129584 -0.0124998 -0.1485" quat="1 0 0 0" mesh="camera_cover" material="camera_cover_material"/>
             <!-- Part elp-3dgs1200p01-h120 (stereo camera PCB): mesh exported to assets/ 2026-09-21 but kept -->
