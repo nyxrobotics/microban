@@ -138,7 +138,8 @@
     <parent link="head"/>
     <child link="roll_pitch_link"/>
     <axis xyz="1 0 0"/>
-    <limit effort="10" velocity="10" lower="-0.785398" upper="0.785398"/>
+    <!-- range: user-specified 2026-09-21 - roll ±25deg -->
+    <limit effort="10" velocity="10" lower="-0.436332" upper="0.436332"/>
   </joint>
   <!-- Link camera_cover -->
   <link name="camera_cover">
@@ -159,7 +160,9 @@
     <parent link="roll_pitch_link"/>
     <child link="camera_cover"/>
     <axis xyz="0 1 0"/>
-    <limit effort="10" velocity="10" lower="-0.785398" upper="0.785398"/>
+    <!-- range: user-specified 2026-09-21 - down 25deg, up 90deg (negative = up, same sign convention as -->
+    <!-- robot.xml's neck_pitch: Ry(+) tilts local +X toward -Z) -->
+    <limit effort="10" velocity="10" lower="-1.570796" upper="0.436332"/>
   </joint>
   <!-- Stereo camera: ELP-3DGS1200P01-H120 is a dual-lens (binocular) module - confirmed from CAD -->
   <!-- (two mirrored lens sub-bodies) and from the ELP-USB3DGS1200P01-Hxxx/Lxxx/Vxxx product family. -->
@@ -455,7 +458,8 @@
     <parent link="hip"/>
     <child link="hip_block__configuration_right"/>
     <axis xyz="0 0 1"/>
-    <limit effort="10" velocity="10" lower="-0.610865" upper="0.610865"/>
+    <!-- range: user-specified 2026-09-21 - hip roll ±25deg -->
+    <limit effort="10" velocity="10" lower="-0.436332" upper="0.436332"/>
   </joint>
   <!-- Joint from trunk to hip -->
   <joint name="right_hip_yaw" type="revolute">
@@ -724,7 +728,8 @@
     <parent link="hip_2"/>
     <child link="hip_block__configuration_left"/>
     <axis xyz="0 0 1"/>
-    <limit effort="10" velocity="10" lower="-0.610865" upper="0.610865"/>
+    <!-- range: user-specified 2026-09-21 - hip roll ±25deg -->
+    <limit effort="10" velocity="10" lower="-0.436332" upper="0.436332"/>
   </joint>
   <!-- Joint from trunk to hip_2 -->
   <joint name="left_hip_yaw" type="revolute">
