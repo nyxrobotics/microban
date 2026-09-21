@@ -409,12 +409,20 @@ http://www.apache.org/licenses/LICENSE-2.0
                   <!-- Part stp39__configuration__2x6_60 -->
                   <!-- Part stp39__configuration__2x6_61 -->
                   <!-- Part foot__configuration_right -->
-                  <geom name="right_foot_collision_1" class="collision" pos="-0 -0.02175 0.042" quat="0 0 0.707107 0.707107" type="box" size="0.0225 0.04 0.00125"/>
-                  <geom name="right_foot_collision_2" class="collision" pos="-0 -0.02175 0.042" quat="0 0 0.707107 0.707107" type="box" size="0.0175 0.045 0.00125"/>
-                  <geom name="right_foot_collision_3" class="collision" pos="-0.0175 -0.02175 0.002" quat="0.270598 -0.270598 -0.653281 -0.653281" type="box" size="0.00353553 0.00353553 0.00125"/>
-                  <geom name="right_foot_collision_4" class="collision" pos="0.0175 -0.02175 0.002" quat="0.270598 -0.270598 -0.653281 -0.653281" type="box" size="0.00353553 0.00353553 0.00125"/>
-                  <geom name="right_foot_collision_5" class="collision" pos="-0.0175 -0.02175 0.082" quat="0.270598 -0.270598 -0.653281 -0.653281" type="box" size="0.00353553 0.00353553 0.00125"/>
-                  <geom name="right_foot_collision_6" class="collision" pos="0.0175 -0.02175 0.082" quat="0.270598 -0.270598 -0.653281 -0.653281" type="box" size="0.00353553 0.00353553 0.00125"/>
+                  <!-- Sole contact, rebuilt 2026-09-21 from the live CAD. The sole is a single flat face at -->
+                  <!-- world z = -171.1131: a circle of radius 32 mm centred at (x -2, y +/-36) truncated by -->
+                  <!-- two chords at |y - y_c| = 20, so the footprint is 64 x 40 mm (area 2381.9 mm2, which -->
+                  <!-- matches the CAD face area exactly). The six nested boxes below are an inscribed -->
+                  <!-- staircase of that outline: they never overhang the real sole, the largest radial -->
+                  <!-- deficit is 1.17 mm and they cover 97.7% of its area. Each box bottom sits exactly on -->
+                  <!-- the sole plane. The previous six boxes were the old foot: a 90 x 45 mm footprint whose -->
+                  <!-- contact plane was 3.5 mm above this one. -->
+                  <geom name="right_foot_collision_1" class="collision" pos="0 -0.02525 0.0385" quat="0.5 -0.5 -0.5 -0.5" type="box" size="0.03083 0.00857387 0.00125"/>
+                  <geom name="right_foot_collision_2" class="collision" pos="0 -0.02525 0.0385" quat="0.5 -0.5 -0.5 -0.5" type="box" size="0.02966 0.0120119 0.00125"/>
+                  <geom name="right_foot_collision_3" class="collision" pos="0 -0.02525 0.0385" quat="0.5 -0.5 -0.5 -0.5" type="box" size="0.02849 0.0145712 0.00125"/>
+                  <geom name="right_foot_collision_4" class="collision" pos="0 -0.02525 0.0385" quat="0.5 -0.5 -0.5 -0.5" type="box" size="0.02732 0.0166619 0.00125"/>
+                  <geom name="right_foot_collision_5" class="collision" pos="0 -0.02525 0.0385" quat="0.5 -0.5 -0.5 -0.5" type="box" size="0.02615 0.0184439 0.00125"/>
+                  <geom name="right_foot_collision_6" class="collision" pos="0 -0.02525 0.0385" quat="0.5 -0.5 -0.5 -0.5" type="box" size="0.02498 0.02 0.00125"/>
                   <geom type="mesh" class="visual" pos="-0 -0.0095 0.0385" quat="0 0 0.707107 0.707107" mesh="foot__configuration_right" material="foot__configuration_right_material"/>
                   <!-- Part stp39__configuration__2x6_62 -->
                   <!-- Part stp39__configuration__2x6_63 -->
@@ -619,12 +627,20 @@ http://www.apache.org/licenses/LICENSE-2.0
                   <!-- Part stp39__configuration__2x6_120 -->
                   <!-- Part stp39__configuration__2x6_121 -->
                   <!-- Part foot__configuration_right_2 -->
-                  <geom name="left_foot_collision_1" class="collision" pos="-0 -0.02175 0.042" quat="0 0 0.707107 0.707107" type="box" size="0.0225 0.04 0.00125"/>
-                  <geom name="left_foot_collision_2" class="collision" pos="-0 -0.02175 0.042" quat="0 0 0.707107 0.707107" type="box" size="0.0175 0.045 0.00125"/>
-                  <geom name="left_foot_collision_3" class="collision" pos="-0.0175 -0.02175 0.002" quat="0.270598 -0.270598 -0.653281 -0.653281" type="box" size="0.00353553 0.00353553 0.00125"/>
-                  <geom name="left_foot_collision_4" class="collision" pos="0.0175 -0.02175 0.002" quat="0.270598 -0.270598 -0.653281 -0.653281" type="box" size="0.00353553 0.00353553 0.00125"/>
-                  <geom name="left_foot_collision_5" class="collision" pos="-0.0175 -0.02175 0.082" quat="0.270598 -0.270598 -0.653281 -0.653281" type="box" size="0.00353553 0.00353553 0.00125"/>
-                  <geom name="left_foot_collision_6" class="collision" pos="0.0175 -0.02175 0.082" quat="0.270598 -0.270598 -0.653281 -0.653281" type="box" size="0.00353553 0.00353553 0.00125"/>
+                  <!-- Sole contact, rebuilt 2026-09-21 from the live CAD. The sole is a single flat face at -->
+                  <!-- world z = -171.1131: a circle of radius 32 mm centred at (x -2, y +/-36) truncated by -->
+                  <!-- two chords at |y - y_c| = 20, so the footprint is 64 x 40 mm (area 2381.9 mm2, which -->
+                  <!-- matches the CAD face area exactly). The six nested boxes below are an inscribed -->
+                  <!-- staircase of that outline: they never overhang the real sole, the largest radial -->
+                  <!-- deficit is 1.17 mm and they cover 97.7% of its area. Each box bottom sits exactly on -->
+                  <!-- the sole plane. The previous six boxes were the old foot: a 90 x 45 mm footprint whose -->
+                  <!-- contact plane was 3.5 mm above this one. -->
+                  <geom name="left_foot_collision_1" class="collision" pos="0 -0.02525 0.0385" quat="-0.5 0.5 0.5 0.5" type="box" size="0.03083 0.00857387 0.00125"/>
+                  <geom name="left_foot_collision_2" class="collision" pos="0 -0.02525 0.0385" quat="-0.5 0.5 0.5 0.5" type="box" size="0.02966 0.0120119 0.00125"/>
+                  <geom name="left_foot_collision_3" class="collision" pos="0 -0.02525 0.0385" quat="-0.5 0.5 0.5 0.5" type="box" size="0.02849 0.0145712 0.00125"/>
+                  <geom name="left_foot_collision_4" class="collision" pos="0 -0.02525 0.0385" quat="-0.5 0.5 0.5 0.5" type="box" size="0.02732 0.0166619 0.00125"/>
+                  <geom name="left_foot_collision_5" class="collision" pos="0 -0.02525 0.0385" quat="-0.5 0.5 0.5 0.5" type="box" size="0.02615 0.0184439 0.00125"/>
+                  <geom name="left_foot_collision_6" class="collision" pos="0 -0.02525 0.0385" quat="-0.5 0.5 0.5 0.5" type="box" size="0.02498 0.02 0.00125"/>
                   <geom type="mesh" class="visual" pos="-0 -0.0095 0.0385" quat="0 0 0.707107 0.707107" mesh="foot__configuration_right" material="foot__configuration_right_material"/>
                   <!-- Part stp39__configuration__2x6_122 -->
                   <!-- Part stp39__configuration__2x6_123 -->

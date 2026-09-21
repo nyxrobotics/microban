@@ -73,6 +73,16 @@
     <!-- Part pom_shim_4 -->
     <!-- Part stp39__configuration__2_2x8_18 -->
     <!-- Part charger -->
+    <!-- Collision shapes added 2026-09-21, mirroring robot.xml geom-for-geom (MJCF half-extents -->
+    <!-- doubled for URDF full extents). This file previously carried no collision at all. -->
+    <collision>
+      <origin xyz="0 0 0.05375" rpy="0 0 1.5708"/>
+      <geometry><box size="0.108 0.016 0.1075"/></geometry>
+    </collision>
+    <collision>
+      <origin xyz="0 0 0.05775" rpy="0 0 1.5708"/>
+      <geometry><box size="0.058 0.066 0.0855"/></geometry>
+    </collision>
   </link>
   <!-- Frame body (dummy link + fixed joint) -->
   <link name="body">
@@ -270,6 +280,16 @@
     <!-- Part dc15_a01_idle_cap_dummy -->
     <!-- Part bts2_m2_6x8 -->
     <!-- Part stp39__configuration__2x6_20 -->
+    <!-- Collision shapes added 2026-09-21, mirroring robot.xml geom-for-geom (MJCF half-extents -->
+    <!-- doubled for URDF full extents). This file previously carried no collision at all. -->
+    <collision>
+      <origin xyz="0 0 0.0135" rpy="0 0 -1.5708"/>
+      <geometry><cylinder radius="0.009" length="0.0335"/></geometry>
+    </collision>
+    <collision>
+      <origin xyz="0 -0.067014 0.0135" rpy="0 0 -1.5708"/>
+      <geometry><cylinder radius="0.00525" length="0.016"/></geometry>
+    </collision>
   </link>
   <!-- Joint from humerus__configuration_right to radius -->
   <joint name="right_elbow" type="revolute">
@@ -336,6 +356,12 @@
     <!-- Part dc15_a01_idle_cap_dummy_2 -->
     <!-- Part stp39__configuration__2_2x8_32 -->
     <!-- Part spacer__configuration_right -->
+    <!-- Collision shapes added 2026-09-21, mirroring robot.xml geom-for-geom (MJCF half-extents -->
+    <!-- doubled for URDF full extents). This file previously carried no collision at all. -->
+    <collision>
+      <origin xyz="0 0.02075 0.02575" rpy="-1.5708 0 -3.14159"/>
+      <geometry><box size="0.027 0.0505 0.0125"/></geometry>
+    </collision>
   </link>
   <!-- Link femur__configuration_right -->
   <link name="femur__configuration_right">
@@ -361,6 +387,20 @@
     <!-- Part stp39__configuration__2x6_46 -->
     <!-- Part stp39__configuration__2x6_47 -->
     <!-- Part stp39__configuration__2x6_48 -->
+    <!-- Collision shapes added 2026-09-21, mirroring robot.xml geom-for-geom (MJCF half-extents -->
+    <!-- doubled for URDF full extents). This file previously carried no collision at all. -->
+    <collision>
+      <origin xyz="-0.015 -0.0335001 0.00275" rpy="-1.5708 1.5708 0"/>
+      <geometry><box size="0.0025 0.018 0.044456"/></geometry>
+    </collision>
+    <collision>
+      <origin xyz="-0.008818 -0.00881806 0.00275" rpy="-0.785399 1.5708 0"/>
+      <geometry><box size="0.0025 0.018 0.024941"/></geometry>
+    </collision>
+    <collision>
+      <origin xyz="-0.011318 -0.0556821 0.00275" rpy="-2.35619 1.5708 0"/>
+      <geometry><box size="0.0025 0.018 0.01787"/></geometry>
+    </collision>
   </link>
   <!-- Link tibia__configuration_right -->
   <link name="tibia__configuration_right">
@@ -383,6 +423,24 @@
     <!-- Part stp39__configuration__2_2x8_36 -->
     <!-- Part stp39__configuration__2x6_55 -->
     <!-- Part stp39__configuration__2x6_56 -->
+    <!-- Collision shapes added 2026-09-21, mirroring robot.xml geom-for-geom (MJCF half-extents -->
+    <!-- doubled for URDF full extents). This file previously carried no collision at all. -->
+    <collision>
+      <origin xyz="0.017 -0.0444631 0.00275" rpy="-1.5708 1.5708 0"/>
+      <geometry><box size="0.0025 0.018 0.023"/></geometry>
+    </collision>
+    <collision>
+      <origin xyz="0.0138 -0.0554431 0.00275" rpy="-0.785399 1.5708 0"/>
+      <geometry><box size="0.0025 0.018 0.0165"/></geometry>
+    </collision>
+    <collision>
+      <origin xyz="0.00675 -0.0287131 0.00275" rpy="-2.35619 1.5708 0"/>
+      <geometry><box size="0.0025 0.021213 0.033234"/></geometry>
+    </collision>
+    <collision>
+      <origin xyz="0.0117 -0.0236231 -0.0145" rpy="-2.35619 1.5708 0"/>
+      <geometry><box size="0.037 0.007 0.004659"/></geometry>
+    </collision>
   </link>
   <!-- Link ankle_block__configuration_left -->
   <link name="ankle_block__configuration_left">
@@ -404,6 +462,12 @@
     <!-- Part dc15_a01_idle_cap_dummy_3 -->
     <!-- Part stp39__configuration__2_2x8_42 -->
     <!-- Part spacer__configuration_right_2 -->
+    <!-- Collision shapes added 2026-09-21, mirroring robot.xml geom-for-geom (MJCF half-extents -->
+    <!-- doubled for URDF full extents). This file previously carried no collision at all. -->
+    <collision>
+      <origin xyz="-0.01275 -0.02075 -0.0145" rpy="1.5708 1.5708 0"/>
+      <geometry><box size="0.027 0.0505 0.0125"/></geometry>
+    </collision>
   </link>
   <!-- Link foot -->
   <link name="foot">
@@ -421,6 +485,32 @@
     <!-- Part stp39__configuration__2x6_62 -->
     <!-- Part stp39__configuration__2x6_63 -->
     <!-- Part stp39__configuration__2x6_64 -->
+    <!-- Collision shapes added 2026-09-21, mirroring robot.xml geom-for-geom (MJCF half-extents -->
+    <!-- doubled for URDF full extents). This file previously carried no collision at all. -->
+    <collision name="right_foot_collision_1">
+      <origin xyz="0 -0.02525 0.0385" rpy="-1.5708 -1.5708 0"/>
+      <geometry><box size="0.06166 0.0171477 0.0025"/></geometry>
+    </collision>
+    <collision name="right_foot_collision_2">
+      <origin xyz="0 -0.02525 0.0385" rpy="-1.5708 -1.5708 0"/>
+      <geometry><box size="0.05932 0.0240238 0.0025"/></geometry>
+    </collision>
+    <collision name="right_foot_collision_3">
+      <origin xyz="0 -0.02525 0.0385" rpy="-1.5708 -1.5708 0"/>
+      <geometry><box size="0.05698 0.0291424 0.0025"/></geometry>
+    </collision>
+    <collision name="right_foot_collision_4">
+      <origin xyz="0 -0.02525 0.0385" rpy="-1.5708 -1.5708 0"/>
+      <geometry><box size="0.05464 0.0333238 0.0025"/></geometry>
+    </collision>
+    <collision name="right_foot_collision_5">
+      <origin xyz="0 -0.02525 0.0385" rpy="-1.5708 -1.5708 0"/>
+      <geometry><box size="0.0523 0.0368878 0.0025"/></geometry>
+    </collision>
+    <collision name="right_foot_collision_6">
+      <origin xyz="0 -0.02525 0.0385" rpy="-1.5708 -1.5708 0"/>
+      <geometry><box size="0.04996 0.04 0.0025"/></geometry>
+    </collision>
   </link>
   <!-- Frame right_foot (dummy link + fixed joint) -->
   <link name="right_foot">
@@ -540,6 +630,16 @@
     <!-- Part dc15_a01_idle_cap_dummy_4 -->
     <!-- Part bts2_m2_6x8_4 -->
     <!-- Part stp39__configuration__2x6_80 -->
+    <!-- Collision shapes added 2026-09-21, mirroring robot.xml geom-for-geom (MJCF half-extents -->
+    <!-- doubled for URDF full extents). This file previously carried no collision at all. -->
+    <collision>
+      <origin xyz="0 0 -0.0135" rpy="3.14159 0 1.5708"/>
+      <geometry><cylinder radius="0.009" length="0.0335"/></geometry>
+    </collision>
+    <collision>
+      <origin xyz="0 0.067014 -0.0135" rpy="3.14159 0 1.5708"/>
+      <geometry><cylinder radius="0.00525" length="0.016"/></geometry>
+    </collision>
   </link>
   <!-- Joint from humerus__configuration_left to radius_2 -->
   <joint name="left_elbow" type="revolute">
@@ -606,6 +706,12 @@
     <!-- Part dc15_a01_idle_cap_dummy_5 -->
     <!-- Part stp39__configuration__2_2x8_56 -->
     <!-- Part spacer__configuration_right_3 -->
+    <!-- Collision shapes added 2026-09-21, mirroring robot.xml geom-for-geom (MJCF half-extents -->
+    <!-- doubled for URDF full extents). This file previously carried no collision at all. -->
+    <collision>
+      <origin xyz="0 0.02075 0.02575" rpy="-1.5708 0 -3.14159"/>
+      <geometry><box size="0.027 0.0505 0.0125"/></geometry>
+    </collision>
   </link>
   <!-- Link femur__configuration_left -->
   <link name="femur__configuration_left">
@@ -631,6 +737,20 @@
     <!-- Part stp39__configuration__2x6_106 -->
     <!-- Part stp39__configuration__2x6_107 -->
     <!-- Part stp39__configuration__2x6_108 -->
+    <!-- Collision shapes added 2026-09-21, mirroring robot.xml geom-for-geom (MJCF half-extents -->
+    <!-- doubled for URDF full extents). This file previously carried no collision at all. -->
+    <collision>
+      <origin xyz="0.015 0.0335001 -0.03175" rpy="1.5708 1.5708 0"/>
+      <geometry><box size="0.0025 0.018 0.044456"/></geometry>
+    </collision>
+    <collision>
+      <origin xyz="0.008818 0.00881806 -0.03175" rpy="2.35619 1.5708 0"/>
+      <geometry><box size="0.0025 0.018 0.024941"/></geometry>
+    </collision>
+    <collision>
+      <origin xyz="0.011318 0.0556821 -0.03175" rpy="0.785399 1.5708 0"/>
+      <geometry><box size="0.0025 0.018 0.01787"/></geometry>
+    </collision>
   </link>
   <!-- Link tibia__configuration_left -->
   <link name="tibia__configuration_left">
@@ -653,6 +773,24 @@
     <!-- Part stp39__configuration__2_2x8_60 -->
     <!-- Part stp39__configuration__2x6_115 -->
     <!-- Part stp39__configuration__2x6_116 -->
+    <!-- Collision shapes added 2026-09-21, mirroring robot.xml geom-for-geom (MJCF half-extents -->
+    <!-- doubled for URDF full extents). This file previously carried no collision at all. -->
+    <collision>
+      <origin xyz="-0.017 0.0444631 -0.0317" rpy="1.5708 1.5708 0"/>
+      <geometry><box size="0.0025 0.018 0.023"/></geometry>
+    </collision>
+    <collision>
+      <origin xyz="-0.0138 0.0554431 -0.03175" rpy="2.35619 1.5708 0"/>
+      <geometry><box size="0.0025 0.018 0.0165"/></geometry>
+    </collision>
+    <collision>
+      <origin xyz="-0.00675 0.0287131 -0.03175" rpy="0.785399 1.5708 0"/>
+      <geometry><box size="0.0025 0.021213 0.033234"/></geometry>
+    </collision>
+    <collision>
+      <origin xyz="-0.0117 0.0236231 -0.0145" rpy="0.785399 1.5708 0"/>
+      <geometry><box size="0.037 0.007 0.004659"/></geometry>
+    </collision>
   </link>
   <!-- Link ankle_block__configuration_right -->
   <link name="ankle_block__configuration_right">
@@ -674,6 +812,12 @@
     <!-- Part dc15_a01_idle_cap_dummy_6 -->
     <!-- Part stp39__configuration__2_2x8_66 -->
     <!-- Part spacer__configuration_right_4 -->
+    <!-- Collision shapes added 2026-09-21, mirroring robot.xml geom-for-geom (MJCF half-extents -->
+    <!-- doubled for URDF full extents). This file previously carried no collision at all. -->
+    <collision>
+      <origin xyz="0.01275 0.02075 -0.0145" rpy="-1.5708 1.5708 0"/>
+      <geometry><box size="0.027 0.0505 0.0125"/></geometry>
+    </collision>
   </link>
   <!-- Link foot_2 -->
   <link name="foot_2">
@@ -691,6 +835,32 @@
     <!-- Part stp39__configuration__2x6_122 -->
     <!-- Part stp39__configuration__2x6_123 -->
     <!-- Part stp39__configuration__2x6_124 -->
+    <!-- Collision shapes added 2026-09-21, mirroring robot.xml geom-for-geom (MJCF half-extents -->
+    <!-- doubled for URDF full extents). This file previously carried no collision at all. -->
+    <collision name="left_foot_collision_1">
+      <origin xyz="0 -0.02525 0.0385" rpy="-1.5708 -1.5708 0"/>
+      <geometry><box size="0.06166 0.0171477 0.0025"/></geometry>
+    </collision>
+    <collision name="left_foot_collision_2">
+      <origin xyz="0 -0.02525 0.0385" rpy="-1.5708 -1.5708 0"/>
+      <geometry><box size="0.05932 0.0240238 0.0025"/></geometry>
+    </collision>
+    <collision name="left_foot_collision_3">
+      <origin xyz="0 -0.02525 0.0385" rpy="-1.5708 -1.5708 0"/>
+      <geometry><box size="0.05698 0.0291424 0.0025"/></geometry>
+    </collision>
+    <collision name="left_foot_collision_4">
+      <origin xyz="0 -0.02525 0.0385" rpy="-1.5708 -1.5708 0"/>
+      <geometry><box size="0.05464 0.0333238 0.0025"/></geometry>
+    </collision>
+    <collision name="left_foot_collision_5">
+      <origin xyz="0 -0.02525 0.0385" rpy="-1.5708 -1.5708 0"/>
+      <geometry><box size="0.0523 0.0368878 0.0025"/></geometry>
+    </collision>
+    <collision name="left_foot_collision_6">
+      <origin xyz="0 -0.02525 0.0385" rpy="-1.5708 -1.5708 0"/>
+      <geometry><box size="0.04996 0.04 0.0025"/></geometry>
+    </collision>
   </link>
   <!-- Frame left_foot (dummy link + fixed joint) -->
   <link name="left_foot">
