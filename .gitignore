@@ -3,5 +3,6 @@
 uv.lock
 
 logs/
+logs_processed/
 
 placo_test.py

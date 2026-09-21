@@ -87,15 +87,17 @@ MOTOR_SIGN = {
 # Position P Gain (Dynamixel register value)
 KP_DEFAULT: int = 400        # ~0.886 Nm/rad in MuJoCo
 KP_RL: int = 125             # ~0.277 Nm/rad in MuJoCo
-KP_GAIN_PRM: float = 0.0022  # Nm/rad per register unit (for Xl330). NOT updated for XC330-T288-T: likely scales with the ~3.1x higher torque constant (see PROXY_KT) but the exact derivation (register-to-PWM/current scaling) is not confident enough here to rescale blindly. Needs review.
+KP_GAIN_PRM: float = 0.0022  # Nm/rad per register unit (for Xl330). NOT updated for XC330-T288-T: likely scales with the ~2.85x higher torque constant (see PROXY_KT) but the exact derivation (register-to-PWM/current scaling) is not confident enough here to rescale blindly. Needs review.
 
-# BAM motor model (bam package). MIXED provenance as of 2026-09-20 -- see per-line notes.
-# All 21 servos are now XC330-T288-T (previously XL330-M288-T), and the battery is now 3S
-# (previously 2S). The bam project (github.com/Rhoban/bam) has no published identification
-# for XC330-T288-T (only XL330-M288-T, MX-64, MX-106, XL-320, STS3215), so the values below
-# marked "Robotis datasheet" are official spec-sheet numbers, NOT a proper bam system-ID fit.
-# Re-running bam's identification procedure on the actual XC330 servos is the correct long-term
-# fix; until then treat BAM_MAX_CURRENT / PROXY_KT below as a reasonable approximation only.
+# BAM motor model (bam package). All 21 servos are now XC330-T288-T (previously
+# XL330-M288-T), and the battery is now 3S (previously 2S). The bam project
+# (github.com/Rhoban/bam) has no published identification for XC330-T288-T, so
+# tools/actuator_id/ (this repo) adds an XC330 actuator definition and records a
+# pendulum-rig identification against a real XC330-T288-T - see
+# tools/actuator_id/README (usage) and xc330_params.json (raw fit output).
+# PROXY_KT / PROXY_R below are that fit's result (2026-09-21: m6 model, 30 logs
+# across sin_time_square/lift_and_drop/up_and_down, score 0.064 rad). BAM_MAX_CURRENT
+# is still the Robotis datasheet current limit, not something bam fits.
 BAM_VIN: float = 11.1        # 3S nominal (3x3.7V); matches XC330-T288-T's own rated voltage
 BAM_VIN_MIN: float = 9.0     # 3S practical minimum (3x3.0V/cell)
 BAM_VOLTAGE_DROP_GAIN: float = 0.2  # UNCHANGED: bam-fit for XL330, not re-identified for XC330/3S
@@ -113,8 +115,8 @@ OVERCURRENT_DEBOUNCE_TICKS: int = 2     # consecutive over-threshold ticks befor
 # data already read (present_position, present_velocity) and the command target:
 #   duty = clip(PROXY_KP * PROXY_ERROR_GAIN * (target - q), ±PROXY_MAX_PWM)
 #   I    = (PROXY_VIN * duty - PROXY_KT * dq) / PROXY_R      then |I| capped at BAM_MAX_CURRENT
-PROXY_KT: float = 1.150                  # XC330-T288-T torque constant [Nm/A] at 11.1V (Robotis datasheet; was 0.366 for XL330 m6)
-PROXY_R: float = 2.811                   # UNCHANGED: still XL330 m6 (bam-fit) value -- Robotis does not publish coil resistance for XC330, and bam has no XC330 identification yet. Needs re-identification.
+PROXY_KT: float = 1.043                  # XC330-T288-T torque constant [Nm/A], bam-fit 2026-09-21 (was 0.366 for XL330 m6; Robotis-datasheet estimate had been 1.150)
+PROXY_R: float = 10.007                  # XC330-T288-T coil resistance [Ohm], bam-fit 2026-09-21 (was 2.811, the XL330 m6 bam-fit value reused as a placeholder)
 PROXY_VIN: float = BAM_VIN               # supply voltage [V]
 PROXY_ERROR_GAIN: float = 0.0028773775   # duty cycle per (kp * rad), XL330 encoder/gain scaling. Encoder resolution (4096 counts/rev, 12-bit) is the same across the X-series including XC330, so this may still be valid, but it has not been re-verified for XC330-T288-T.
 PROXY_MAX_PWM: float = 1.0               # max duty cycle magnitude
