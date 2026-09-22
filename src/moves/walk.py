@@ -1,6 +1,8 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright 2026 Marc Duclusaud
 
+import math
+
 import onnxruntime as ort
 import numpy as np
 
@@ -17,6 +19,20 @@ LOGGING = False
 # Policy name
 AGENT_NAME = "walk.onnx"
 
+# Neck roll/pitch joint ranges (rad), from src/model/mjcf/robot.xml. The stabilization
+# below clips to these so a large trunk tilt can't request an out-of-range neck target.
+NECK_ROLL_RANGE = (-0.436332, 0.436332)
+NECK_PITCH_RANGE = (-1.570796, 0.436332)
+
+
+def _body_roll_pitch(body_quat: list[float]) -> tuple[float, float]:
+    """Roll (about +X) and pitch (about +Y) of the trunk frame, same convention as
+    scheduler.py's IMU display and as the neck_roll/neck_pitch joint axes (robot.xml)."""
+    w, x, y, z = body_quat
+    roll = math.atan2(2 * (w * x + y * z), 1 - 2 * (x * x + y * y))
+    pitch = math.asin(max(-1.0, min(1.0, 2 * (w * y - z * x))))
+    return roll, pitch
+
 
 class WalkMove(Move):
     """Walk using a RL policy trained in simulation."""
@@ -30,6 +46,12 @@ class WalkMove(Move):
         self._ort_session = ort.InferenceSession(f"src/agents/{AGENT_NAME}")
 
         self.action_scale = 1.0
+
+        # Head stabilization: counter-rotate neck_roll/neck_pitch against trunk tilt so the
+        # head stays level while walking. Not part of the RL policy (neck is excluded from
+        # its action/observation space) — this is a separate proportional control law layered
+        # on top; gain=1.0 is full cancellation of the extracted roll/pitch.
+        self._neck_stabilize_gain = 1.0
 
         # Reference pose: read from ONNX metadata
         meta = self._ort_session.get_modelmeta().custom_metadata_map
@@ -121,6 +143,16 @@ class WalkMove(Move):
         # Update command
         for i, name in enumerate(OBSERVATION_DOF_ORDER):
             command.target_angles[name] = self._default_pose[name] + action[i] * self.action_scale
+
+        # Head stabilization: hold the neck level against trunk roll/pitch. Independent of the
+        # RL policy above, so it still runs even though neck_roll/neck_pitch aren't in its
+        # action space.
+        if obs.robot_state.body_quat:
+            roll, pitch = _body_roll_pitch(obs.robot_state.body_quat)
+            neck_roll = self._default_pose.get("neck_roll", 0.0) - self._neck_stabilize_gain * roll
+            neck_pitch = self._default_pose.get("neck_pitch", 0.0) - self._neck_stabilize_gain * pitch
+            command.target_angles["neck_roll"] = max(NECK_ROLL_RANGE[0], min(NECK_ROLL_RANGE[1], neck_roll))
+            command.target_angles["neck_pitch"] = max(NECK_PITCH_RANGE[0], min(NECK_PITCH_RANGE[1], neck_pitch))
 
         # Log positions and voltages
         if LOGGING:
