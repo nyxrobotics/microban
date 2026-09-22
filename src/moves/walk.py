@@ -144,13 +144,14 @@ class WalkMove(Move):
         for i, name in enumerate(OBSERVATION_DOF_ORDER):
             command.target_angles[name] = self._default_pose[name] + action[i] * self.action_scale
 
-        # Head stabilization: hold the neck level against trunk roll/pitch. Independent of the
-        # RL policy above, so it still runs even though neck_roll/neck_pitch aren't in its
-        # action space.
+        # Head stabilization: hold the neck level (or, with VR teleop active, at the
+        # commanded head_orientation) against trunk roll/pitch. Independent of the RL policy
+        # above, so it still runs even though neck_roll/neck_pitch aren't in its action space.
         if obs.robot_state.body_quat:
+            desired = obs.user_input.head_orientation or {"roll": 0.0, "pitch": 0.0}
             roll, pitch = _body_roll_pitch(obs.robot_state.body_quat)
-            neck_roll = self._default_pose.get("neck_roll", 0.0) - self._neck_stabilize_gain * roll
-            neck_pitch = self._default_pose.get("neck_pitch", 0.0) - self._neck_stabilize_gain * pitch
+            neck_roll = self._default_pose.get("neck_roll", 0.0) + self._neck_stabilize_gain * (desired["roll"] - roll)
+            neck_pitch = self._default_pose.get("neck_pitch", 0.0) + self._neck_stabilize_gain * (desired["pitch"] - pitch)
             command.target_angles["neck_roll"] = max(NECK_ROLL_RANGE[0], min(NECK_ROLL_RANGE[1], neck_roll))
             command.target_angles["neck_pitch"] = max(NECK_PITCH_RANGE[0], min(NECK_PITCH_RANGE[1], neck_pitch))
 

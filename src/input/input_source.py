@@ -15,6 +15,11 @@ class UserInput:
     velocity: dict[str, float] = field(default_factory=lambda: {"vx": 0.0, "vy": 0.0, "vtheta": 0.0})
     show_imu: bool = False
 
+    # Desired head orientation {"roll": , "pitch": } in the same gravity-aligned frame as
+    # the trunk IMU (radians). None (the default, from every input source except VR teleop)
+    # means "keep the head level" — see moves.walk.WalkMove's neck stabilization.
+    head_orientation: dict[str, float] | None = None
+
 
 def scale_velocity(velocity: dict[str, float]) -> dict[str, float]:
     """Map a normalized velocity command in [-1, 1] per axis to physical limits.
