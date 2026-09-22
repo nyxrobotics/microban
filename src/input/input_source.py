@@ -20,6 +20,18 @@ class UserInput:
     # means "keep the head level" — see moves.walk.WalkMove's neck stabilization.
     head_orientation: dict[str, float] | None = None
 
+    # Whole-body leg tracking target, trunk-relative (meters): {"left": (dx,dy,dz),
+    # "right": (dx,dy,dz)}. None means no target — the walking policy just walks/stands
+    # (see FootTargetCommand in mjlab_microban: the tracking reward fades to zero as the
+    # velocity command grows, so this and `velocity` are never in real conflict).
+    foot_target: dict[str, tuple[float, float, float]] | None = None
+
+    # Hand tracking target, trunk-relative (meters), per hand independently:
+    # {"left": (dx,dy,dz) | None, "right": (dx,dy,dz) | None}. A hand entry of None (or
+    # the whole dict being None) means that hand has no active target — the policy is
+    # free to move that arm naturally (see HandTargetCommand.is_active).
+    hand_target: dict[str, tuple[float, float, float] | None] | None = None
+
 
 def scale_velocity(velocity: dict[str, float]) -> dict[str, float]:
     """Map a normalized velocity command in [-1, 1] per axis to physical limits.
