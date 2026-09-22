@@ -33,6 +33,12 @@ sudo rm -f "$R"/var/lib/microban/netcfg.sha256
 # Your Wi-Fi credentials (any NetworkManager connection you created).
 sudo rm -f "$R"/etc/NetworkManager/system-connections/*.nmconnection
 
+# netplan's mirror of any NetworkManager Wi-Fi connection (e.g.
+# /etc/netplan/90-NM-<uuid>.yaml). This retains the SSID and password in plaintext
+# even after the .nmconnection file above is removed — a prior image shipped with
+# a leftover one of these exposing the original developer's home Wi-Fi password.
+sudo rm -f "$R"/etc/netplan/90-NM-*.yaml
+
 # Your SSH public key, shell history, caches and logs
 sudo rm -f "$R/home/user/.ssh/authorized_keys"
 sudo rm -f "$R/home/user/.bash_history"

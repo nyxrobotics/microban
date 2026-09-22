@@ -141,13 +141,59 @@ EOF
 sudo systemctl enable regen-ssh-host-keys.service
 ```
 
-## Wi-Fi re-application on change
+## Wi-Fi: use NetworkManager `.nmconnection` files, not `network-config`
 
-`network-config` is read by cloud-init **only on the first boot**. So once a robot has
-booted, editing `network-config` to switch Wi-Fi networks has no effect unless cloud-init
-is reset. This service detects a changed `network-config` at boot and re-applies it
-automatically, so a user can switch networks fully offline — edit `network-config` on the
-SD card, boot, done — with no SSH or prior network access.
+`network-config` (cloud-init's netplan-based Wi-Fi config) does not work on this image:
+cloud-init depends on a module, `cc_netplan_nm_patch`, to translate a netplan Wi-Fi entry
+into an actual NetworkManager connection, and that module is missing. The config
+validates with no error and `netplan generate` reports success, but no
+`/etc/NetworkManager/system-connections/*.nmconnection` file — and therefore no real
+connection — ever gets written. This is true both on first boot and after the
+cache-reset dance below, so resetting cloud-init does not fix it.
+
+The confirmed-working method is to write the `.nmconnection` file directly, offline, with
+the SD card mounted on your PC (`$R` = `/media/$USER/rootfs`):
+```bash
+UUID=$(uuidgen)
+sudo tee "$R/etc/NetworkManager/system-connections/home.nmconnection" >/dev/null <<EOF
+[connection]
+id=<SSID>
+uuid=$UUID
+type=wifi
+autoconnect=true
+
+[wifi]
+mode=infrastructure
+ssid=<SSID>
+
+[wifi-security]
+key-mgmt=wpa-psk
+psk=<PASSWORD>
+
+[ipv4]
+method=auto
+
+[ipv6]
+method=auto
+addr-gen-mode=default
+
+[proxy]
+EOF
+sudo chown root:root "$R/etc/NetworkManager/system-connections/home.nmconnection"
+sudo chmod 600 "$R/etc/NetworkManager/system-connections/home.nmconnection"
+```
+The file must be `root:root` / `600`, or NetworkManager silently ignores it. See
+[deployment.md](../deployment.md#step-2-headless-wi-fi-configuration) for the full
+walkthrough (multiple networks, changing Wi-Fi later, country code).
+
+### Legacy: `network-config` re-application service
+
+`network-config` is still read by cloud-init on first boot, and this service re-applies
+it on later boots when it changes (by resetting cloud-init) — but per the above, this
+never actually produces a working Wi-Fi connection on this image, so treat it as
+non-functional for Wi-Fi until `cc_netplan_nm_patch` is fixed upstream or replaced. Kept
+here in case it becomes useful again, or for any other cloud-init settings that do apply
+correctly through `network-config`/`user-data`.
 
 On the Pi (`ssh microban`):
 ```bash
