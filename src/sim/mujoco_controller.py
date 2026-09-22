@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright 2026 Marc Duclusaud
 
+import sys
 import time
 from collections import deque
 from collections.abc import Callable
@@ -13,8 +14,18 @@ import mujoco.viewer
 if TYPE_CHECKING:
     from sim.mujoco_input import MuJoCoInputSource
 
+import bam.actuators
 from bam.model import load_model as bam_load_model
 from bam.mujoco import MujocoController as BamController
+from bam.testbench import Pendulum
+
+# tools/actuator_id/ isn't a package on PYTHONPATH=src, so reach it directly to
+# register "xc330" (bam has no built-in definition for it) before load_model()
+# below needs it.
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "tools" / "actuator_id"))
+from xc330_actuator import XC330Actuator  # noqa: E402
+
+bam.actuators.actuators["xc330"] = lambda: XC330Actuator(Pendulum)
 
 from constants import MOTOR_TO_ID, ID_TO_MOTOR, NEUTRAL_POSE, KP_DEFAULT, BAM_VIN, BAM_VOLTAGE_DROP_GAIN, BAM_VIN_MIN, BAM_MAX_CURRENT
 
@@ -112,8 +123,10 @@ class MuJoCoController:
             for mid in MOTOR_TO_ID.values()
         }
 
-        # BAM motor model — XL330 m6 (DC motor + Stribeck + load-dependent friction)
-        bam_model = bam_load_model(motor_name="xl330", model="m6")
+        # BAM motor model — XC330-T288-T m6 (DC motor + Stribeck + load-dependent friction),
+        # identified 2026-09-21 against a real servo (see tools/actuator_id/). Previously the
+        # bundled XL330 m6 preset, left over from before the XC330 swap.
+        bam_model = bam_load_model(json_file="tools/actuator_id/xc330_params.json")
         bam_model.actuator.kp = KP_DEFAULT
         bam_model.actuator.vin = BAM_VIN
         self._bam = BamController(
