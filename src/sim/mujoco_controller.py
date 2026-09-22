@@ -95,7 +95,7 @@ class MuJoCoController:
             self._model.body_ipos[trunk_id, 2] += trunk_com_offset[2]
 
         # Set initial pose to neutral so the robot starts upright
-        self._data.qpos[2] = 0.165
+        self._data.qpos[2] = 0.175
         for name, angle in NEUTRAL_POSE.items():
             if name in self._name_to_qpos_idx:
                 self._data.qpos[self._name_to_qpos_idx[name]] = angle
@@ -134,11 +134,10 @@ class MuJoCoController:
             list(MOTOR_TO_ID.keys()),
             self._model,
             self._data,
-            vin_drop_gain=BAM_VOLTAGE_DROP_GAIN,
+            vin_drop_resistance=BAM_VOLTAGE_DROP_GAIN,
             vin_min=BAM_VIN_MIN,
-            max_current=BAM_MAX_CURRENT,
         )
-        self._bam.reset(self._data.qpos)
+        self._bam.last_ts = self._data.time
 
         self._viewer = mujoco.viewer.launch_passive(
             self._model, self._data, key_callback=key_callback
@@ -273,12 +272,12 @@ class MuJoCoController:
         self._data.qpos[:] = 0.0
         self._data.qvel[:] = 0.0
         self._data.ctrl[:] = 0.0
-        self._data.qpos[2] = 0.165
+        self._data.qpos[2] = 0.175
         for name, angle in NEUTRAL_POSE.items():
             if name in self._name_to_qpos_idx:
                 self._data.qpos[self._name_to_qpos_idx[name]] = angle
         mujoco.mj_forward(self._model, self._data)
-        self._bam.reset(self._data.qpos)
+        self._bam.last_ts = self._data.time
         for mid in MOTOR_TO_ID.values():
             neutral = self._data.qpos[self._name_to_qpos_idx[ID_TO_MOTOR[mid]]]
             self._delay_act[mid].fill(neutral)
