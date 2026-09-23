@@ -13,6 +13,8 @@ import argparse
 from scheduler import Scheduler
 from sim.mujoco_input import MuJoCoInputSource
 from sim.mujoco_controller import MuJoCoController
+from input.network_input import NetworkInputSource
+from moves.hmd_head import HmdHeadTrackingMove
 from moves.rotate_head import RotateHeadMove
 from moves.squat import SquatMove
 from moves.walk import WalkMove
@@ -27,13 +29,24 @@ def main() -> None:
     parser.add_argument("--delay-gyro", type=int, default=3, metavar="TICKS", help="Gyro read delay in ticks")
     parser.add_argument("--delay-quat", type=int, default=4, metavar="TICKS", help="Quaternion (projected gravity) read delay in ticks")
     parser.add_argument("--trunk-com-offset", type=float, nargs=3, default=[0.0, 0.0, 0.0], metavar=("X", "Y", "Z"), help="CoM offset on trunk body in meters (body frame)")
+    parser.add_argument("--input", choices=("keyboard", "network"), default="keyboard", help="Control input (default: keyboard)")
+    parser.add_argument("--network-port", type=int, default=5555, help="UDP port used with --input network")
     args = parser.parse_args()
 
-    input_source = MuJoCoInputSource(move_keys={"h": "head", "s": "squat", "v": "walk"})
+    if args.input == "network":
+        input_source = NetworkInputSource(port=args.network_port)
+        key_callback = None
+        reset_source = None
+    else:
+        input_source = MuJoCoInputSource(
+            move_keys={"h": "head", "s": "squat", "v": "walk"},
+        )
+        key_callback = input_source.key_callback
+        reset_source = input_source
     controller = MuJoCoController(
         mjcf_path="src/model/mjcf/scene.xml",
-        key_callback=input_source.key_callback,
-        reset_source=input_source,
+        key_callback=key_callback,
+        reset_source=reset_source,
         delay_act_steps=args.delay_act,
         delay_pos_ticks=args.delay_pos,
         delay_vel_ticks=args.delay_vel,
@@ -41,7 +54,8 @@ def main() -> None:
         delay_quat_ticks=args.delay_quat,
         trunk_com_offset=tuple(args.trunk_com_offset),
     )
-    input_source.set_viewer_opt(controller.viewer_opt)
+    if isinstance(input_source, MuJoCoInputSource):
+        input_source.set_viewer_opt(controller.viewer_opt)
 
     scheduler = Scheduler(
         frequency_hz=args.hz,
@@ -51,6 +65,7 @@ def main() -> None:
             "head": RotateHeadMove(),
             "squat": SquatMove(),
             "walk": WalkMove(controller=controller),
+            "hmd_head": HmdHeadTrackingMove(),
         },
     )
     scheduler.run()

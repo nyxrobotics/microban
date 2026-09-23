@@ -3,6 +3,7 @@
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
+import math
 
 from constants import VX_MAX, VX_MAX_BACKWARD, VY_MAX, VTHETA_MAX_STATIONARY, VTHETA_MAX_MOVING
 
@@ -15,10 +16,15 @@ class UserInput:
     velocity: dict[str, float] = field(default_factory=lambda: {"vx": 0.0, "vy": 0.0, "vtheta": 0.0})
     show_imu: bool = False
 
-    # Desired head orientation {"roll": , "pitch": } in the same gravity-aligned frame as
-    # the trunk IMU (radians). None (the default, from every input source except VR teleop)
-    # means "keep the head level" — see moves.walk.WalkMove's neck stabilization.
+    # Desired camera orientation in radians. Roll/pitch are gravity-aligned; yaw is
+    # relative to the trunk (the IMU has no stable absolute-yaw reference). None means
+    # "level and forward". VR teleop sends all three axes.
     head_orientation: dict[str, float] | None = None
+
+    # Hold the physical head-yaw joint at the trunk's forward direction. Kept as an
+    # explicit command instead of rewriting head_orientation["yaw"] at the PC so the
+    # robot-side safety/slew limiter owns every discontinuity.
+    head_yaw_front: bool = False
 
     # Whole-body leg tracking target, trunk-relative (meters): {"left": (dx,dy,dz),
     # "right": (dx,dy,dz)}. None means no target — the walking policy just walks/stands
@@ -40,9 +46,13 @@ def scale_velocity(velocity: dict[str, float]) -> dict[str, float]:
     source — keyboard, gamepad, or agent. Forward and backward have different caps, and
     rotation gets a wider range when turning in place (vx = vy = 0) than while translating.
     """
-    vx = max(-1.0, min(1.0, velocity.get("vx", 0.0)))
-    vy = max(-1.0, min(1.0, velocity.get("vy", 0.0)))
-    vtheta = max(-1.0, min(1.0, velocity.get("vtheta", 0.0)))
+    def finite_unit(name: str) -> float:
+        value = float(velocity.get(name, 0.0))
+        return max(-1.0, min(1.0, value)) if math.isfinite(value) else 0.0
+
+    vx = finite_unit("vx")
+    vy = finite_unit("vy")
+    vtheta = finite_unit("vtheta")
 
     moving = abs(vx) > 1e-6 or abs(vy) > 1e-6
     vtheta_max = VTHETA_MAX_MOVING if moving else VTHETA_MAX_STATIONARY
@@ -59,6 +69,15 @@ class InputSource(ABC):
 
     def stop(self) -> None:
         """Stop the input source and release resources."""
+
+    def set_motion_inhibited(self, inhibited: bool) -> None:
+        """Apply a robot-side safety interlock to motion-producing input.
+
+        Sources without a latched deadman may leave this as a no-op. Network input
+        overrides it so an IMU/fall safety event requires a fresh trigger release
+        after the interlock is removed.
+        """
+        _ = inhibited
 
     @abstractmethod
     def read(self) -> UserInput:

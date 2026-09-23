@@ -11,6 +11,7 @@ from robot_controller import RobotController
 from scheduler import Scheduler
 from input.input_source import InputSource
 from input.keyboard_input import KeyboardInputSource
+from moves.hmd_head import HmdHeadTrackingMove
 from moves.rotate_head import RotateHeadMove
 from moves.squat import SquatMove
 from moves.walk import WalkMove
@@ -38,9 +39,27 @@ GAMEPAD_BUTTON_MOVES = {"A": "walk"}
 def build_input_source() -> InputSource:
     """Use the gamepad when one is connected, otherwise fall back to the keyboard.
 
-    Override with MICROBAN_INPUT=keyboard|gamepad.
+    Override with MICROBAN_INPUT=keyboard|gamepad|network. Network mode listens for
+    the external VR bridge on MICROBAN_NETWORK_PORT (default 5555).
     """
     requested = os.environ.get("MICROBAN_INPUT", "auto").lower()
+
+    if requested == "network":
+        from input.network_input import NetworkInputSource
+
+        port = int(os.environ.get("MICROBAN_NETWORK_PORT", "5555"))
+        stale_after_s = float(os.environ.get("MICROBAN_NETWORK_STALE_S", "0.3"))
+        allowed_remote = os.environ.get("MICROBAN_NETWORK_ALLOWED_IP") or None
+        return NetworkInputSource(
+            port=port,
+            stale_after_s=stale_after_s,
+            allowed_remote=allowed_remote,
+        )
+
+    if requested not in ("auto", "keyboard", "gamepad"):
+        raise ValueError(
+            f"Unknown MICROBAN_INPUT={requested!r}; use auto, keyboard, gamepad, or network."
+        )
 
     if requested in ("auto", "gamepad"):
         from input.gamepad_input import GamepadInputSource, find_gamepad_path
@@ -81,13 +100,15 @@ def main() -> None:
 
     PID_FILE.write_text(f"{os.getpid()}\n", encoding="ascii")
 
-    controller = RobotController()
-    motor_ids = list(MOTOR_TO_ID.values())
-    controller.sync_write_torque_enable(motor_ids, [True] * len(motor_ids))
-    controller.sync_write_status_return_level(motor_ids, [1] * len(motor_ids))
-    controller.sync_write_kp(motor_ids, [KP_DEFAULT] * len(motor_ids))
-
+    controller: RobotController | None = None
+    scheduler: Scheduler | None = None
     try:
+        controller = RobotController()
+        motor_ids = list(MOTOR_TO_ID.values())
+        controller.sync_write_torque_enable(motor_ids, [True] * len(motor_ids))
+        controller.sync_write_status_return_level(motor_ids, [1] * len(motor_ids))
+        controller.sync_write_kp(motor_ids, [KP_DEFAULT] * len(motor_ids))
+
         ramp_to_neutral(controller)
 
         scheduler = Scheduler(
@@ -98,6 +119,7 @@ def main() -> None:
                 "head": RotateHeadMove(),
                 "squat": SquatMove(),
                 "walk": WalkMove(controller=controller),
+                "hmd_head": HmdHeadTrackingMove(),
             },
         )
 
@@ -114,6 +136,16 @@ def main() -> None:
         scheduler.run()
 
     finally:
+        # Scheduler.run() owns normal cleanup. Cover initialization/preload failures
+        # that happen after torque was enabled but before its finally block begins.
+        if controller is not None and (scheduler is None or not scheduler._cleanup_done):
+            try:
+                motor_ids = list(MOTOR_TO_ID.values())
+                controller.sync_write_torque_enable(motor_ids, [False] * len(motor_ids))
+            finally:
+                shutdown = getattr(controller, "shutdown", None)
+                if callable(shutdown):
+                    shutdown()
         if PID_FILE.exists():
             PID_FILE.unlink()
 

@@ -1,0 +1,23 @@
+[Unit]
+Description=Microban low-latency stereo MJPEG camera stream
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+Environment=CAMERA_DEVICE=/dev/video0
+Environment=CAMERA_FORMAT=MJPEG
+Environment=CAMERA_RESOLUTION=3200x1200
+Environment=CAMERA_FPS=30
+Environment=CAMERA_PORT=8080
+EnvironmentFile=-/etc/default/microban-camera
+ExecStart=/usr/bin/ustreamer --device=${CAMERA_DEVICE} --format=${CAMERA_FORMAT} --resolution=${CAMERA_RESOLUTION} --desired-fps=${CAMERA_FPS} --buffers=2 --host=0.0.0.0 --port=${CAMERA_PORT}
+Restart=on-failure
+RestartSec=2
+User=user
+SupplementaryGroups=video
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

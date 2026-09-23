@@ -1,4 +1,4 @@
-.PHONY: sync setup run stop shutdown voltage imu sim viewer gamepad-headless-enable gamepad-headless-disable
+.PHONY: sync setup run teleop-run camera-stream-enable stop shutdown voltage imu sim teleop-sim viewer gamepad-headless-enable gamepad-headless-disable
 
 HOST ?= microban
 ID ?=
@@ -27,6 +27,16 @@ viewer:
 
 run: sync
 	ssh -tt $(HOST) "bash -l -c 'cd microban && PYTHONPATH=src .venv/bin/python src/main.py'"
+
+# External-PC VR control: robot receives the deadman-gated UDP command stream.
+teleop-run: sync
+	ssh -tt $(HOST) "bash -l -c 'cd microban && MICROBAN_INPUT=network MICROBAN_NETWORK_ALLOWED_IP=\$${SSH_CONNECTION%% *} PYTHONPATH=src .venv/bin/python src/main.py'"
+
+teleop-sim:
+	PYTHONPATH=src uv run --group sim src/sim/sim_main.py --hz 50 --input network
+
+camera-stream-enable: sync
+	ssh -tt $(HOST) "bash -l -c 'cd microban && sudo bash systemd/install-camera-stream.sh'"
 
 stop:
 	ssh -tt $(HOST) "bash -l -c 'cd microban && PYTHONPATH=src .venv/bin/python src/stop.py'"

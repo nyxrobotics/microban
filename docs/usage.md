@@ -29,6 +29,9 @@ by default; add `HOST=microban-ext` to operate over the secondary network (see t
 | `make voltage ID=<id>` | Read the voltage of motor `<id>`. |
 | `make sim` | Run the MuJoCo simulation locally (no robot needed). |
 | `make viewer` | Open the MuJoCo viewer locally (no robot needed). |
+| `make teleop-run` | Run the robot with the external PICO/WebXR UDP input (see [Teleoperation](teleop.md)). |
+| `make teleop-sim` | Run MuJoCo with the same UDP input, for testing before hardware. |
+| `make camera-stream-enable` | Install/start the optional stereo MJPEG service after the camera is connected. |
 
 ## Running the robot
 

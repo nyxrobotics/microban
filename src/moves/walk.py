@@ -6,7 +6,7 @@ import math
 import onnxruntime as ort
 import numpy as np
 
-from constants import MOTOR_TO_ID, KP_DEFAULT, KP_RL, OBSERVATION_DOF_ORDER
+from constants import MOTOR_TO_ID, NEUTRAL_POSE, KP_DEFAULT, KP_RL, OBSERVATION_DOF_ORDER
 from controller import ControllerProtocol
 from observer import Observation
 from moves.move import MotorCommand, Move, MoveState
@@ -37,7 +37,11 @@ def _body_roll_pitch(body_quat: list[float]) -> tuple[float, float]:
 class WalkMove(Move):
     """Walk using a RL policy trained in simulation."""
 
-    def __init__(self, controller: ControllerProtocol | None = None) -> None:
+    def __init__(
+        self,
+        controller: ControllerProtocol | None = None,
+        neutral_return_duration_s: float = 0.8,
+    ) -> None:
         super().__init__()
         self._controller = controller
         self._last_action = [0.0] * len(OBSERVATION_DOF_ORDER)
@@ -52,6 +56,9 @@ class WalkMove(Move):
         # its action/observation space) — this is a separate proportional control law layered
         # on top; gain=1.0 is full cancellation of the extracted roll/pitch.
         self._neck_stabilize_gain = 1.0
+        self._neutral_return_duration_s = neutral_return_duration_s
+        self._stop_start_time_s: float | None = None
+        self._stop_start_angles: dict[str, float] = {}
 
         # Reference pose: read from ONNX metadata
         meta = self._ort_session.get_modelmeta().custom_metadata_map
@@ -116,8 +123,16 @@ class WalkMove(Move):
         
     def on_start(self, obs: Observation, command: MotorCommand) -> None:
         if self._controller is not None:
-            ids = list(MOTOR_TO_ID.values())
+            ids = [MOTOR_TO_ID[name] for name in OBSERVATION_DOF_ORDER]
             self._controller.sync_write_kp(ids, [KP_RL] * len(ids))
+        # The scheduler's base command is neutral. Hold the measured gait joints on
+        # the transition tick so enabling the policy cannot create a one-frame jump.
+        for name in OBSERVATION_DOF_ORDER:
+            command.target_angles[name] = obs.robot_state.motor_positions.get(
+                name, NEUTRAL_POSE[name]
+            )
+        self._stop_start_time_s = None
+        self._stop_start_angles = {}
         self.state = MoveState.ACTIVE
 
     def step(self, obs: Observation, command: MotorCommand) -> None:
@@ -131,6 +146,13 @@ class WalkMove(Move):
 
         # Safety check: if the robot is fallen, stop the policy
         if obs.robot_state.projected_gravity[2] > self._projected_gravity_z_threshold:
+            # Fall detection is debounced before GetupMove takes ownership. Hold the
+            # measured gait pose during that window instead of letting the scheduler's
+            # neutral base command create an instantaneous 18-joint jump.
+            for name in OBSERVATION_DOF_ORDER:
+                command.target_angles[name] = obs.robot_state.motor_positions.get(
+                    name, NEUTRAL_POSE[name]
+                )
             return
         
         # Run policy
@@ -194,10 +216,43 @@ class WalkMove(Move):
         return input_obs
 
     def on_stop(self, obs: Observation, command: MotorCommand) -> None:
-        if self._controller is not None:
-            ids = list(MOTOR_TO_ID.values())
-            self._controller.sync_write_kp(ids, [KP_DEFAULT] * len(ids))
-        self.state = MoveState.INACTIVE
+        if "getup" in obs.user_input.active_moves:
+            # Get-up is exclusive and owns both commands and gains. Do not finish the
+            # normal return later and raise KP halfway through fall recovery.
+            self._last_action = [0.0] * len(OBSERVATION_DOF_ORDER)
+            self._phase_step = 0
+            self._stop_start_time_s = None
+            self._stop_start_angles = {}
+            self.state = MoveState.INACTIVE
+            return
+
+        # Returning an arbitrary gait pose to neutral in a single 20 ms tick is unsafe,
+        # especially if KP is raised on that same tick. Keep the walking gain while the
+        # 18 policy joints follow a smoothstep trajectory, then restore the normal gain.
+        if self._stop_start_time_s is None:
+            self._stop_start_time_s = obs.robot_state.time_s
+            self._stop_start_angles = {
+                name: obs.robot_state.motor_positions.get(name, NEUTRAL_POSE[name])
+                for name in OBSERVATION_DOF_ORDER
+            }
+
+        elapsed = max(0.0, obs.robot_state.time_s - self._stop_start_time_s)
+        duration = max(1e-6, self._neutral_return_duration_s)
+        u = min(1.0, elapsed / duration)
+        blend = u * u * (3.0 - 2.0 * u)
+        for name in OBSERVATION_DOF_ORDER:
+            start = self._stop_start_angles[name]
+            command.target_angles[name] = start + (NEUTRAL_POSE[name] - start) * blend
+
+        if u >= 1.0:
+            if self._controller is not None:
+                ids = [MOTOR_TO_ID[name] for name in OBSERVATION_DOF_ORDER]
+                self._controller.sync_write_kp(ids, [KP_DEFAULT] * len(ids))
+            self._last_action = [0.0] * len(OBSERVATION_DOF_ORDER)
+            self._phase_step = 0
+            self._stop_start_time_s = None
+            self._stop_start_angles = {}
+            self.state = MoveState.INACTIVE
 
         # Save json logs
         if LOGGING:
@@ -207,3 +262,11 @@ class WalkMove(Move):
                     "position": self.position,
                     "voltage": self.voltage,
                 }, f, indent=4)
+
+    def on_safety_resume(self, obs: Observation) -> None:
+        # If a safety hold interrupted a normal STOPPING transition, its wall-clock
+        # interpolation is now stale. Restart it from the newly measured pose. ACTIVE
+        # walking will be disarmed by NetworkInputSource and enter this fresh stop path.
+        _ = obs
+        self._stop_start_time_s = None
+        self._stop_start_angles = {}

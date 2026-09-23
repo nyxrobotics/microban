@@ -49,3 +49,12 @@ class Move(ABC):
         """Called each tick while state is STOPPING.
         Must set self.state = MoveState.INACTIVE when the transition is done."""
         self.state = MoveState.INACTIVE
+
+    def on_safety_resume(self, obs: Observation) -> None:
+        """Resynchronize private transition state after a scheduler safety hold.
+
+        A safety hold deliberately skips normal move callbacks. Stateful moves may
+        override this to discard stale interpolation/policy history before dispatch
+        resumes; the lifecycle state itself is preserved.
+        """
+        _ = obs
