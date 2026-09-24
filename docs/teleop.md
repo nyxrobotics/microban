@@ -50,7 +50,30 @@ PYTHONPATH=src .venv/bin/python src/main.py
 
 ## カメラ
 
-USBステレオカメラ接続後:
+USBステレオカメラ接続後、2通りの配信方法があります。どちらも同じUSBカメラを排他利用するので
+同時には動かせません。**デフォルトはH264/UDP(ハードウェアエンコード)を使ってください**。MJPEG/HTTP
+はブラウザで手軽に確認したい場合向けに残しています。
+
+### H264/UDP (`camera-stream-udp`, デフォルト・低遅延・高fps)
+
+```bash
+sudo apt-get install -y ffmpeg  # ロボット側、初回のみ
+make camera-stream-udp
+```
+
+Piの`camera-stream-enable`サービスは事前に止めてください(`ssh microban sudo systemctl stop microban-camera`)。
+実行したマシンのIPを自動検出し(`teleop-run`と同じ`SSH_CONNECTION`の仕組み)、GPUハードウェアH264エンコード
+(`/dev/video11`, bcm2835-codec-encode)でエンコードしたMJPEG→H264をUDP/MPEG-TSでそのマシンへ直接送ります。
+1280x480で実測ほぼフル60fps(MJPEG/HTTPの32fpsに対して大幅に高い)。受信・表示は同じマシンから別ターミナルで:
+
+```bash
+make camera-view-udp
+```
+
+止めるときは必ずCtrl+C(SIGINT)で。`kill -9`で強制終了すると`/dev/video11`(GPUのH264エンコーダ)が
+再初期化できなくなることがあり、その場合はPiの再起動が必要です。
+
+### MJPEG/HTTP (`camera-stream-enable`, ブラウザで手軽に見たいとき用)
 
 ```bash
 make camera-stream-enable
@@ -58,5 +81,7 @@ make camera-stream-enable
 
 systemd unitは`http://microban:8080/stream`でMJPEGを公開します。設定はロボット側の
 `/etc/default/microban-camera`です。カメラ未接続の状態でこのinstall targetを実行しないでください。
+ブラウザ等どこからでも見れますが、Pi Zero 2Wの2.4GHz WiFi帯域に対してMJPEGは1フレームが大きすぎて、
+1280x480でも実測32fps程度が上限です。
 
 詳細は `../microban_teleop/docs/pico4ultra_webxr.md` を参照してください。

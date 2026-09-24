@@ -1,7 +1,12 @@
-.PHONY: sync setup run teleop-run camera-stream-enable stop shutdown voltage imu sim teleop-sim viewer gamepad-headless-enable gamepad-headless-disable
+.PHONY: sync setup run teleop-run camera-stream-enable camera-stream-udp camera-view-udp stop shutdown voltage imu sim teleop-sim viewer gamepad-headless-enable gamepad-headless-disable
 
 HOST ?= microban
 ID ?=
+CAMERA_UDP_PORT ?= 5000
+CAMERA_UDP_DEVICE ?= /dev/v4l/by-id/usb-3D_USB_Camera_3D_USB_Camera_01.00.00-video-index0
+CAMERA_UDP_RESOLUTION ?= 1280x480
+CAMERA_UDP_FPS ?= 60
+CAMERA_UDP_BITRATE ?= 4M
 
 sync:
 	rsync -avz \
@@ -35,8 +40,26 @@ teleop-run: sync
 teleop-sim:
 	PYTHONPATH=src uv run --group sim src/sim/sim_main.py --hz 50 --input network
 
+# Default camera stream: GPU-hardware H264 encode (bcm2835-codec /dev/video11) over
+# UDP/MPEG-TS to whichever machine runs this target (same SSH_CONNECTION trick as
+# teleop-run). Needs ffmpeg on the Pi (sudo apt-get install -y ffmpeg) and exclusive access
+# to the camera, so stop camera-stream-enable first (they share the same USB device).
+# Measured ~60fps at 1280x480 vs ~32fps for camera-stream-enable's MJPEG/HTTP stream, because
+# H264 needs far less bandwidth per frame over the robot's 2.4GHz WiFi link. Always stop this
+# with Ctrl+C (SIGINT), not kill -9: force-killing it can wedge /dev/video11 and require
+# rebooting the Pi to recover.
+camera-stream-udp: sync
+	ssh -tt $(HOST) "bash -l -c 'cd microban && ffmpeg -f v4l2 -input_format mjpeg -video_size $(CAMERA_UDP_RESOLUTION) -framerate $(CAMERA_UDP_FPS) -i $(CAMERA_UDP_DEVICE) -vf format=yuv420p -c:v h264_v4l2m2m -b:v $(CAMERA_UDP_BITRATE) -f mpegts udp://\$${SSH_CONNECTION%% *}:$(CAMERA_UDP_PORT)?pkt_size=1316'"
+
+# Alternative: plain MJPEG/HTTP relay (no hardware encode), viewable from any browser at
+# http://microban:8080/stream. Lower fps (~32 at 1280x480) than camera-stream-udp; kept for
+# quick ad-hoc checks.
 camera-stream-enable: sync
 	ssh -tt $(HOST) "bash -l -c 'cd microban && sudo bash systemd/install-camera-stream.sh'"
+
+# View the camera-stream-udp output on this machine.
+camera-view-udp:
+	ffplay -fflags nobuffer -flags low_delay "udp://@:$(CAMERA_UDP_PORT)?pkt_size=1316"
 
 stop:
 	ssh -tt $(HOST) "bash -l -c 'cd microban && PYTHONPATH=src .venv/bin/python src/stop.py'"
