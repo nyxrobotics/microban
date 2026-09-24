@@ -36,7 +36,17 @@ from observer import Observation
 
 AGENT_NAME = "pico_teleop.onnx"
 EXPECTED_POLICY_TYPE = "microban_pico_hybrid_teleop"
-EXPECTED_TRAINING_CONTRACT_VERSION = "7"
+EXPECTED_TRAINING_CONTRACT_VERSION = "8"
+# Keep the recipe in one deployment-side constant: a deliberately promoted
+# training recipe then requires one reviewed line change here.  It must match
+# the exporter exactly; accepting a different marker would attach current
+# runtime semantics to weights trained under another reward/config recipe.
+EXPECTED_ACTOR_INITIALIZATION = (
+    "clean_random_except_inward_shoulder_roll_v1_nonshoulder_std_1_v1"
+)
+EXPECTED_RECIPE_REVISION = (
+    "v8g_clean_shoulder_std1_intermediate_commands_tracking_l1x2_v1"
+)
 EXPECTED_SCHEMA_VERSION = "2"
 EXPECTED_PREVIOUS_ACTION_SEMANTICS = (
     "effective_action_after_absolute_target_soft_clip_in_raw_delta_coordinates"
@@ -51,9 +61,9 @@ EXPECTED_ACTOR_DEFAULT_INTERIOR_EPSILON_RAD = 1.0e-4
 EXPECTED_ACTOR_LATENT_OPERATIONAL_SCALE_MULTIPLIER = 1024.0
 EXPECTED_ACTOR_LATENT_OPERATIONAL_ABS_MAX = 32.0
 EXPECTED_ACTOR_LATENT_MEAN_FRACTION = 3.0 / 8.0
-EXPECTED_ACTOR_LATENT_STD_MIN_ABS_MAX = 0.01
+EXPECTED_ACTOR_LATENT_STD_MIN_ABS_MAX = 0.025
 EXPECTED_ACTOR_LATENT_STD_MIN_ENVELOPE_DIVISOR = 64.0
-EXPECTED_ACTOR_LATENT_STD_ABS_MAX = 0.15
+EXPECTED_ACTOR_LATENT_STD_ABS_MAX = 1.0
 EXPECTED_ACTOR_LATENT_STD_ENVELOPE_DIVISOR = 16.0
 # MjLab applies the soft-limit factor and action offset in float32 after MuJoCo
 # has resolved the XML.  Reassociating those operations from Microban's already
@@ -80,6 +90,17 @@ EXPECTED_ONNX_PARITY_SEED = 20260924
 EXPECTED_ONNX_PARITY_SAMPLE_COUNT = 16
 EXPECTED_ONNX_PARITY_ATOL = 1e-5
 EXPECTED_ONNX_PARITY_RTOL = 1e-4
+EXPECTED_TRAINING_PROVENANCE_SCHEMA_VERSION = 1
+EXPECTED_TRAINING_PROVENANCE_MODE = "canonical_v8_stage"
+EXPECTED_FINAL_TRAINING_STAGE_START_BOUNDARY = 18_000
+EXPECTED_FINAL_TRAINING_STAGE_TARGET_BOUNDARY = 20_000
+EXPECTED_ACCEPTANCE_RECEIPT_SCHEMA_VERSION = 3
+EXPECTED_ACCEPTANCE_EVALUATOR_REVISION = (
+    "microban_teleop_deterministic_evaluator_v8_1"
+)
+EXPECTED_ACCEPTANCE_REVISION = "microban_teleop_acceptance_v8_1"
+EXPECTED_ACCEPTANCE_NOMINAL_REPORT_COUNT = 3
+EXPECTED_ACCEPTANCE_MOVING_HMD_REPORT_COUNT = 3
 
 _CHECKPOINT_FILENAME_RE = re.compile(r"model_(0|[1-9][0-9]*)\.pt\Z")
 _CHECKPOINT_SHA256_RE = re.compile(r"[0-9a-f]{64}\Z")
@@ -143,7 +164,7 @@ def _derive_expected_action_bound_contract() -> tuple[
     tuple[float, ...],
     tuple[float, ...],
 ]:
-    """Independently derive v7 raw and guarded actor bounds.
+    """Independently derive the current raw and guarded actor bounds.
 
     MjLab resolves the robot defaults, soft limits and action parameters as
     float32 tensors before exporting the four full-precision JSON vectors.  Do
@@ -197,7 +218,7 @@ def _derive_expected_action_bound_contract() -> tuple[
             strict=True,
         )
     ):
-        raise RuntimeError("compiled-in v7 actor bounds are not strictly guarded")
+        raise RuntimeError("compiled-in actor bounds are not strictly guarded")
     return contract
 
 
@@ -217,7 +238,7 @@ def _derive_expected_latent_envelope_contract() -> tuple[
     tuple[float, ...],
     tuple[float, ...],
 ]:
-    """Independently derive v7's finite PPO-latent operating envelope.
+    """Independently derive the current finite PPO-latent operating envelope.
 
     Training performs these operations on float32 actor-bound tensors.  Keep
     the same precision here so the robot validates the declared scalar
@@ -270,7 +291,7 @@ def _derive_expected_latent_envelope_contract() -> tuple[
             strict=True,
         )
     ):
-        raise RuntimeError("compiled-in v7 latent envelope is inconsistent")
+        raise RuntimeError("compiled-in latent envelope is inconsistent")
     return contract
 
 
@@ -337,7 +358,7 @@ if not all(
         strict=True,
     )
 ):
-    raise RuntimeError("compiled-in v7 deterministic transform envelope is unsafe")
+    raise RuntimeError("compiled-in deterministic transform envelope is unsafe")
 
 # These ranges are the command support used by Mjlab-Teleop-Microban.  The
 # exporter also records them in the policy metadata; these constants are only
@@ -455,7 +476,7 @@ def _require_tight_json_vector(
         None,
     )
     raise PicoHybridPolicyContractError(
-        f"{name} does not match the independently derived Microban v7 contract"
+        f"{name} does not match the independently derived Microban contract"
         + (
             ""
             if mismatch is None
@@ -479,7 +500,7 @@ def _require_exact_finite_scalar(
         raise PicoHybridPolicyContractError(f"{name} must be numeric") from exc
     if not math.isfinite(actual) or actual != expected:
         raise PicoHybridPolicyContractError(
-            f"{name} does not match the fixed Microban v7 contract"
+            f"{name} does not match the fixed Microban contract"
         )
 
 
@@ -489,6 +510,15 @@ def _canonical_nonnegative_int(value: str | None, name: str) -> int:
             f"{name} must be a canonical non-negative integer"
         )
     return int(value)
+
+
+def _require_lowercase_sha256(metadata: Mapping[str, str], name: str) -> str:
+    value = metadata.get(name, "")
+    if _CHECKPOINT_SHA256_RE.fullmatch(value) is None:
+        raise PicoHybridPolicyContractError(
+            f"{name} must be 64 lowercase hexadecimal characters"
+        )
+    return value
 
 
 def _require_gated_export_provenance(
@@ -562,12 +592,147 @@ def _require_gated_export_provenance(
             "checkpoint_completed_updates must equal checkpoint_iteration + 1"
         )
 
-    checkpoint_sha256 = metadata.get("checkpoint_sha256", "")
-    if _CHECKPOINT_SHA256_RE.fullmatch(checkpoint_sha256) is None:
-        raise PicoHybridPolicyContractError(
-            "checkpoint_sha256 must be 64 lowercase hexadecimal characters"
-        )
+    checkpoint_sha256 = _require_lowercase_sha256(metadata, "checkpoint_sha256")
     return filename, iteration, completed_updates, checkpoint_sha256
+
+
+def _require_final_deployment_provenance(
+    metadata: Mapping[str, str],
+    *,
+    checkpoint_iteration: int,
+    checkpoint_completed_updates: int,
+    checkpoint_sha256: str,
+) -> tuple[str, str, str, str]:
+    """Require a canonical final-stage checkpoint and its schema-3 pass receipt.
+
+    Diagnostic and automatic exports deliberately carry
+    ``deployment_accepted=false``.  The robot must never infer deployability
+    merely from a v8 recipe label or a final-looking checkpoint filename.
+    """
+
+    schema_version = _canonical_nonnegative_int(
+        metadata.get("training_provenance_schema_version"),
+        "training_provenance_schema_version",
+    )
+    if schema_version != EXPECTED_TRAINING_PROVENANCE_SCHEMA_VERSION:
+        raise PicoHybridPolicyContractError(
+            "unsupported training provenance schema version"
+        )
+    training_sha256 = _require_lowercase_sha256(
+        metadata, "training_provenance_sha256"
+    )
+    source_tree_sha256 = _require_lowercase_sha256(
+        metadata, "training_source_tree_sha256"
+    )
+    if metadata.get("training_recipe_revision") != EXPECTED_RECIPE_REVISION:
+        raise PicoHybridPolicyContractError(
+            "training provenance recipe revision does not match deployment"
+        )
+    if metadata.get("training_actor_initialization") != EXPECTED_ACTOR_INITIALIZATION:
+        raise PicoHybridPolicyContractError(
+            "training provenance actor initialization does not match deployment"
+        )
+    if metadata.get("training_provenance_mode") != EXPECTED_TRAINING_PROVENANCE_MODE:
+        raise PicoHybridPolicyContractError(
+            "training provenance is not from the canonical v8 stage driver"
+        )
+    if metadata.get("canonical_training_stage") != "true":
+        raise PicoHybridPolicyContractError(
+            "canonical_training_stage metadata must be true"
+        )
+
+    stage_start = _canonical_nonnegative_int(
+        metadata.get("training_stage_start_boundary"),
+        "training_stage_start_boundary",
+    )
+    stage_target = _canonical_nonnegative_int(
+        metadata.get("training_stage_target_boundary"),
+        "training_stage_target_boundary",
+    )
+    if (
+        stage_start != EXPECTED_FINAL_TRAINING_STAGE_START_BOUNDARY
+        or stage_target != EXPECTED_FINAL_TRAINING_STAGE_TARGET_BOUNDARY
+    ):
+        raise PicoHybridPolicyContractError(
+            "deployment requires canonical training stage 18000->20000"
+        )
+    if (
+        checkpoint_iteration != stage_target - 1
+        or checkpoint_completed_updates != stage_target
+    ):
+        raise PicoHybridPolicyContractError(
+            "deployment checkpoint identity does not match the final stage boundary"
+        )
+    _require_lowercase_sha256(metadata, "training_parent_checkpoint_sha256")
+    _require_lowercase_sha256(metadata, "training_parent_gate_sha256")
+
+    if metadata.get("deployment_accepted") != "true":
+        raise PicoHybridPolicyContractError("deployment_accepted metadata must be true")
+    receipt_schema = _canonical_nonnegative_int(
+        metadata.get("acceptance_receipt_schema_version"),
+        "acceptance_receipt_schema_version",
+    )
+    if receipt_schema != EXPECTED_ACCEPTANCE_RECEIPT_SCHEMA_VERSION:
+        raise PicoHybridPolicyContractError(
+            "unsupported acceptance receipt schema version"
+        )
+    receipt_sha256 = _require_lowercase_sha256(
+        metadata, "acceptance_receipt_sha256"
+    )
+    if metadata.get("acceptance_status") != "pass":
+        raise PicoHybridPolicyContractError("acceptance_status metadata must be pass")
+    acceptance_boundary = _canonical_nonnegative_int(
+        metadata.get("acceptance_boundary"), "acceptance_boundary"
+    )
+    if acceptance_boundary != stage_target:
+        raise PicoHybridPolicyContractError(
+            "acceptance boundary does not match the final training stage"
+        )
+    if (
+        metadata.get("acceptance_evaluator_revision")
+        != EXPECTED_ACCEPTANCE_EVALUATOR_REVISION
+    ):
+        raise PicoHybridPolicyContractError(
+            "unsupported acceptance evaluator revision"
+        )
+    if metadata.get("acceptance_revision") != EXPECTED_ACCEPTANCE_REVISION:
+        raise PicoHybridPolicyContractError("unsupported acceptance revision")
+    evaluator_source_sha256 = _require_lowercase_sha256(
+        metadata, "acceptance_evaluator_source_sha256"
+    )
+    if metadata.get("acceptance_checkpoint_sha256") != checkpoint_sha256:
+        raise PicoHybridPolicyContractError(
+            "acceptance receipt checkpoint SHA-256 does not match the ONNX checkpoint"
+        )
+    if metadata.get("acceptance_training_provenance_sha256") != training_sha256:
+        raise PicoHybridPolicyContractError(
+            "acceptance receipt training provenance SHA-256 does not match"
+        )
+    if metadata.get("acceptance_recipe_revision") != EXPECTED_RECIPE_REVISION:
+        raise PicoHybridPolicyContractError(
+            "acceptance receipt recipe revision does not match deployment"
+        )
+    nominal_reports = _canonical_nonnegative_int(
+        metadata.get("acceptance_nominal_report_count"),
+        "acceptance_nominal_report_count",
+    )
+    moving_hmd_reports = _canonical_nonnegative_int(
+        metadata.get("acceptance_moving_hmd_report_count"),
+        "acceptance_moving_hmd_report_count",
+    )
+    if (
+        nominal_reports != EXPECTED_ACCEPTANCE_NOMINAL_REPORT_COUNT
+        or moving_hmd_reports != EXPECTED_ACCEPTANCE_MOVING_HMD_REPORT_COUNT
+    ):
+        raise PicoHybridPolicyContractError(
+            "final acceptance must contain three nominal and three moving-HMD reports"
+        )
+    return (
+        training_sha256,
+        source_tree_sha256,
+        receipt_sha256,
+        evaluator_source_sha256,
+    )
 
 
 def onnxruntime_compatibility_smoke_inputs() -> np.ndarray:
@@ -709,7 +874,7 @@ def validate_onnxruntime_compatibility(
             np.all(output[0] >= output_lower) and np.all(output[0] <= output_upper)
         ):
             raise PicoHybridPolicyRuntimeError(
-                "ONNX Runtime compatibility smoke output escaped the v7 "
+                "ONNX Runtime compatibility smoke output escaped the current "
                 f"deterministic transform envelope at sample {sample_index}"
             )
     return len(observations)
@@ -833,6 +998,10 @@ class _PolicyContract:
     checkpoint_iteration: int
     checkpoint_completed_updates: int
     checkpoint_sha256: str
+    training_provenance_sha256: str
+    training_source_tree_sha256: str
+    acceptance_receipt_sha256: str
+    acceptance_evaluator_source_sha256: str
 
 
 def _parse_contract(session: Any) -> _PolicyContract:
@@ -863,6 +1032,28 @@ def _parse_contract(session: Any) -> _PolicyContract:
         raise PicoHybridPolicyContractError(
             "unsupported or missing Microban teleop training contract version"
         )
+    if (
+        metadata.get("microban_teleop_actor_initialization")
+        != EXPECTED_ACTOR_INITIALIZATION
+    ):
+        raise PicoHybridPolicyContractError(
+            "unsupported or missing Microban teleop actor initialization"
+        )
+    if metadata.get("microban_teleop_recipe_revision") != EXPECTED_RECIPE_REVISION:
+        raise PicoHybridPolicyContractError(
+            "unsupported or missing Microban teleop recipe revision"
+        )
+    (
+        training_provenance_sha256,
+        training_source_tree_sha256,
+        acceptance_receipt_sha256,
+        acceptance_evaluator_source_sha256,
+    ) = _require_final_deployment_provenance(
+        metadata,
+        checkpoint_iteration=checkpoint_iteration,
+        checkpoint_completed_updates=checkpoint_completed_updates,
+        checkpoint_sha256=checkpoint_sha256,
+    )
     if metadata.get("observation_schema_version") != EXPECTED_SCHEMA_VERSION:
         raise PicoHybridPolicyContractError("unsupported observation schema version")
     if metadata.get("base_ang_vel_frame") != "robot_body_xyz":
@@ -1151,6 +1342,12 @@ def _parse_contract(session: Any) -> _PolicyContract:
         checkpoint_iteration=checkpoint_iteration,
         checkpoint_completed_updates=checkpoint_completed_updates,
         checkpoint_sha256=checkpoint_sha256,
+        training_provenance_sha256=training_provenance_sha256,
+        training_source_tree_sha256=training_source_tree_sha256,
+        acceptance_receipt_sha256=acceptance_receipt_sha256,
+        acceptance_evaluator_source_sha256=(
+            acceptance_evaluator_source_sha256
+        ),
     )
 
 
@@ -1383,7 +1580,7 @@ class PicoHybridMove(Move):
                 <= EXPECTED_DETERMINISTIC_RAW_ACTION_UPPER[index]
             ):
                 raise PicoHybridPolicyRuntimeError(
-                    "policy output escaped the v7 deterministic transform "
+                    "policy output escaped the current deterministic transform "
                     f"envelope for {name}"
                 )
             target = (

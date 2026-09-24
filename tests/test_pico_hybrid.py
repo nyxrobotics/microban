@@ -20,6 +20,7 @@ from moves.pico_hybrid import (
     EXPECTED_ACTION_DISTRIBUTION_SEMANTICS,
     EXPECTED_ACTION_SCALE,
     EXPECTED_ACTOR_DEFAULT_INTERIOR_EPSILON_RAD,
+    EXPECTED_ACTOR_INITIALIZATION,
     EXPECTED_ACTOR_LATENT_MAX_STD,
     EXPECTED_ACTOR_LATENT_MEAN_FRACTION,
     EXPECTED_ACTOR_LATENT_MEAN_LOWER,
@@ -42,6 +43,7 @@ from moves.pico_hybrid import (
     EXPECTED_PREVIOUS_ACTION_SEMANTICS,
     EXPECTED_RAW_ACTION_SOFT_LOWER,
     EXPECTED_RAW_ACTION_SOFT_UPPER,
+    EXPECTED_RECIPE_REVISION,
     EXPECTED_SIMULTANEOUS_BOTH_FEET_TARGET_LOWER,
     EXPECTED_SIMULTANEOUS_BOTH_FEET_TARGET_SEMANTICS,
     EXPECTED_SIMULTANEOUS_BOTH_FEET_TARGET_UPPER,
@@ -104,13 +106,39 @@ def valid_metadata():
     observation_defaults = [NEUTRAL_POSE[name] for name in OBSERVATION_JOINTS]
     return {
         "policy_type": "microban_pico_hybrid_teleop",
-        "checkpoint_filename": "model_14999.pt",
-        "checkpoint_iteration": "14999",
+        "checkpoint_filename": "model_19999.pt",
+        "checkpoint_iteration": "19999",
         "checkpoint_iteration_semantics": (
             "zero_based_completed_update_index_from_model_filename"
         ),
-        "checkpoint_completed_updates": "15000",
+        "checkpoint_completed_updates": "20000",
         "checkpoint_sha256": "0123456789abcdef" * 4,
+        "training_provenance_schema_version": "1",
+        "training_provenance_sha256": "1" * 64,
+        "training_source_tree_sha256": "2" * 64,
+        "training_recipe_revision": EXPECTED_RECIPE_REVISION,
+        "training_actor_initialization": EXPECTED_ACTOR_INITIALIZATION,
+        "training_provenance_mode": "canonical_v8_stage",
+        "canonical_training_stage": "true",
+        "training_stage_start_boundary": "18000",
+        "training_stage_target_boundary": "20000",
+        "training_parent_checkpoint_sha256": "3" * 64,
+        "training_parent_gate_sha256": "4" * 64,
+        "deployment_accepted": "true",
+        "acceptance_receipt_schema_version": "3",
+        "acceptance_receipt_sha256": "5" * 64,
+        "acceptance_status": "pass",
+        "acceptance_boundary": "20000",
+        "acceptance_evaluator_revision": (
+            "microban_teleop_deterministic_evaluator_v8_1"
+        ),
+        "acceptance_revision": "microban_teleop_acceptance_v8_1",
+        "acceptance_evaluator_source_sha256": "6" * 64,
+        "acceptance_checkpoint_sha256": "0123456789abcdef" * 4,
+        "acceptance_training_provenance_sha256": "1" * 64,
+        "acceptance_recipe_revision": EXPECTED_RECIPE_REVISION,
+        "acceptance_nominal_report_count": "3",
+        "acceptance_moving_hmd_report_count": "3",
         "onnx_parity_gate_version": "1",
         "onnx_parity_verified": "true",
         "onnx_parity_runtime": "onnx.reference.ReferenceEvaluator",
@@ -118,7 +146,9 @@ def valid_metadata():
         "onnx_parity_sample_count": "16",
         "onnx_parity_atol": "1e-05",
         "onnx_parity_rtol": "0.0001",
-        "microban_teleop_training_contract_version": "7",
+        "microban_teleop_training_contract_version": "8",
+        "microban_teleop_actor_initialization": EXPECTED_ACTOR_INITIALIZATION,
+        "microban_teleop_recipe_revision": EXPECTED_RECIPE_REVISION,
         "observation_schema_version": "2",
         "base_ang_vel_frame": "robot_body_xyz",
         "base_ang_vel_units": "rad_s",
@@ -309,7 +339,7 @@ class PicoHybridMoveTest(unittest.TestCase):
                     "obs",
                 )
 
-    def test_onnxruntime_compatibility_requires_v7_transform_envelope(self):
+    def test_onnxruntime_compatibility_requires_current_transform_envelope(self):
         output = np.zeros((1, 18), dtype=np.float64)
         output[0, 0] = (
             EXPECTED_DETERMINISTIC_RAW_ACTION_UPPER[0]
@@ -320,7 +350,7 @@ class PicoHybridMoveTest(unittest.TestCase):
         ):
             validate_onnxruntime_compatibility(FakeSession(output=output), "obs")
 
-    def test_v7_latent_envelope_is_finite_nested_and_has_ten_sigma_margin(self):
+    def test_v8_latent_envelope_is_finite_nested_and_has_ten_sigma_margin(self):
         vectors = (
             EXPECTED_ACTOR_LATENT_OPERATIONAL_LOWER,
             EXPECTED_ACTOR_LATENT_OPERATIONAL_UPPER,
@@ -368,12 +398,27 @@ class PicoHybridMoveTest(unittest.TestCase):
 
     def test_contract_accepts_and_exposes_gated_export_provenance(self):
         move = PicoHybridMove(session=FakeSession())
-        self.assertEqual(move._contract.checkpoint_filename, "model_14999.pt")
-        self.assertEqual(move._contract.checkpoint_iteration, 14999)
-        self.assertEqual(move._contract.checkpoint_completed_updates, 15000)
+        self.assertEqual(move._contract.checkpoint_filename, "model_19999.pt")
+        self.assertEqual(move._contract.checkpoint_iteration, 19999)
+        self.assertEqual(move._contract.checkpoint_completed_updates, 20000)
         self.assertEqual(
             move._contract.checkpoint_sha256,
             "0123456789abcdef" * 4,
+        )
+        self.assertEqual(
+            valid_metadata()["microban_teleop_actor_initialization"],
+            EXPECTED_ACTOR_INITIALIZATION,
+        )
+        self.assertEqual(
+            valid_metadata()["microban_teleop_recipe_revision"],
+            EXPECTED_RECIPE_REVISION,
+        )
+        self.assertEqual(move._contract.training_provenance_sha256, "1" * 64)
+        self.assertEqual(move._contract.training_source_tree_sha256, "2" * 64)
+        self.assertEqual(move._contract.acceptance_receipt_sha256, "5" * 64)
+        self.assertEqual(
+            move._contract.acceptance_evaluator_source_sha256,
+            "6" * 64,
         )
 
     def test_contract_rejects_missing_or_inconsistent_export_gate_metadata(self):
@@ -412,7 +457,7 @@ class PicoHybridMoveTest(unittest.TestCase):
         with self.assertRaises(PicoHybridPolicyContractError):
             PicoHybridMove(session=FakeSession(metadata=metadata))
 
-    def test_contract_rejects_v1_through_v6_or_missing_effective_action_contract(self):
+    def test_contract_rejects_v1_through_v7_or_missing_effective_action_contract(self):
         mutations = {
             "missing_training_contract": (
                 "microban_teleop_training_contract_version",
@@ -442,6 +487,10 @@ class PicoHybridMoveTest(unittest.TestCase):
                 "microban_teleop_training_contract_version",
                 "6",
             ),
+            "v7_training_contract": (
+                "microban_teleop_training_contract_version",
+                "7",
+            ),
             "v1_schema": ("observation_schema_version", "1"),
             "v1_raw_previous_action": (
                 "previous_action_semantics",
@@ -457,6 +506,155 @@ class PicoHybridMoveTest(unittest.TestCase):
                     metadata[field] = value
                 with self.assertRaises(PicoHybridPolicyContractError):
                     PicoHybridMove(session=FakeSession(metadata=metadata))
+
+    def test_contract_requires_exact_v8_actor_and_recipe_provenance(self):
+        mutations = {
+            "missing_actor_initialization": (
+                "microban_teleop_actor_initialization",
+                None,
+            ),
+            "legacy_actor_initialization": (
+                "microban_teleop_actor_initialization",
+                "velocity_actor_bootstrap_v3_guarded_shoulder_roll_head_v1",
+            ),
+            "missing_recipe_revision": ("microban_teleop_recipe_revision", None),
+            "different_recipe_revision": (
+                "microban_teleop_recipe_revision",
+                "v8f_clean_shoulder_std1_intermediate_initial_commands_v1",
+            ),
+        }
+        for case, (field, value) in mutations.items():
+            with self.subTest(case=case):
+                metadata = valid_metadata()
+                if value is None:
+                    del metadata[field]
+                else:
+                    metadata[field] = value
+                with self.assertRaises(PicoHybridPolicyContractError):
+                    PicoHybridMove(session=FakeSession(metadata=metadata))
+
+    def test_contract_requires_final_canonical_training_and_acceptance(self):
+        required_fields = (
+            "training_provenance_schema_version",
+            "training_provenance_sha256",
+            "training_source_tree_sha256",
+            "training_recipe_revision",
+            "training_actor_initialization",
+            "training_provenance_mode",
+            "canonical_training_stage",
+            "training_stage_start_boundary",
+            "training_stage_target_boundary",
+            "training_parent_checkpoint_sha256",
+            "training_parent_gate_sha256",
+            "deployment_accepted",
+            "acceptance_receipt_schema_version",
+            "acceptance_receipt_sha256",
+            "acceptance_status",
+            "acceptance_boundary",
+            "acceptance_evaluator_revision",
+            "acceptance_revision",
+            "acceptance_evaluator_source_sha256",
+            "acceptance_checkpoint_sha256",
+            "acceptance_training_provenance_sha256",
+            "acceptance_recipe_revision",
+            "acceptance_nominal_report_count",
+            "acceptance_moving_hmd_report_count",
+        )
+        for field in required_fields:
+            with self.subTest(field=field, mutation="missing"):
+                metadata = valid_metadata()
+                del metadata[field]
+                with self.assertRaises(PicoHybridPolicyContractError):
+                    PicoHybridMove(session=FakeSession(metadata=metadata))
+
+        mutations = {
+            "missing_training_schema": ("training_provenance_schema_version", None),
+            "wrong_training_schema": ("training_provenance_schema_version", "2"),
+            "noncanonical_training_schema": (
+                "training_provenance_schema_version",
+                "01",
+            ),
+            "missing_training_digest": ("training_provenance_sha256", None),
+            "uppercase_training_digest": ("training_provenance_sha256", "A" * 64),
+            "missing_source_digest": ("training_source_tree_sha256", None),
+            "short_source_digest": ("training_source_tree_sha256", "a" * 63),
+            "wrong_training_recipe": (
+                "training_recipe_revision",
+                "v8f_clean_shoulder_std1_intermediate_initial_commands_v1",
+            ),
+            "wrong_training_initialization": (
+                "training_actor_initialization",
+                "velocity_actor_bootstrap",
+            ),
+            "generic_training": ("training_provenance_mode", "generic"),
+            "noncanonical_training": ("canonical_training_stage", "false"),
+            "wrong_stage_start": ("training_stage_start_boundary", "16000"),
+            "wrong_stage_target": ("training_stage_target_boundary", "18000"),
+            "missing_parent_checkpoint": (
+                "training_parent_checkpoint_sha256",
+                None,
+            ),
+            "missing_parent_gate": ("training_parent_gate_sha256", None),
+            "not_accepted": ("deployment_accepted", "false"),
+            "missing_receipt_schema": ("acceptance_receipt_schema_version", None),
+            "old_receipt_schema": ("acceptance_receipt_schema_version", "2"),
+            "missing_receipt_digest": ("acceptance_receipt_sha256", None),
+            "uppercase_receipt_digest": ("acceptance_receipt_sha256", "F" * 64),
+            "diagnostic_status": ("acceptance_status", "diagnostic"),
+            "wrong_acceptance_boundary": ("acceptance_boundary", "18000"),
+            "old_evaluator": (
+                "acceptance_evaluator_revision",
+                "microban_teleop_deterministic_evaluator_v8_0",
+            ),
+            "old_acceptance": (
+                "acceptance_revision",
+                "microban_teleop_acceptance_v8_0",
+            ),
+            "missing_evaluator_digest": (
+                "acceptance_evaluator_source_sha256",
+                None,
+            ),
+            "wrong_accepted_checkpoint": (
+                "acceptance_checkpoint_sha256",
+                "7" * 64,
+            ),
+            "wrong_accepted_training": (
+                "acceptance_training_provenance_sha256",
+                "8" * 64,
+            ),
+            "wrong_accepted_recipe": (
+                "acceptance_recipe_revision",
+                "v8f_clean_shoulder_std1_intermediate_initial_commands_v1",
+            ),
+            "wrong_nominal_count": ("acceptance_nominal_report_count", "2"),
+            "wrong_moving_hmd_count": (
+                "acceptance_moving_hmd_report_count",
+                "2",
+            ),
+        }
+        for case, (field, value) in mutations.items():
+            with self.subTest(case=case):
+                metadata = valid_metadata()
+                if value is None:
+                    del metadata[field]
+                else:
+                    metadata[field] = value
+                with self.assertRaises(PicoHybridPolicyContractError):
+                    PicoHybridMove(session=FakeSession(metadata=metadata))
+
+        metadata = valid_metadata()
+        metadata.update(
+            {
+                "checkpoint_filename": "model_14999.pt",
+                "checkpoint_iteration": "14999",
+                "checkpoint_completed_updates": "15000",
+            }
+        )
+        with self.assertRaisesRegex(
+            PicoHybridPolicyContractError,
+            "final stage boundary",
+        ):
+            PicoHybridMove(session=FakeSession(metadata=metadata))
 
     def test_contract_rejects_missing_or_widened_both_feet_support(self):
         mutations = {
@@ -503,7 +701,7 @@ class PicoHybridMoveTest(unittest.TestCase):
                 ):
                     PicoHybridMove(session=FakeSession(metadata=metadata))
 
-    def test_contract_requires_exact_v7_bounded_actor_metadata(self):
+    def test_contract_requires_exact_v8_bounded_actor_metadata(self):
         scalar_mutations = {
             "missing_distribution": ("action_distribution_semantics", None),
             "wrong_distribution": ("action_distribution_semantics", "tanh"),
@@ -526,12 +724,14 @@ class PicoHybridMoveTest(unittest.TestCase):
                 "inf",
             ),
             "wrong_mean_fraction": ("actor_latent_mean_fraction", "0.5"),
-            "wrong_std_min_abs_max": ("actor_latent_std_min_abs_max", "0.02"),
+            "missing_std_min_abs_max": ("actor_latent_std_min_abs_max", None),
+            "wrong_std_min_abs_max": ("actor_latent_std_min_abs_max", "0.01"),
             "wrong_std_min_divisor": (
                 "actor_latent_std_min_envelope_divisor",
                 "63",
             ),
-            "wrong_std_abs_max": ("actor_latent_std_abs_max", "0.16"),
+            "missing_std_abs_max": ("actor_latent_std_abs_max", None),
+            "wrong_std_abs_max": ("actor_latent_std_abs_max", "0.15"),
             "wrong_std_divisor": ("actor_latent_std_envelope_divisor", "15"),
         }
         for case, (field, value) in scalar_mutations.items():
@@ -563,7 +763,7 @@ class PicoHybridMoveTest(unittest.TestCase):
                 metadata[field] = json.dumps(values)
                 with self.assertRaisesRegex(
                     PicoHybridPolicyContractError,
-                    "independently derived Microban v7 contract",
+                    "independently derived Microban contract",
                 ):
                     PicoHybridMove(session=FakeSession(metadata=metadata))
 
@@ -658,9 +858,9 @@ class PicoHybridMoveTest(unittest.TestCase):
         raw = np.full((1, 18), 100.0, dtype=np.float32)
         session = FakeSession()
         move = PicoHybridMove(session=session, gyro_transform=lambda value: value)
-        # Mutate the fake after the load-time corpus gate. Contract v7 treats a
-        # graph that escapes its physical transform as a fault, not an action
-        # to silently saturate.
+        # Mutate the fake after the load-time corpus gate. The current contract
+        # treats a graph that escapes its physical transform as a fault, not an
+        # action to silently saturate.
         session.output = raw
         obs = observation()
         move.on_start(obs, MotorCommand())
