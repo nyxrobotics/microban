@@ -9,6 +9,8 @@ CAMERA_UDP_FPS ?= 60
 CAMERA_UDP_BITRATE ?= 4M
 CAMERA_TLS_PORT ?= 8443
 CAMERA_TLS_CA ?= $(HOME)/.config/microban-teleop/microban-camera.crt
+CAMERA_TLS_CLIENT_CERT ?= $(HOME)/.config/microban-teleop/microban-camera-client.crt
+CAMERA_TLS_CLIENT_KEY ?= $(HOME)/.config/microban-teleop/microban-camera-client.key
 
 sync:
 	rsync -avz \
@@ -63,18 +65,22 @@ camera-stream-enable: sync
 camera-view-udp:
 	ffplay -fflags nobuffer -flags low_delay "udp://@:$(CAMERA_UDP_PORT)?pkt_size=1316"
 
-# Generate the robot-only private key, then copy only the public self-signed
-# certificate to this PC. The gateway pins this exact certificate and hostname.
+# Generate mutually pinned identities. The robot server key remains on the
+# robot; the PC client key remains on the PC. Only public certificates cross SSH.
 camera-stream-tls-provision: sync
 	ssh $(HOST) "bash -l -c 'cd microban && bash systemd/provision-camera-tls.sh'"
+	MICROBAN_CAMERA_CLIENT_CERT="$(CAMERA_TLS_CLIENT_CERT)" MICROBAN_CAMERA_CLIENT_KEY="$(CAMERA_TLS_CLIENT_KEY)" bash systemd/provision-camera-client-tls.sh
 	mkdir -p "$(dir $(CAMERA_TLS_CA))"
 	scp "$(HOST):.config/microban-camera-tls/server.crt" "$(CAMERA_TLS_CA)"
 	chmod 0644 "$(CAMERA_TLS_CA)"
+	scp "$(CAMERA_TLS_CLIENT_CERT)" "$(HOST):.config/microban-camera-tls/client.crt.new"
+	ssh $(HOST) "chmod 0644 .config/microban-camera-tls/client.crt.new && mv .config/microban-camera-tls/client.crt.new .config/microban-camera-tls/client.crt"
+	chmod 0600 "$(CAMERA_TLS_CLIENT_KEY)"
 
-# Latest-only authenticated stereo snapshots. Unlike /stream, a client that is
-# slower than the camera cannot accumulate an MJPEG frame queue.
+# Latest-only mutually authenticated stereo snapshots. Unlike /stream, a
+# client that is slower than the camera cannot accumulate an MJPEG frame queue.
 camera-stream-tls: sync
-	ssh -tt $(HOST) "bash -l -c 'cd microban && exec python3 tools/camera_snapshot_tls_proxy.py --cert ~/.config/microban-camera-tls/server.crt --key ~/.config/microban-camera-tls/server.key --port $(CAMERA_TLS_PORT)'"
+	ssh -tt $(HOST) "bash -l -c 'cd microban && exec python3 tools/camera_snapshot_tls_proxy.py --cert ~/.config/microban-camera-tls/server.crt --key ~/.config/microban-camera-tls/server.key --client-cert ~/.config/microban-camera-tls/client.crt --port $(CAMERA_TLS_PORT)'"
 
 stop:
 	ssh -tt $(HOST) "bash -l -c 'cd microban && PYTHONPATH=src .venv/bin/python src/stop.py'"

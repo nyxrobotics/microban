@@ -87,17 +87,24 @@ systemd unitは`http://microban:8080/stream`でMJPEGを公開します。設定�
 ### PICO校正済み表示向けTLS latest-snapshot
 
 連続`/stream`はclientがWi-Fi帯域より遅いと古いJPEGがsocket queueへ溜まります。校正済みPICO表示では
-uStreamerの最新1枚だけを取得し、撮影時刻headerとJPEGをTLS 1.3で一緒に認証するproxyを使います。
-初回だけrobot上で秘密鍵を生成し、公開certificateをPCへcopyします。
+uStreamerの最新1枚だけを取得し、撮影時刻headerとJPEGをmutual TLS 1.3で保護するproxyを使います。
+robotとPCは相互に、provision時に交換した自己署名leaf certificateだけを信頼します。server certificateの
+pinningだけをclient認証とは見なしません。
 
 ```bash
 make camera-stream-tls-provision
 make camera-stream-tls
 ```
 
-秘密鍵はrobotの`~/.config/microban-camera-tls/server.key`から出ません。PC側certificateは既定で
-`~/.config/microban-teleop/microban-camera.crt`です。`camera-stream-tls`はforegroundで動き、Ctrl+Cで
-終了します。既存uStreamerは同時に必要です。proxyが転送するのは`/snapshot`だけで、V4L2 dequeueから
-response header生成までのuStreamer monotonic timingとrobot wall clockを改変せず保持します。
+robotのserver秘密鍵は`~/.config/microban-camera-tls/server.key`から、PCのclient秘密鍵は
+`~/.config/microban-teleop/microban-camera-client.key`から出ません（いずれもowner-only）。SSHで交換するのは
+公開certificateだけです。別PCでprovisionし直すと、robotが許可するclient certificateはそのPCのものへ
+置き換わります。
+
+`camera-stream-tls`はforegroundで動き、Ctrl+Cで終了します。既存uStreamerも必要です。proxyが転送するのは
+認証済みclientからの`/snapshot`だけで、V4L2 dequeueからresponse header生成までのuStreamer monotonic
+timingとrobot wall clockを改変せず保持します。TLSはraw TCPをacceptしてから上限付きworker内でhandshakeし、
+既定で同時4接続、handshake 1秒、HTTP inactivity 1秒、1 request全体2秒に制限します。不完全なTLS接続1本が
+accept loopを止めることはありません。
 
 詳細は `../microban_teleop/docs/pico4ultra_webxr.md` を参照してください。
