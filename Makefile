@@ -1,4 +1,4 @@
-.PHONY: sync setup run teleop-run camera-stream-enable camera-stream-udp camera-view-udp stop shutdown voltage imu sim teleop-sim viewer gamepad-headless-enable gamepad-headless-disable
+.PHONY: sync setup run teleop-run camera-stream-enable camera-stream-udp camera-view-udp camera-stream-tls-provision camera-stream-tls stop shutdown voltage imu sim teleop-sim viewer gamepad-headless-enable gamepad-headless-disable
 
 HOST ?= microban
 ID ?=
@@ -7,6 +7,8 @@ CAMERA_UDP_DEVICE ?= /dev/v4l/by-id/usb-3D_USB_Camera_3D_USB_Camera_01.00.00-vid
 CAMERA_UDP_RESOLUTION ?= 1280x480
 CAMERA_UDP_FPS ?= 60
 CAMERA_UDP_BITRATE ?= 4M
+CAMERA_TLS_PORT ?= 8443
+CAMERA_TLS_CA ?= $(HOME)/.config/microban-teleop/microban-camera.crt
 
 sync:
 	rsync -avz \
@@ -60,6 +62,19 @@ camera-stream-enable: sync
 # View the camera-stream-udp output on this machine.
 camera-view-udp:
 	ffplay -fflags nobuffer -flags low_delay "udp://@:$(CAMERA_UDP_PORT)?pkt_size=1316"
+
+# Generate the robot-only private key, then copy only the public self-signed
+# certificate to this PC. The gateway pins this exact certificate and hostname.
+camera-stream-tls-provision: sync
+	ssh $(HOST) "bash -l -c 'cd microban && bash systemd/provision-camera-tls.sh'"
+	mkdir -p "$(dir $(CAMERA_TLS_CA))"
+	scp "$(HOST):.config/microban-camera-tls/server.crt" "$(CAMERA_TLS_CA)"
+	chmod 0644 "$(CAMERA_TLS_CA)"
+
+# Latest-only authenticated stereo snapshots. Unlike /stream, a client that is
+# slower than the camera cannot accumulate an MJPEG frame queue.
+camera-stream-tls: sync
+	ssh -tt $(HOST) "bash -l -c 'cd microban && exec python3 tools/camera_snapshot_tls_proxy.py --cert ~/.config/microban-camera-tls/server.crt --key ~/.config/microban-camera-tls/server.key --port $(CAMERA_TLS_PORT)'"
 
 stop:
 	ssh -tt $(HOST) "bash -l -c 'cd microban && PYTHONPATH=src .venv/bin/python src/stop.py'"

@@ -84,4 +84,20 @@ systemd unitは`http://microban:8080/stream`でMJPEGを公開します。設定�
 ブラウザ等どこからでも見れますが、Pi Zero 2Wの2.4GHz WiFi帯域に対してMJPEGは1フレームが大きすぎて、
 1280x480でも実測32fps程度が上限です。
 
+### PICO校正済み表示向けTLS latest-snapshot
+
+連続`/stream`はclientがWi-Fi帯域より遅いと古いJPEGがsocket queueへ溜まります。校正済みPICO表示では
+uStreamerの最新1枚だけを取得し、撮影時刻headerとJPEGをTLS 1.3で一緒に認証するproxyを使います。
+初回だけrobot上で秘密鍵を生成し、公開certificateをPCへcopyします。
+
+```bash
+make camera-stream-tls-provision
+make camera-stream-tls
+```
+
+秘密鍵はrobotの`~/.config/microban-camera-tls/server.key`から出ません。PC側certificateは既定で
+`~/.config/microban-teleop/microban-camera.crt`です。`camera-stream-tls`はforegroundで動き、Ctrl+Cで
+終了します。既存uStreamerは同時に必要です。proxyが転送するのは`/snapshot`だけで、V4L2 dequeueから
+response header生成までのuStreamer monotonic timingとrobot wall clockを改変せず保持します。
+
 詳細は `../microban_teleop/docs/pico4ultra_webxr.md` を参照してください。
