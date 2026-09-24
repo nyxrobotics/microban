@@ -32,16 +32,19 @@ class UserInput:
     # robot-side safety/slew limiter owns every discontinuity.
     head_yaw_front: bool = False
 
-    # Whole-body leg tracking target, trunk-relative (meters): {"left": (dx,dy,dz),
-    # "right": (dx,dy,dz)}. None means no target — the walking policy just walks/stands
-    # (see FootTargetCommand in mjlab_microban: the tracking reward fades to zero as the
-    # velocity command grows, so this and `velocity` are never in real conflict).
+    # Whole-body leg tracking target: a fixed policy-session calibration offset in
+    # robot-trunk coordinates (+X forward, +Y left, +Z up), in metres.  It is not
+    # an absolute pose. Shape: {"left": (dx,dy,dz), "right": (dx,dy,dz)}.
+    # None means no target — the walking policy just walks/stands (see
+    # FootTargetCommand in mjlab_microban: the tracking reward fades to zero as
+    # velocity grows, so this and `velocity` are never in real conflict).
     foot_target: dict[str, tuple[float, float, float]] | None = None
 
-    # Hand tracking target, trunk-relative (meters), per hand independently:
-    # {"left": (dx,dy,dz) | None, "right": (dx,dy,dz) | None}. A hand entry of None (or
-    # the whole dict being None) means that hand has no active target — the policy is
-    # free to move that arm naturally (see HandTargetCommand.is_active).
+    # Hand tracking target using the same fixed policy-session calibration origin,
+    # robot-trunk axes and metre units as foot_target, per hand independently:
+    # {"left": (dx,dy,dz) | None, "right": (dx,dy,dz) | None}. A hand entry of
+    # None (or the whole dict being None) means that hand has no active target —
+    # the policy is free to move that arm naturally (see HandTargetCommand.is_active).
     hand_target: dict[str, tuple[float, float, float] | None] | None = None
 
 

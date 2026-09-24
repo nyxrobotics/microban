@@ -33,7 +33,9 @@ def imu_quat_to_body(
 ) -> tuple[float, float, float, float]:
     """Convert a quaternion measured in IMU frame to the trunk (body) frame.
 
-    Applies q_body = q_imu * conjugate(IMU_MOUNT_QUAT).
+    The filter reports ``q_world_sensor`` and ``IMU_MOUNT_QUAT`` is
+    ``q_body_sensor`` (sensor vectors into body coordinates), so this applies
+    ``q_world_body = q_world_sensor * conjugate(q_body_sensor)``.
     """
     w1, x1, y1, z1 = q
     w2, x2, y2, z2 = IMU_MOUNT_QUAT[0], -IMU_MOUNT_QUAT[1], -IMU_MOUNT_QUAT[2], -IMU_MOUNT_QUAT[3]

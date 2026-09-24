@@ -1,9 +1,17 @@
 import math
+from pathlib import Path
 import unittest
+import xml.etree.ElementTree as ET
 
 import numpy as np
 
-from constants import MOTOR_TO_ID, NEUTRAL_POSE, OBSERVATION_DOF_ORDER
+from constants import (
+    IMU_MOUNT_QUAT,
+    MOTOR_TO_ID,
+    NEUTRAL_POSE,
+    OBSERVATION_DOF_ORDER,
+)
+from imu_reader import imu_quat_to_body
 from input.input_source import UserInput
 from moves.move import MotorCommand, MoveState
 from moves.pico_hybrid import (
@@ -304,6 +312,24 @@ class PicoHybridMoveTest(unittest.TestCase):
                 np.testing.assert_allclose(
                     sensor_gyro_to_body(sensor_axis), body_axis, atol=1e-12
                 )
+
+    def test_mount_contract_matches_mjcf_and_orientation_conversion(self):
+        model_path = Path(__file__).resolve().parents[1] / "src/model/mjcf/robot.xml"
+        root = ET.parse(model_path).getroot()
+        imu_site = root.find(".//site[@name='imu']")
+        self.assertIsNotNone(imu_site)
+        assert imu_site is not None
+        site_quat = tuple(float(value) for value in imu_site.attrib["quat"].split())
+        np.testing.assert_allclose(site_quat, IMU_MOUNT_QUAT, atol=1e-12)
+
+        # At identity trunk orientation the world-from-sensor quaternion equals
+        # q_body_sensor from the MJCF site. Removing that fixed mount must recover
+        # identity world-from-body, matching the gyro's sensor-to-body direction.
+        np.testing.assert_allclose(
+            imu_quat_to_body(site_quat),
+            (1.0, 0.0, 0.0, 0.0),
+            atol=1e-12,
+        )
 
 
 if __name__ == "__main__":

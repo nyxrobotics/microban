@@ -67,7 +67,12 @@ keep it fixed. It must never send the absolute human pelvis-to-limb positions.
 Stale/jumping tracking clears the calibration, removes `walk`, zeros velocity
 and sends no hand/foot target. Walking stays disarmed until the left trigger is
 released and a fresh reference can be established again. The robot receiver
-independently rejects `pico_teleop` walking snapshots without both foot targets.
+independently requires `body_target_contract: "microban_pico_offsets_v1"`,
+`body_target_safety_margin: 0.8`, complete left/right foot and hand pairs, and
+the same live bounds as the bridge: hands `[-0.064, 0.064] m` on every axis,
+feet `[-0.024, 0.024] m` on X/Y and `[0, 0.040] m` on Z. A missing, malformed or
+out-of-range value immediately removes `walk`, zeros velocity, clears both
+target pairs and requires a valid released-trigger snapshot before rearming.
 
 The runtime clips received offsets to the ONNX-recorded training support before
 inference. This is a last safety boundary, not a substitute for bridge-side
@@ -83,6 +88,8 @@ Do not use the learned policy free-standing immediately. In this order:
 3. With torque disabled, rotate the trunk by hand about positive roll, pitch and
    yaw and record BMI088 gyro signs. Confirm the transform based on
    `IMU_MOUNT_QUAT` produces Microban body-frame `+X/+Y/+Z` angular velocity.
+   The constant is WXYZ `sensor -> body`; the MJCF IMU site, orientation
+   conversion and gyro conversion share this convention and a contract test.
 4. With the harness fitted, enable the policy with zero velocity and zero body
    targets. Verify every encoder/action name and direction at low gain/current.
 5. Test one axis and small target at a time, then trigger-release return to home,

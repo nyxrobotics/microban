@@ -39,6 +39,8 @@ PYTHONPATH=src .venv/bin/python src/main.py
 - version/session/sequenceを確認し、同一sessionの古いpacketを破棄。
 - 起動・timeout・新session後、一度`walk`なしpacketを受けるまで歩行を禁止。
 - malformed JSON、NaN/Inf、未知moveを破棄し、受信threadを継続。
+- `pico_teleop`は固定contract tag、安全余裕0.8、左右の手足pair、80% target範囲をrobot側でも検証。
+  違反packetは速度・targetを即時clearし、左triggerのreleaseまで再armしない。
 - 300 ms無通信で速度ゼロ・全move解除。
 - IMUがinvalid、100 ms超のstale、または非finiteになった瞬間から全21軸を実測角で保持。
   750 ms継続時はcontrol loopを終了して全motorをtorque-off。

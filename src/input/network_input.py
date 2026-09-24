@@ -13,6 +13,8 @@ Wire format: one complete JSON snapshot per UDP packet —
       "locomotion_policy": "walk" | "pico_teleop",
       "head_orientation": {"roll": 0.0, "pitch": -0.2, "yaw": 0.3} | null,
       "head_yaw_front": false,
+      "body_target_contract": "microban_pico_offsets_v1",
+      "body_target_safety_margin": 0.8,
       "foot_target": {"left": [dx, dy, dz], "right": [dx, dy, dz]} | null,
       "hand_target": {"left": [dx, dy, dz] | null, "right": [dx, dy, dz] | null} | null
     }
@@ -22,8 +24,12 @@ arrives within `stale_after_s`, read() returns a fully-neutral UserInput. After 
 or a timeout, walking stays disarmed until at least one released-trigger snapshot
 (``"walk"`` absent) arrives. A dead/reconnecting link therefore cannot resume walking
 from a trigger that was held before the interruption.
-Hybrid ``pico_teleop`` walk snapshots additionally require both foot targets;
-an incomplete pair stops and disarms walking until another trigger release.
+Hybrid ``pico_teleop`` walk snapshots use fixed policy-session calibration
+offsets in the robot trunk frame (+X forward, +Y left, +Z up), in metres. They
+must declare the exact contract and 0.8 safety margin above, provide complete
+paired feet and hands, and stay inside the bridge's 80% training envelope.
+Any mismatch stops and disarms walking immediately, clears both target pairs,
+and requires another trigger release.
 """
 
 import json
@@ -37,6 +43,20 @@ from input.input_source import InputSource, UserInput
 
 _NETWORK_MOVES = frozenset({"walk", "hmd_head"})
 _LOCOMOTION_POLICIES = frozenset({"walk", "pico_teleop"})
+_PICO_BODY_TARGET_CONTRACT = "microban_pico_offsets_v1"
+_PICO_BODY_TARGET_SAFETY_MARGIN = 0.8
+_PICO_FOOT_TARGET_LOWER = tuple(
+    value * _PICO_BODY_TARGET_SAFETY_MARGIN for value in (-0.03, -0.03, 0.0)
+)
+_PICO_FOOT_TARGET_UPPER = tuple(
+    value * _PICO_BODY_TARGET_SAFETY_MARGIN for value in (0.03, 0.03, 0.05)
+)
+_PICO_HAND_TARGET_LOWER = tuple(
+    value * _PICO_BODY_TARGET_SAFETY_MARGIN for value in (-0.08, -0.08, -0.08)
+)
+_PICO_HAND_TARGET_UPPER = tuple(
+    value * _PICO_BODY_TARGET_SAFETY_MARGIN for value in (0.08, 0.08, 0.08)
+)
 
 
 def _finite_float(value) -> float:
@@ -53,7 +73,48 @@ def _unit_float(value) -> float:
 def _tuple3(value) -> tuple[float, float, float] | None:
     if value is None:
         return None
+    if (
+        not isinstance(value, (list, tuple))
+        or isinstance(value, (str, bytes, bytearray))
+        or len(value) != 3
+    ):
+        raise TypeError("target vector must contain exactly three numbers")
+    if any(
+        not isinstance(component, (int, float)) or isinstance(component, bool)
+        for component in value
+    ):
+        raise TypeError("target vector components must be JSON numbers")
     return (_finite_float(value[0]), _finite_float(value[1]), _finite_float(value[2]))
+
+
+def _target_pair_in_bounds(
+    value: dict[str, tuple[float, float, float] | None] | None,
+    lower: tuple[float, float, float],
+    upper: tuple[float, float, float],
+) -> bool:
+    if value is None or set(value) != {"left", "right"}:
+        return False
+    for side in ("left", "right"):
+        vector = value[side]
+        if vector is None or any(
+            component < lower[index] or component > upper[index]
+            for index, component in enumerate(vector)
+        ):
+            return False
+    return True
+
+
+def _matches_pico_safety_margin(value) -> bool:
+    if not isinstance(value, (int, float)) or isinstance(value, bool):
+        return False
+    try:
+        numeric_value = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return False
+    return (
+        math.isfinite(numeric_value)
+        and numeric_value == _PICO_BODY_TARGET_SAFETY_MARGIN
+    )
 
 
 class NetworkInputSource(InputSource):
@@ -203,6 +264,10 @@ class NetworkInputSource(InputSource):
         locomotion_policy = packet.get("locomotion_policy", "walk")
         if locomotion_policy not in _LOCOMOTION_POLICIES:
             raise ValueError("unsupported locomotion_policy")
+        incoming_pico_packet = locomotion_policy == "pico_teleop"
+        pico_walk_requested = (
+            incoming_pico_packet and "walk" in requested_moves
+        )
 
         orientation = packet.get("head_orientation")
         if orientation is not None:
@@ -219,33 +284,89 @@ class NetworkInputSource(InputSource):
         if not isinstance(head_yaw_front, bool):
             raise TypeError("head_yaw_front must be boolean")
 
-        foot_target = packet.get("foot_target")
-        if foot_target is not None:
-            if not isinstance(foot_target, dict):
-                raise TypeError("foot_target must be an object or null")
-            left_foot_target = _tuple3(foot_target.get("left"))
-            right_foot_target = _tuple3(foot_target.get("right"))
-            complete_foot_target = (
-                left_foot_target is not None and right_foot_target is not None
-            )
-            parsed_foot_target = {
-                "left": left_foot_target or (0.0, 0.0, 0.0),
-                "right": right_foot_target or (0.0, 0.0, 0.0),
-            }
-        else:
-            complete_foot_target = False
-            parsed_foot_target = None
+        target_payload_valid = True
+        try:
+            foot_target = packet.get("foot_target")
+            if foot_target is not None:
+                if not isinstance(foot_target, dict):
+                    raise TypeError("foot_target must be an object or null")
+                left_foot_target = _tuple3(foot_target.get("left"))
+                right_foot_target = _tuple3(foot_target.get("right"))
+                complete_foot_target = (
+                    set(foot_target) == {"left", "right"}
+                    and left_foot_target is not None
+                    and right_foot_target is not None
+                )
+                parsed_foot_target = {
+                    "left": left_foot_target or (0.0, 0.0, 0.0),
+                    "right": right_foot_target or (0.0, 0.0, 0.0),
+                }
+            else:
+                complete_foot_target = False
+                parsed_foot_target = None
 
-        hand_target = packet.get("hand_target")
-        if hand_target is not None:
-            if not isinstance(hand_target, dict):
-                raise TypeError("hand_target must be an object or null")
-            parsed_hand_target = {
-                "left": _tuple3(hand_target.get("left")),
-                "right": _tuple3(hand_target.get("right")),
-            }
-        else:
+            hand_target = packet.get("hand_target")
+            if hand_target is not None:
+                if not isinstance(hand_target, dict):
+                    raise TypeError("hand_target must be an object or null")
+                left_hand_target = _tuple3(hand_target.get("left"))
+                right_hand_target = _tuple3(hand_target.get("right"))
+                complete_hand_target = (
+                    set(hand_target) == {"left", "right"}
+                    and left_hand_target is not None
+                    and right_hand_target is not None
+                )
+                parsed_hand_target = {
+                    "left": left_hand_target,
+                    "right": right_hand_target,
+                }
+            else:
+                complete_hand_target = False
+                parsed_hand_target = None
+        except (IndexError, TypeError, ValueError, OverflowError):
+            if not incoming_pico_packet:
+                raise
+            # Contract failures must become a new neutral/disarmed state below;
+            # raising here would leave the previous walking state latched.
+            target_payload_valid = False
+            complete_foot_target = False
+            complete_hand_target = False
+            parsed_foot_target = None
             parsed_hand_target = None
+
+        pico_metadata_valid = (
+            packet.get("body_target_contract") == _PICO_BODY_TARGET_CONTRACT
+            and _matches_pico_safety_margin(
+                packet.get("body_target_safety_margin")
+            )
+        )
+        if pico_walk_requested:
+            pico_body_target_valid = (
+                pico_metadata_valid
+                and target_payload_valid
+                and complete_foot_target
+                and complete_hand_target
+                and _target_pair_in_bounds(
+                    parsed_foot_target,
+                    _PICO_FOOT_TARGET_LOWER,
+                    _PICO_FOOT_TARGET_UPPER,
+                )
+                and _target_pair_in_bounds(
+                    parsed_hand_target,
+                    _PICO_HAND_TARGET_LOWER,
+                    _PICO_HAND_TARGET_UPPER,
+                )
+            )
+        else:
+            # The native bridge sends target-null snapshots while the deadman is
+            # released. Requiring the same metadata keeps release/re-arm packets
+            # inside the negotiated contract without requiring impossible pairs.
+            pico_body_target_valid = (
+                pico_metadata_valid
+                and target_payload_valid
+                and parsed_foot_target is None
+                and parsed_hand_target is None
+            )
 
         with self._lock:
             if session_id != self._session_id:
@@ -276,21 +397,20 @@ class NetworkInputSource(InputSource):
                 locomotion_policy = self._state.locomotion_policy
                 requested_moves.discard("walk")
                 parsed_velocity = {"vx": 0.0, "vy": 0.0, "vtheta": 0.0}
+                parsed_foot_target = None
+                parsed_hand_target = None
                 mode_changed = False
 
-            if (
-                locomotion_policy == "pico_teleop"
-                and "walk" in requested_moves
-                and not complete_foot_target
-            ):
-                # The hybrid policy was trained with a paired, reset-relative
-                # foot command.  WebXR and malformed/native snapshots without
-                # both feet must fail closed, then require a trigger release
-                # before a later complete snapshot may walk.
+            if incoming_pico_packet and not pico_body_target_valid:
+                # Never raise and retain an older walking snapshot for a bad
+                # body-target contract. Apply this packet as an immediate stop
+                # and require an explicit later release before re-arming.
                 self._walk_armed = False
                 force_disarmed = True
                 requested_moves.discard("walk")
                 parsed_velocity = {"vx": 0.0, "vy": 0.0, "vtheta": 0.0}
+                parsed_foot_target = None
+                parsed_hand_target = None
 
             if self._motion_inhibited:
                 self._walk_armed = False

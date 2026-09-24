@@ -135,7 +135,8 @@ VTHETA_MAX_MOVING: float = 1.5
 # IMU (BMI088) I2C bus number on the Raspberry Pi
 IMU_I2C_BUS: int = 1
 
-# Rotation from trunk frame (body) to IMU sensor frame
+# WXYZ rotation from IMU sensor coordinates into trunk/body coordinates.
+# This is the MJCF site's child(sensor)-to-parent(body) orientation.
 IMU_MOUNT_QUAT: tuple[float, float, float, float] = (0.5, -0.5, -0.5, 0.5)
 
 # Observation DoF ordering
