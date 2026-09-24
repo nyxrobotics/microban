@@ -11,6 +11,7 @@ whose observation order changed, therefore fails before motor torque is used.
 
 from __future__ import annotations
 
+import json
 import math
 import re
 from collections.abc import Callable, Mapping, Sequence
@@ -35,11 +36,23 @@ from observer import Observation
 
 AGENT_NAME = "pico_teleop.onnx"
 EXPECTED_POLICY_TYPE = "microban_pico_hybrid_teleop"
-EXPECTED_TRAINING_CONTRACT_VERSION = "4"
+EXPECTED_TRAINING_CONTRACT_VERSION = "5"
 EXPECTED_SCHEMA_VERSION = "2"
 EXPECTED_PREVIOUS_ACTION_SEMANTICS = (
     "effective_action_after_absolute_target_soft_clip_in_raw_delta_coordinates"
 )
+EXPECTED_ACTION_DISTRIBUTION_SEMANTICS = (
+    "diagonal_normal_latent_with_per_joint_asymmetric_zero_anchored_arctan_bijection_v1"
+)
+EXPECTED_ACTOR_TARGET_GUARD_MARGIN_RATIO = 0.05
+EXPECTED_ACTOR_DEFAULT_INTERIOR_EPSILON_RAD = 1.0e-4
+# MjLab applies the soft-limit factor and action offset in float32 after MuJoCo
+# has resolved the XML.  Reassociating those operations from Microban's already
+# compiled soft limits can differ by a few float32 epsilons through cancellation.
+# This remains far tighter than three-decimal legacy metadata (and below
+# 0.000028 degrees for scale 1.0) while accepting both legitimate operation
+# orders.
+EXPECTED_ACTION_BOUND_FLOAT32_ATOL = 4.0 * float(np.finfo(np.float32).eps)
 EXPECTED_OBSERVATION_TERMS = (
     "base_ang_vel",
     "projected_gravity",
@@ -114,6 +127,78 @@ EXPECTED_SOFT_JOINT_POS_UPPER = (
     0.549778714378,
 )
 
+
+def _derive_expected_action_bound_contract() -> tuple[
+    tuple[float, ...],
+    tuple[float, ...],
+    tuple[float, ...],
+    tuple[float, ...],
+]:
+    """Independently derive v5 raw and guarded actor bounds.
+
+    MjLab resolves the robot defaults, soft limits and action parameters as
+    float32 tensors before exporting the four full-precision JSON vectors.  Do
+    the same IEEE-754 operations here from Microban's compiled-in constants;
+    no model-provided value participates in this derivation.
+    """
+
+    defaults = np.asarray(EXPECTED_ACTION_DEFAULT_JOINT_POS, dtype=np.float32)
+    scales = np.asarray(EXPECTED_ACTION_SCALE, dtype=np.float32)
+    soft_lower = np.asarray(EXPECTED_SOFT_JOINT_POS_LOWER, dtype=np.float32)
+    soft_upper = np.asarray(EXPECTED_SOFT_JOINT_POS_UPPER, dtype=np.float32)
+    raw_soft_lower = ((soft_lower - defaults) / scales).tolist()
+    raw_soft_upper = ((soft_upper - defaults) / scales).tolist()
+
+    actor_lower: list[float] = []
+    actor_upper: list[float] = []
+    for default, lower, upper, scale in zip(
+        defaults.tolist(),
+        soft_lower.tolist(),
+        soft_upper.tolist(),
+        scales.tolist(),
+        strict=True,
+    ):
+        span = upper - lower
+        epsilon = min(
+            EXPECTED_ACTOR_DEFAULT_INTERIOR_EPSILON_RAD,
+            0.5 * (default - lower),
+            0.5 * (upper - default),
+        )
+        target_lower = min(
+            default - epsilon,
+            lower + EXPECTED_ACTOR_TARGET_GUARD_MARGIN_RATIO * span,
+        )
+        target_upper = max(
+            default + epsilon,
+            upper - EXPECTED_ACTOR_TARGET_GUARD_MARGIN_RATIO * span,
+        )
+        actor_lower.append((target_lower - default) / scale)
+        actor_upper.append((target_upper - default) / scale)
+
+    contract = (
+        tuple(float(value) for value in raw_soft_lower),
+        tuple(float(value) for value in raw_soft_upper),
+        tuple(actor_lower),
+        tuple(actor_upper),
+    )
+    if not all(
+        soft_lo < actor_lo < 0.0 < actor_hi < soft_hi
+        for soft_lo, soft_hi, actor_lo, actor_hi in zip(
+            *contract,
+            strict=True,
+        )
+    ):
+        raise RuntimeError("compiled-in v5 actor bounds are not strictly guarded")
+    return contract
+
+
+(
+    EXPECTED_RAW_ACTION_SOFT_LOWER,
+    EXPECTED_RAW_ACTION_SOFT_UPPER,
+    EXPECTED_ACTOR_RAW_ACTION_LOWER,
+    EXPECTED_ACTOR_RAW_ACTION_UPPER,
+) = _derive_expected_action_bound_contract()
+
 # These ranges are the command support used by Mjlab-Teleop-Microban.  The
 # exporter also records them in the policy metadata; these constants are only
 # the expected contract used to reject a mismatched model.
@@ -160,6 +245,102 @@ def _float_csv(value: str | None, name: str, count: int) -> tuple[float, ...]:
     if not all(math.isfinite(item) for item in result):
         raise PicoHybridPolicyContractError(f"{name} contains a non-finite value")
     return result
+
+
+def _float_json_vector(value: str | None, name: str, count: int) -> tuple[float, ...]:
+    """Parse an exact-width finite-number vector from strict JSON metadata."""
+
+    if value is None:
+        raise PicoHybridPolicyContractError(f"missing ONNX metadata: {name}")
+
+    def reject_constant(constant: str) -> None:
+        raise ValueError(f"non-standard JSON constant {constant}")
+
+    try:
+        decoded = json.loads(value, parse_constant=reject_constant)
+    except (TypeError, ValueError, json.JSONDecodeError) as exc:
+        raise PicoHybridPolicyContractError(
+            f"{name} must be a strict JSON array"
+        ) from exc
+    if not isinstance(decoded, list) or len(decoded) != count:
+        actual_count = len(decoded) if isinstance(decoded, list) else "not an array"
+        raise PicoHybridPolicyContractError(
+            f"{name} has {actual_count} values; expected {count}"
+        )
+
+    result: list[float] = []
+    for item in decoded:
+        # JSON booleans are Python integers, so reject them explicitly.
+        if isinstance(item, bool) or not isinstance(item, (int, float)):
+            raise PicoHybridPolicyContractError(
+                f"{name} must contain only JSON numbers"
+            )
+        numeric = float(item)
+        if not math.isfinite(numeric):
+            raise PicoHybridPolicyContractError(f"{name} contains a non-finite value")
+        result.append(numeric)
+    return tuple(result)
+
+
+def _require_tight_json_vector(
+    name: str,
+    actual: Sequence[float],
+    expected: Sequence[float],
+) -> None:
+    """Require unrounded JSON values to tightly match the robot derivation."""
+
+    if all(
+        math.isclose(
+            received,
+            required,
+            rel_tol=0.0,
+            abs_tol=EXPECTED_ACTION_BOUND_FLOAT32_ATOL,
+        )
+        for received, required in zip(actual, expected, strict=True)
+    ):
+        return
+    mismatch = next(
+        (
+            index
+            for index, (received, required) in enumerate(
+                zip(actual, expected, strict=True)
+            )
+            if not math.isclose(
+                received,
+                required,
+                rel_tol=0.0,
+                abs_tol=EXPECTED_ACTION_BOUND_FLOAT32_ATOL,
+            )
+        ),
+        None,
+    )
+    raise PicoHybridPolicyContractError(
+        f"{name} does not match the independently derived Microban v5 contract"
+        + (
+            ""
+            if mismatch is None
+            else (
+                f" at action index {mismatch}: got {actual[mismatch]!r}, "
+                f"expected {expected[mismatch]!r}"
+            )
+        )
+    )
+
+
+def _require_exact_finite_scalar(
+    metadata: Mapping[str, str], name: str, expected: float
+) -> None:
+    value = metadata.get(name)
+    if value is None:
+        raise PicoHybridPolicyContractError(f"missing ONNX metadata: {name}")
+    try:
+        actual = float(value)
+    except (TypeError, ValueError) as exc:
+        raise PicoHybridPolicyContractError(f"{name} must be numeric") from exc
+    if not math.isfinite(actual) or actual != expected:
+        raise PicoHybridPolicyContractError(
+            f"{name} does not match the fixed Microban v5 contract"
+        )
 
 
 def _canonical_nonnegative_int(value: str | None, name: str) -> int:
@@ -313,12 +494,31 @@ def onnxruntime_compatibility_smoke_inputs() -> np.ndarray:
     return observations
 
 
-def validate_onnxruntime_compatibility(session: Any, input_name: str) -> int:
+def validate_onnxruntime_compatibility(
+    session: Any,
+    input_name: str,
+    actor_lower: Sequence[float] = EXPECTED_ACTOR_RAW_ACTION_LOWER,
+    actor_upper: Sequence[float] = EXPECTED_ACTOR_RAW_ACTION_UPPER,
+) -> int:
     """Run the fixed corpus through ONNX Runtime and validate its outputs.
 
     Returns the number of observations executed.  This deliberately does not
     compare against PyTorch: the export gate owns that numerical parity check.
+    V5's exported deterministic graph must also keep every result strictly
+    inside its open actor interval; reaching either endpoint fails the load.
     """
+
+    lower = np.asarray(actor_lower, dtype=np.float64)
+    upper = np.asarray(actor_upper, dtype=np.float64)
+    if (
+        lower.shape != (EXPECTED_ACTION_WIDTH,)
+        or upper.shape != (EXPECTED_ACTION_WIDTH,)
+        or not np.isfinite(lower).all()
+        or not np.isfinite(upper).all()
+        or not np.all(lower < 0.0)
+        or not np.all(upper > 0.0)
+    ):
+        raise PicoHybridPolicyRuntimeError("invalid ORT actor-bound contract")
 
     observations = onnxruntime_compatibility_smoke_inputs()
     for sample_index, observation in enumerate(observations):
@@ -345,6 +545,11 @@ def validate_onnxruntime_compatibility(session: Any, input_name: str) -> int:
             raise PicoHybridPolicyRuntimeError(
                 "ONNX Runtime compatibility smoke returned an unsafe output "
                 f"at sample {sample_index}: shape={output.shape}, finite={finite}"
+            )
+        if not bool(np.all(output[0] > lower) and np.all(output[0] < upper)):
+            raise PicoHybridPolicyRuntimeError(
+                "ONNX Runtime compatibility smoke output reached or exceeded "
+                f"an open actor bound at sample {sample_index}"
             )
     return len(observations)
 
@@ -453,6 +658,10 @@ class _PolicyContract:
     action_scale: tuple[float, ...]
     soft_lower: tuple[float, ...]
     soft_upper: tuple[float, ...]
+    raw_action_soft_lower: tuple[float, ...]
+    raw_action_soft_upper: tuple[float, ...]
+    actor_raw_action_lower: tuple[float, ...]
+    actor_raw_action_upper: tuple[float, ...]
     foot_lower: tuple[float, ...]
     foot_upper: tuple[float, ...]
     simultaneous_both_feet_lower: tuple[float, ...]
@@ -528,6 +737,23 @@ def _parse_contract(session: Any) -> _PolicyContract:
         raise PicoHybridPolicyContractError("unsupported action target semantics")
     if metadata.get("action_clip_semantics") != "absolute_joint_position_radians":
         raise PicoHybridPolicyContractError("unsupported action clipping semantics")
+    if (
+        metadata.get("action_distribution_semantics")
+        != EXPECTED_ACTION_DISTRIBUTION_SEMANTICS
+    ):
+        raise PicoHybridPolicyContractError(
+            "unsupported or missing action distribution semantics"
+        )
+    _require_exact_finite_scalar(
+        metadata,
+        "actor_target_guard_margin_ratio",
+        EXPECTED_ACTOR_TARGET_GUARD_MARGIN_RATIO,
+    )
+    _require_exact_finite_scalar(
+        metadata,
+        "actor_default_interior_epsilon_rad",
+        EXPECTED_ACTOR_DEFAULT_INTERIOR_EPSILON_RAD,
+    )
 
     try:
         control_hz = float(metadata.get("control_hz", "nan"))
@@ -598,6 +824,57 @@ def _parse_contract(session: Any) -> _PolicyContract:
     _require_fixed_metadata_vector(
         "soft_joint_pos_upper", soft_upper, EXPECTED_SOFT_JOINT_POS_UPPER
     )
+
+    exact_action_bounds = {
+        name: _float_json_vector(metadata.get(name), name, EXPECTED_ACTION_WIDTH)
+        for name in (
+            "raw_action_soft_lower_json",
+            "raw_action_soft_upper_json",
+            "actor_raw_action_lower_json",
+            "actor_raw_action_upper_json",
+        )
+    }
+    raw_action_soft_lower = exact_action_bounds["raw_action_soft_lower_json"]
+    raw_action_soft_upper = exact_action_bounds["raw_action_soft_upper_json"]
+    actor_raw_action_lower = exact_action_bounds["actor_raw_action_lower_json"]
+    actor_raw_action_upper = exact_action_bounds["actor_raw_action_upper_json"]
+    for index, (soft_lo, soft_hi, actor_lo, actor_hi) in enumerate(
+        zip(
+            raw_action_soft_lower,
+            raw_action_soft_upper,
+            actor_raw_action_lower,
+            actor_raw_action_upper,
+            strict=True,
+        )
+    ):
+        if not soft_lo < actor_lo < 0.0 < actor_hi < soft_hi:
+            raise PicoHybridPolicyContractError(
+                "actor bounds must be strictly inside raw soft bounds with zero "
+                f"strictly interior (action index {index})"
+            )
+    for name, actual, expected in (
+        (
+            "raw_action_soft_lower_json",
+            raw_action_soft_lower,
+            EXPECTED_RAW_ACTION_SOFT_LOWER,
+        ),
+        (
+            "raw_action_soft_upper_json",
+            raw_action_soft_upper,
+            EXPECTED_RAW_ACTION_SOFT_UPPER,
+        ),
+        (
+            "actor_raw_action_lower_json",
+            actor_raw_action_lower,
+            EXPECTED_ACTOR_RAW_ACTION_LOWER,
+        ),
+        (
+            "actor_raw_action_upper_json",
+            actor_raw_action_upper,
+            EXPECTED_ACTOR_RAW_ACTION_UPPER,
+        ),
+    ):
+        _require_tight_json_vector(name, actual, expected)
 
     foot_lower = _float_csv(metadata.get("foot_target_lower"), "foot_target_lower", 6)
     foot_upper = _float_csv(metadata.get("foot_target_upper"), "foot_target_upper", 6)
@@ -674,6 +951,10 @@ def _parse_contract(session: Any) -> _PolicyContract:
         action_scale=EXPECTED_ACTION_SCALE,
         soft_lower=EXPECTED_SOFT_JOINT_POS_LOWER,
         soft_upper=EXPECTED_SOFT_JOINT_POS_UPPER,
+        raw_action_soft_lower=raw_action_soft_lower,
+        raw_action_soft_upper=raw_action_soft_upper,
+        actor_raw_action_lower=actor_raw_action_lower,
+        actor_raw_action_upper=actor_raw_action_upper,
         foot_lower=foot_lower,
         foot_upper=foot_upper,
         simultaneous_both_feet_lower=simultaneous_both_feet_lower,
@@ -730,6 +1011,12 @@ class PicoHybridMove(Move):
         self._gyro_transform = gyro_transform
         self._session = session or ort.InferenceSession(str(policy_path))
         self._contract = _parse_contract(self._session)
+        self._compatibility_smoke_sample_count = validate_onnxruntime_compatibility(
+            self._session,
+            self._contract.input_name,
+            self._contract.actor_raw_action_lower,
+            self._contract.actor_raw_action_upper,
+        )
         self._last_action = np.zeros(EXPECTED_ACTION_WIDTH, dtype=np.float32)
         self._stop_start_time_s: float | None = None
         self._stop_start_angles: dict[str, float] = {}

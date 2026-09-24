@@ -10,7 +10,6 @@ from pathlib import Path
 from moves.pico_hybrid import (
     EXPECTED_ONNX_PARITY_GATE_VERSION,
     PicoHybridMove,
-    validate_onnxruntime_compatibility,
 )
 
 
@@ -34,10 +33,7 @@ def main() -> None:
         gyro_transform=lambda values: values,
     )
     contract = move._contract
-    runtime_smoke_samples = validate_onnxruntime_compatibility(
-        move._session,
-        contract.input_name,
-    )
+    runtime_smoke_samples = move._compatibility_smoke_sample_count
     print(
         json.dumps(
             {
@@ -54,7 +50,7 @@ def main() -> None:
                     "status": "pass",
                     "sample_count": runtime_smoke_samples,
                     "providers": move._session.get_providers(),
-                    "scope": "load_run_output_shape_and_finiteness_only",
+                    "scope": ("load_run_output_shape_finiteness_and_open_actor_bounds"),
                 },
                 "observation_joint_names": contract.observation_joint_names,
                 "action_joint_names": contract.action_joint_names,
@@ -62,6 +58,8 @@ def main() -> None:
                 "enforced_action_scale": contract.action_scale,
                 "enforced_soft_joint_pos_lower": contract.soft_lower,
                 "enforced_soft_joint_pos_upper": contract.soft_upper,
+                "enforced_actor_raw_action_lower": (contract.actor_raw_action_lower),
+                "enforced_actor_raw_action_upper": (contract.actor_raw_action_upper),
             },
             indent=2,
         )

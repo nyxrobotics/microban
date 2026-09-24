@@ -46,12 +46,27 @@ The validator and runtime both fail closed unless the model has exactly one
 `[1,83]` input and one `[1,18]` output and its metadata agrees on observation
 order, all 21 encoder defaults, the 18 action joint names/order, body-frame gyro,
 50 Hz rate, action scale/soft limits, target coordinate frames and training
-bounds. The learned-policy training contract must be version `4`, while the
+bounds. The learned-policy training contract must be version `5`, while the
 independent observation schema remains version `2`, with previous-action
 semantics exactly
 `effective_action_after_absolute_target_soft_clip_in_raw_delta_coordinates`.
 Missing/unversioned models and v1 raw-action-feedback models are rejected even
 though their tensor shapes are also `[1,83] -> [1,18]`.
+
+V5 additionally requires the exact distribution declaration
+`diagonal_normal_latent_with_per_joint_asymmetric_zero_anchored_arctan_bijection_v1`,
+a `0.05` actor target-guard ratio and a `0.0001 rad` maximum default-interior
+epsilon. Four strict JSON metadata arrays carry the unrounded 18-joint raw soft
+limits and guarded actor limits. The runtime independently re-derives all four
+from its compiled-in `NEUTRAL_POSE`, action scale and physical soft limits,
+using the same float32 boundary arithmetic as training, and requires an exact
+or four-float32-epsilon-tight value match (at most `4.7684e-7 rad` with the
+current unit action scale). That narrow allowance covers only the operation
+ordering difference between MuJoCo/MjLab limit resolution and the runtime's
+already-compiled soft limits; three-decimal metadata remains far outside it.
+Every actor interval must strictly contain zero and be strictly inside its
+corresponding raw soft interval. Missing, rounded, non-finite or materially
+tampered vectors therefore fail closed.
 
 They also require the parity-gate version-1 deterministic PyTorch-to-ONNX
 record: `onnx_parity_verified=true`, its fixed runtime/corpus/tolerances, a
@@ -65,25 +80,31 @@ After each inference, the runtime converts every raw action to
 `default_joint_pos + raw_action * scale`, clips that absolute target to the
 compiled-in soft limits, commands the clipped value, then maps it back with
 `(clipped_target - default_joint_pos) / scale`. Only that effective delta is
-stored in the next observation. This exactly matches v4 training and prevents
+stored in the next observation. This exactly matches v5 training and prevents
 unbounded network output from feeding back while a servo target is saturated.
+The v5 actor bijection should keep normal inference inside its narrower guarded
+interval; the wider compiled-in absolute soft clip remains an independent final
+defense and is not removed or widened by model metadata.
 
-V4 must be trained from a clean run. An unversioned v1 checkpoint may be
+V5 must be trained from a clean run. An unversioned v1 checkpoint may be
 inspected only with the simulator evaluator's explicit diagnostic flag; it
-cannot be resumed, exported as v4, accepted by this runtime, or copied into
-`src/agents` as a deployable policy. Versioned-v2 and v3 checkpoints are
+cannot be resumed, exported as v5, accepted by this runtime, or copied into
+`src/agents` as a deployable policy. Versioned-v2, v3 and v4 checkpoints are
 rejected even for that diagnostic path because their tensor widths do not prove
-v4 training semantics.
+v5 bounded-actor training semantics. The diagnostic pre-update artifact
+`model_pristine.pt` (iteration `-1`) is also rejected: deployment accepts only
+a parity-gated canonical `model_N.pt` with non-negative `N`.
 
 After metadata validation, the offline validator also runs the same 16 fixed
 neutral, lower-bound, upper-bound, midpoint and seed-`20260924` finite inputs
-through the installed ONNX Runtime provider. Every result must be exactly
-`[1,18]` and finite. This is reported as `onnxruntime_compatibility_smoke`; it
-checks that the deployment runtime can load and execute the graph, but it is
-not another PyTorch/ONNX numerical-parity result because the validator does not
-carry expected PyTorch outputs. Run it again in Microban's actual Python/ONNX
-Runtime environment before enabling torque, and record the provider names from
-its JSON output.
+through the installed ONNX Runtime provider as part of model loading. Every
+result must be exactly `[1,18]`, finite and strictly inside all 18 guarded actor
+bounds; equality with either endpoint is a failure. This is reported as
+`onnxruntime_compatibility_smoke`. It checks that the deployment runtime can
+load and execute the bounded graph, but it is not another PyTorch/ONNX
+numerical-parity result because the validator does not carry expected PyTorch
+outputs. Run it in Microban's actual Python/ONNX Runtime environment before
+enabling torque, and record the provider names from its JSON output.
 
 The provenance record is traceability and internal-consistency metadata, not a
 cryptographic signature of the ONNX itself. Only copy artifacts produced by the
