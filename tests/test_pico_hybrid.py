@@ -23,7 +23,9 @@ from moves.pico_hybrid import (
     PicoHybridMove,
     PicoHybridPolicyContractError,
     PicoHybridPolicyRuntimeError,
+    onnxruntime_compatibility_smoke_inputs,
     sensor_gyro_to_body,
+    validate_onnxruntime_compatibility,
 )
 from observer import Observation, RobotState
 
@@ -76,6 +78,20 @@ def valid_metadata():
     observation_defaults = [NEUTRAL_POSE[name] for name in OBSERVATION_JOINTS]
     return {
         "policy_type": "microban_pico_hybrid_teleop",
+        "checkpoint_filename": "model_14999.pt",
+        "checkpoint_iteration": "14999",
+        "checkpoint_iteration_semantics": (
+            "zero_based_completed_update_index_from_model_filename"
+        ),
+        "checkpoint_completed_updates": "15000",
+        "checkpoint_sha256": "0123456789abcdef" * 4,
+        "onnx_parity_gate_version": "1",
+        "onnx_parity_verified": "true",
+        "onnx_parity_runtime": "onnx.reference.ReferenceEvaluator",
+        "onnx_parity_seed": "20260924",
+        "onnx_parity_sample_count": "16",
+        "onnx_parity_atol": "1e-05",
+        "onnx_parity_rtol": "0.0001",
         "observation_schema_version": "1",
         "base_ang_vel_frame": "robot_body_xyz",
         "base_ang_vel_units": "rad_s",
@@ -120,6 +136,7 @@ class FakeSession:
         self.metadata = valid_metadata() if metadata is None else metadata
         self.output = np.zeros((1, 18), dtype=np.float32) if output is None else output
         self.last_feed = None
+        self.run_count = 0
 
     def get_inputs(self):
         return [_Io("obs", [1, 83])]
@@ -132,6 +149,7 @@ class FakeSession:
 
     def run(self, names, feed):
         self.last_feed = feed
+        self.run_count += 1
         return [self.output]
 
 
@@ -167,6 +185,73 @@ def observation(time_s=0.0):
 
 
 class PicoHybridMoveTest(unittest.TestCase):
+    def test_onnxruntime_compatibility_smoke_uses_fixed_finite_corpus(self):
+        corpus = onnxruntime_compatibility_smoke_inputs()
+        self.assertEqual(corpus.shape, (16, 1, 83))
+        self.assertTrue(np.isfinite(corpus).all())
+        self.assertEqual(corpus[0, 0, 5], -1.0)
+        self.assertEqual(np.count_nonzero(corpus[0]), 1)
+        self.assertTrue(np.all(corpus[1] <= corpus[2]))
+
+        session = FakeSession()
+        sample_count = validate_onnxruntime_compatibility(session, "obs")
+        self.assertEqual(sample_count, 16)
+        self.assertEqual(session.run_count, 16)
+        self.assertEqual(session.last_feed["obs"].shape, (1, 83))
+
+    def test_onnxruntime_compatibility_smoke_rejects_unsafe_output(self):
+        for case, output in (
+            ("wrong_shape", np.zeros((18,), dtype=np.float32)),
+            ("nonfinite", np.full((1, 18), np.nan, dtype=np.float32)),
+            ("nonnumeric", np.full((1, 18), "bad", dtype=object)),
+        ):
+            with self.subTest(case=case):
+                with self.assertRaises(PicoHybridPolicyRuntimeError):
+                    validate_onnxruntime_compatibility(
+                        FakeSession(output=output),
+                        "obs",
+                    )
+
+    def test_contract_accepts_and_exposes_gated_export_provenance(self):
+        move = PicoHybridMove(session=FakeSession())
+        self.assertEqual(move._contract.checkpoint_filename, "model_14999.pt")
+        self.assertEqual(move._contract.checkpoint_iteration, 14999)
+        self.assertEqual(move._contract.checkpoint_completed_updates, 15000)
+        self.assertEqual(
+            move._contract.checkpoint_sha256,
+            "0123456789abcdef" * 4,
+        )
+
+    def test_contract_rejects_missing_or_inconsistent_export_gate_metadata(self):
+        mutations = {
+            "missing_verified": ("onnx_parity_verified", None),
+            "false_verified": ("onnx_parity_verified", "false"),
+            "wrong_gate_version": ("onnx_parity_gate_version", "2"),
+            "wrong_runtime": ("onnx_parity_runtime", "onnxruntime"),
+            "wrong_seed": ("onnx_parity_seed", "1"),
+            "wrong_sample_count": ("onnx_parity_sample_count", "15"),
+            "wrong_atol": ("onnx_parity_atol", "0.001"),
+            "wrong_rtol": ("onnx_parity_rtol", "0.001"),
+            "bad_filename": ("checkpoint_filename", "checkpoint.pt"),
+            "noncanonical_filename": ("checkpoint_filename", "model_014999.pt"),
+            "nonnumeric_iteration": ("checkpoint_iteration", "latest"),
+            "noncanonical_iteration": ("checkpoint_iteration", "014999"),
+            "mismatched_iteration": ("checkpoint_iteration", "14998"),
+            "wrong_iteration_semantics": ("checkpoint_iteration_semantics", "unknown"),
+            "wrong_completed_updates": ("checkpoint_completed_updates", "14999"),
+            "uppercase_sha256": ("checkpoint_sha256", "A" * 64),
+            "short_sha256": ("checkpoint_sha256", "a" * 63),
+        }
+        for case, (field, value) in mutations.items():
+            with self.subTest(case=case):
+                metadata = valid_metadata()
+                if value is None:
+                    del metadata[field]
+                else:
+                    metadata[field] = value
+                with self.assertRaises(PicoHybridPolicyContractError):
+                    PicoHybridMove(session=FakeSession(metadata=metadata))
+
     def test_contract_rejects_missing_body_frame(self):
         metadata = valid_metadata()
         del metadata["base_ang_vel_frame"]

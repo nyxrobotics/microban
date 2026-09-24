@@ -45,7 +45,27 @@ The validator and runtime both fail closed unless the model has exactly one
 `[1,83]` input and one `[1,18]` output and its metadata agrees on observation
 order, all 21 encoder defaults, the 18 action joint names/order, body-frame gyro,
 50 Hz rate, action scale/soft limits, target coordinate frames and training
-bounds. A legacy `walk.onnx` therefore cannot be selected accidentally.
+bounds. They also require the v1 deterministic PyTorch-to-ONNX parity-gate
+record: `onnx_parity_verified=true`, its fixed runtime/corpus/tolerances, a
+canonical `model_N.pt` checkpoint filename, iteration `N`, completed-update
+count `N+1`, and a lowercase 64-hex checkpoint SHA-256. The validator prints
+that checkpoint identity for the deployment record. Legacy or manually
+exported artifacts without this gate record, including `walk.onnx`, are
+rejected.
+
+After metadata validation, the offline validator also runs the same 16 fixed
+neutral, lower-bound, upper-bound, midpoint and seed-`20260924` finite inputs
+through the installed ONNX Runtime provider. Every result must be exactly
+`[1,18]` and finite. This is reported as `onnxruntime_compatibility_smoke`; it
+checks that the deployment runtime can load and execute the graph, but it is
+not another PyTorch/ONNX numerical-parity result because the validator does not
+carry expected PyTorch outputs. Run it again in Microban's actual Python/ONNX
+Runtime environment before enabling torque, and record the provider names from
+its JSON output.
+
+The provenance record is traceability and internal-consistency metadata, not a
+cryptographic signature of the ONNX itself. Only copy artifacts produced by the
+checked-in exporter from a trusted training workspace.
 
 Run the normal network entry point; no policy-selection environment variable is
 needed:

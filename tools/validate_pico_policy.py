@@ -7,7 +7,11 @@ import argparse
 import json
 from pathlib import Path
 
-from moves.pico_hybrid import PicoHybridMove
+from moves.pico_hybrid import (
+    EXPECTED_ONNX_PARITY_GATE_VERSION,
+    PicoHybridMove,
+    validate_onnxruntime_compatibility,
+)
 
 
 def main() -> None:
@@ -30,6 +34,10 @@ def main() -> None:
         gyro_transform=lambda values: values,
     )
     contract = move._contract
+    runtime_smoke_samples = validate_onnxruntime_compatibility(
+        move._session,
+        contract.input_name,
+    )
     print(
         json.dumps(
             {
@@ -37,6 +45,17 @@ def main() -> None:
                 "policy": str(args.policy.resolve()),
                 "input_width": 83,
                 "output_width": len(contract.action_joint_names),
+                "checkpoint_filename": contract.checkpoint_filename,
+                "checkpoint_iteration": contract.checkpoint_iteration,
+                "checkpoint_completed_updates": contract.checkpoint_completed_updates,
+                "checkpoint_sha256": contract.checkpoint_sha256,
+                "onnx_parity_gate_version": EXPECTED_ONNX_PARITY_GATE_VERSION,
+                "onnxruntime_compatibility_smoke": {
+                    "status": "pass",
+                    "sample_count": runtime_smoke_samples,
+                    "providers": move._session.get_providers(),
+                    "scope": "load_run_output_shape_and_finiteness_only",
+                },
                 "observation_joint_names": contract.observation_joint_names,
                 "action_joint_names": contract.action_joint_names,
                 "enforced_default_joint_pos": contract.action_default_joint_pos,

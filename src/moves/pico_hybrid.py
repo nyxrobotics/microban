@@ -14,6 +14,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import math
 from pathlib import Path
+import re
 from typing import Any, Callable, Mapping, Sequence
 
 import numpy as np
@@ -47,6 +48,15 @@ EXPECTED_OBSERVATION_TERMS = (
 )
 EXPECTED_OBSERVATION_WIDTH = 83
 EXPECTED_ACTION_WIDTH = 18
+EXPECTED_ONNX_PARITY_GATE_VERSION = "1"
+EXPECTED_ONNX_PARITY_RUNTIME = "onnx.reference.ReferenceEvaluator"
+EXPECTED_ONNX_PARITY_SEED = 20260924
+EXPECTED_ONNX_PARITY_SAMPLE_COUNT = 16
+EXPECTED_ONNX_PARITY_ATOL = 1e-5
+EXPECTED_ONNX_PARITY_RTOL = 1e-4
+
+_CHECKPOINT_FILENAME_RE = re.compile(r"model_(0|[1-9][0-9]*)\.pt\Z")
+_CHECKPOINT_SHA256_RE = re.compile(r"[0-9a-f]{64}\Z")
 
 # The exporter serializes numeric metadata to three decimal places.  Keep the
 # full-precision, robot-side action contract here and only use the serialized
@@ -139,6 +149,192 @@ def _float_csv(value: str | None, name: str, count: int) -> tuple[float, ...]:
     if not all(math.isfinite(item) for item in result):
         raise PicoHybridPolicyContractError(f"{name} contains a non-finite value")
     return result
+
+
+def _canonical_nonnegative_int(value: str | None, name: str) -> int:
+    if value is None or re.fullmatch(r"0|[1-9][0-9]*", value) is None:
+        raise PicoHybridPolicyContractError(
+            f"{name} must be a canonical non-negative integer"
+        )
+    return int(value)
+
+
+def _require_gated_export_provenance(
+    metadata: Mapping[str, str],
+) -> tuple[str, int, int, str]:
+    """Reject artifacts that did not pass the checked-in v1 parity gate.
+
+    This validates the gate assertion and internally consistent checkpoint
+    identity recorded by the exporter.  It provides fail-closed traceability;
+    it is not a signature and does not authenticate an untrusted ONNX file.
+    """
+
+    if metadata.get("onnx_parity_verified") != "true":
+        raise PicoHybridPolicyContractError(
+            "onnx_parity_verified metadata must be true"
+        )
+    if metadata.get("onnx_parity_gate_version") != EXPECTED_ONNX_PARITY_GATE_VERSION:
+        raise PicoHybridPolicyContractError(
+            "unsupported or missing ONNX parity gate version"
+        )
+    if metadata.get("onnx_parity_runtime") != EXPECTED_ONNX_PARITY_RUNTIME:
+        raise PicoHybridPolicyContractError("unsupported ONNX parity runtime")
+
+    parity_seed = _canonical_nonnegative_int(
+        metadata.get("onnx_parity_seed"), "onnx_parity_seed"
+    )
+    parity_samples = _canonical_nonnegative_int(
+        metadata.get("onnx_parity_sample_count"), "onnx_parity_sample_count"
+    )
+    if parity_seed != EXPECTED_ONNX_PARITY_SEED:
+        raise PicoHybridPolicyContractError("unsupported ONNX parity seed")
+    if parity_samples != EXPECTED_ONNX_PARITY_SAMPLE_COUNT:
+        raise PicoHybridPolicyContractError("unsupported ONNX parity sample count")
+
+    for name, expected in (
+        ("onnx_parity_atol", EXPECTED_ONNX_PARITY_ATOL),
+        ("onnx_parity_rtol", EXPECTED_ONNX_PARITY_RTOL),
+    ):
+        try:
+            actual = float(metadata.get(name, "nan"))
+        except (TypeError, ValueError) as exc:
+            raise PicoHybridPolicyContractError(f"{name} must be numeric") from exc
+        if not math.isfinite(actual) or actual != expected:
+            raise PicoHybridPolicyContractError(
+                f"{name} does not match parity gate v1"
+            )
+
+    filename = metadata.get("checkpoint_filename", "")
+    filename_match = _CHECKPOINT_FILENAME_RE.fullmatch(filename)
+    if filename_match is None:
+        raise PicoHybridPolicyContractError(
+            "checkpoint_filename must be canonical model_N.pt"
+        )
+    iteration = _canonical_nonnegative_int(
+        metadata.get("checkpoint_iteration"), "checkpoint_iteration"
+    )
+    if int(filename_match.group(1)) != iteration:
+        raise PicoHybridPolicyContractError(
+            "checkpoint_iteration does not match checkpoint_filename"
+        )
+    if metadata.get("checkpoint_iteration_semantics") != (
+        "zero_based_completed_update_index_from_model_filename"
+    ):
+        raise PicoHybridPolicyContractError(
+            "unsupported checkpoint_iteration semantics"
+        )
+    completed_updates = _canonical_nonnegative_int(
+        metadata.get("checkpoint_completed_updates"),
+        "checkpoint_completed_updates",
+    )
+    if completed_updates != iteration + 1:
+        raise PicoHybridPolicyContractError(
+            "checkpoint_completed_updates must equal checkpoint_iteration + 1"
+        )
+
+    checkpoint_sha256 = metadata.get("checkpoint_sha256", "")
+    if _CHECKPOINT_SHA256_RE.fullmatch(checkpoint_sha256) is None:
+        raise PicoHybridPolicyContractError(
+            "checkpoint_sha256 must be 64 lowercase hexadecimal characters"
+        )
+    return filename, iteration, completed_updates, checkpoint_sha256
+
+
+def onnxruntime_compatibility_smoke_inputs() -> np.ndarray:
+    """Build the fixed v1 corpus used to exercise the deployed ORT runtime.
+
+    The corpus mirrors the export gate's finite 83-value observations, but the
+    robot does not have PyTorch reference outputs.  It therefore supports only
+    a runtime compatibility smoke (load/run/shape/finiteness), not a second
+    numerical parity claim.
+    """
+
+    lower = np.asarray(
+        [-4.0] * 3
+        + [-1.0] * 3
+        + [-math.pi] * 21
+        + [-12.0] * 21
+        + [-1.0] * 18
+        + [-1.0, -1.0, -2.0]
+        + [-0.03, -0.03, 0.0] * 2
+        + [-0.08] * 6
+        + [0.0, 0.0],
+        dtype=np.float32,
+    )
+    upper = np.asarray(
+        [4.0] * 3
+        + [1.0] * 3
+        + [math.pi] * 21
+        + [12.0] * 21
+        + [1.0] * 18
+        + [1.0, 1.0, 2.0]
+        + [0.03, 0.03, 0.05] * 2
+        + [0.08] * 6
+        + [1.0, 1.0],
+        dtype=np.float32,
+    )
+    if lower.shape != (EXPECTED_OBSERVATION_WIDTH,) or upper.shape != (
+        EXPECTED_OBSERVATION_WIDTH,
+    ):
+        raise RuntimeError("ORT smoke bounds do not match the 83-value schema")
+
+    neutral = np.zeros(EXPECTED_OBSERVATION_WIDTH, dtype=np.float32)
+    neutral[5] = -1.0
+    rows = [neutral, lower, upper, (lower + upper) * np.float32(0.5)]
+    rng = np.random.default_rng(EXPECTED_ONNX_PARITY_SEED)
+    random_rows = rng.uniform(
+        lower,
+        upper,
+        size=(EXPECTED_ONNX_PARITY_SAMPLE_COUNT - len(rows), EXPECTED_OBSERVATION_WIDTH),
+    ).astype(np.float32)
+    random_rows[:, -2:] = rng.integers(0, 2, size=(random_rows.shape[0], 2)).astype(
+        np.float32
+    )
+    rows.extend(random_rows)
+    observations = np.stack(rows, axis=0).reshape(
+        EXPECTED_ONNX_PARITY_SAMPLE_COUNT,
+        1,
+        EXPECTED_OBSERVATION_WIDTH,
+    )
+    if not np.isfinite(observations).all():
+        raise RuntimeError("ORT compatibility smoke corpus is non-finite")
+    return observations
+
+
+def validate_onnxruntime_compatibility(session: Any, input_name: str) -> int:
+    """Run the fixed corpus through ONNX Runtime and validate its outputs.
+
+    Returns the number of observations executed.  This deliberately does not
+    compare against PyTorch: the export gate owns that numerical parity check.
+    """
+
+    observations = onnxruntime_compatibility_smoke_inputs()
+    for sample_index, observation in enumerate(observations):
+        try:
+            outputs = session.run(None, {input_name: observation})
+        except Exception as exc:
+            raise PicoHybridPolicyRuntimeError(
+                f"ONNX Runtime compatibility smoke failed at sample {sample_index}"
+            ) from exc
+        if len(outputs) != 1:
+            raise PicoHybridPolicyRuntimeError(
+                "ONNX Runtime compatibility smoke expected exactly one output "
+                f"at sample {sample_index}"
+            )
+        output = np.asarray(outputs[0])
+        try:
+            finite = bool(np.isfinite(output).all())
+        except TypeError as exc:
+            raise PicoHybridPolicyRuntimeError(
+                "ONNX Runtime compatibility smoke returned a non-numeric output "
+                f"at sample {sample_index}"
+            ) from exc
+        if output.shape != (1, EXPECTED_ACTION_WIDTH) or not finite:
+            raise PicoHybridPolicyRuntimeError(
+                "ONNX Runtime compatibility smoke returned an unsafe output "
+                f"at sample {sample_index}: shape={output.shape}, finite={finite}"
+            )
+    return len(observations)
 
 
 def _serialized_metadata_values(values: Sequence[float]) -> tuple[float, ...]:
@@ -249,6 +445,10 @@ class _PolicyContract:
     foot_upper: tuple[float, ...]
     hand_lower: tuple[float, ...]
     hand_upper: tuple[float, ...]
+    checkpoint_filename: str
+    checkpoint_iteration: int
+    checkpoint_completed_updates: int
+    checkpoint_sha256: str
 
 
 def _parse_contract(session: Any) -> _PolicyContract:
@@ -264,6 +464,12 @@ def _parse_contract(session: Any) -> _PolicyContract:
     metadata = session.get_modelmeta().custom_metadata_map
     if metadata.get("policy_type") != EXPECTED_POLICY_TYPE:
         raise PicoHybridPolicyContractError("ONNX is not a Microban PICO hybrid policy")
+    (
+        checkpoint_filename,
+        checkpoint_iteration,
+        checkpoint_completed_updates,
+        checkpoint_sha256,
+    ) = _require_gated_export_provenance(metadata)
     if metadata.get("observation_schema_version") != EXPECTED_SCHEMA_VERSION:
         raise PicoHybridPolicyContractError("unsupported observation schema version")
     if metadata.get("base_ang_vel_frame") != "robot_body_xyz":
@@ -404,6 +610,10 @@ def _parse_contract(session: Any) -> _PolicyContract:
         foot_upper=foot_upper,
         hand_lower=hand_lower,
         hand_upper=hand_upper,
+        checkpoint_filename=checkpoint_filename,
+        checkpoint_iteration=checkpoint_iteration,
+        checkpoint_completed_updates=checkpoint_completed_updates,
+        checkpoint_sha256=checkpoint_sha256,
     )
 
 
