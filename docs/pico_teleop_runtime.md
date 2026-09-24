@@ -46,8 +46,9 @@ The validator and runtime both fail closed unless the model has exactly one
 `[1,83]` input and one `[1,18]` output and its metadata agrees on observation
 order, all 21 encoder defaults, the 18 action joint names/order, body-frame gyro,
 50 Hz rate, action scale/soft limits, target coordinate frames and training
-bounds. The learned-policy training contract and observation schema must both be
-version `2`, with previous-action semantics exactly
+bounds. The learned-policy training contract must be version `3`, while the
+independent observation schema remains version `2`, with previous-action
+semantics exactly
 `effective_action_after_absolute_target_soft_clip_in_raw_delta_coordinates`.
 Missing/unversioned models and v1 raw-action-feedback models are rejected even
 though their tensor shapes are also `[1,83] -> [1,18]`.
@@ -64,13 +65,15 @@ After each inference, the runtime converts every raw action to
 `default_joint_pos + raw_action * scale`, clips that absolute target to the
 compiled-in soft limits, commands the clipped value, then maps it back with
 `(clipped_target - default_joint_pos) / scale`. Only that effective delta is
-stored in the next observation. This exactly matches v2 training and prevents
+stored in the next observation. This exactly matches v3 training and prevents
 unbounded network output from feeding back while a servo target is saturated.
 
-V2 must be trained from a clean run. A legacy checkpoint may be inspected only
-with the simulator evaluator's explicit diagnostic flag; it cannot be resumed,
-exported as v2, accepted by this runtime, or copied into `src/agents` as a
-deployable policy.
+V3 must be trained from a clean run. An unversioned v1 checkpoint may be
+inspected only with the simulator evaluator's explicit diagnostic flag; it
+cannot be resumed, exported as v3, accepted by this runtime, or copied into
+`src/agents` as a deployable policy. A versioned-v2 checkpoint is rejected even
+for that diagnostic path because its tensor widths do not prove v3 training
+semantics.
 
 After metadata validation, the offline validator also runs the same 16 fixed
 neutral, lower-bound, upper-bound, midpoint and seed-`20260924` finite inputs
@@ -114,7 +117,7 @@ single-foot offsets `[-0.024, 0.024] m` on X/Y and `[0, 0.040] m` on Z. The
 bridge must project a support foot at Z `<= 0.0025 m` to exact XYZ zero; the
 receiver rejects any non-zero vector left in that band. Thus the exported zero
 lower bound represents only the exact-zero inactive command; an active
-single-foot Z is `(0.0025, 0.040] m`, matching clean-v2 training from the floor
+single-foot Z is `(0.0025, 0.040] m`, matching v3 training from the floor
 boundary upward. After that projection, if both foot offsets are active, each is
 limited to X/Y `[-0.008, 0.008] m` and active Z `(0.0025, 0.016] m`, and `vx`,
 `vy` and `vtheta` must all be exactly zero. A missing, legacy-v1, malformed,

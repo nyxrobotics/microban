@@ -35,7 +35,7 @@ from observer import Observation
 
 AGENT_NAME = "pico_teleop.onnx"
 EXPECTED_POLICY_TYPE = "microban_pico_hybrid_teleop"
-EXPECTED_TRAINING_CONTRACT_VERSION = "2"
+EXPECTED_TRAINING_CONTRACT_VERSION = "3"
 EXPECTED_SCHEMA_VERSION = "2"
 EXPECTED_PREVIOUS_ACTION_SEMANTICS = (
     "effective_action_after_absolute_target_soft_clip_in_raw_delta_coordinates"

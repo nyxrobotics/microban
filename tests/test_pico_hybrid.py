@@ -95,7 +95,7 @@ def valid_metadata():
         "onnx_parity_sample_count": "16",
         "onnx_parity_atol": "1e-05",
         "onnx_parity_rtol": "0.0001",
-        "microban_teleop_training_contract_version": "2",
+        "microban_teleop_training_contract_version": "3",
         "observation_schema_version": "2",
         "base_ang_vel_frame": "robot_body_xyz",
         "base_ang_vel_units": "rad_s",
@@ -274,7 +274,7 @@ class PicoHybridMoveTest(unittest.TestCase):
         with self.assertRaises(PicoHybridPolicyContractError):
             PicoHybridMove(session=FakeSession(metadata=metadata))
 
-    def test_contract_rejects_v1_or_missing_effective_action_contract(self):
+    def test_contract_rejects_v1_v2_or_missing_effective_action_contract(self):
         mutations = {
             "missing_training_contract": (
                 "microban_teleop_training_contract_version",
@@ -283,6 +283,10 @@ class PicoHybridMoveTest(unittest.TestCase):
             "v1_training_contract": (
                 "microban_teleop_training_contract_version",
                 "1",
+            ),
+            "v2_training_contract": (
+                "microban_teleop_training_contract_version",
+                "2",
             ),
             "v1_schema": ("observation_schema_version", "1"),
             "v1_raw_previous_action": (
