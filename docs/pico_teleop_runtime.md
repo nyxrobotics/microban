@@ -46,27 +46,43 @@ The validator and runtime both fail closed unless the model has exactly one
 `[1,83]` input and one `[1,18]` output and its metadata agrees on observation
 order, all 21 encoder defaults, the 18 action joint names/order, body-frame gyro,
 50 Hz rate, action scale/soft limits, target coordinate frames and training
-bounds. The learned-policy training contract must be version `5`, while the
+bounds. The learned-policy training contract must be version `7`, while the
 independent observation schema remains version `2`, with previous-action
 semantics exactly
 `effective_action_after_absolute_target_soft_clip_in_raw_delta_coordinates`.
 Missing/unversioned models and v1 raw-action-feedback models are rejected even
 though their tensor shapes are also `[1,83] -> [1,18]`.
 
-V5 additionally requires the exact distribution declaration
-`diagonal_normal_latent_with_per_joint_asymmetric_zero_anchored_arctan_bijection_v1`,
-a `0.05` actor target-guard ratio and a `0.0001 rad` maximum default-interior
-epsilon. Four strict JSON metadata arrays carry the unrounded 18-joint raw soft
-limits and guarded actor limits. The runtime independently re-derives all four
-from its compiled-in `NEUTRAL_POSE`, action scale and physical soft limits,
-using the same float32 boundary arithmetic as training, and requires an exact
-or four-float32-epsilon-tight value match (at most `4.7684e-7 rad` with the
-current unit action scale). That narrow allowance covers only the operation
-ordering difference between MuJoCo/MjLab limit resolution and the runtime's
+V7 requires the exact distribution declaration
+`diagonal_normal_ppo_latent_stored_exactly_then_per_joint_asymmetric_zero_anchored_arctan_environment_transform_with_operational_envelope_v1`.
+PPO stores and scores its finite latent directly; only the action sent to the
+environment is passed through the asymmetric, zero-anchored arctangent. The
+deterministic ONNX graph includes that physical-action transform, so the robot
+must consume its output directly and must not apply a second transform.
+
+The metadata also fixes the `0.05` actor target-guard ratio, `0.0001 rad`
+maximum default-interior epsilon, latent scale multiplier `1024`, latent
+absolute cap `32`, mean fraction `3/8`, minimum-standard-deviation cap/divisor
+`0.01`/`64`, and maximum-standard-deviation cap/divisor `0.15`/`16`. Every
+scalar must be present, numeric, finite and exactly equal to the compiled v7
+contract. The runtime independently derives the per-joint operational latent,
+mean, standard-deviation and deterministic `T(mean)` output envelopes in
+float32 and fails at startup if their nesting or ten-sigma margin is invalid.
+The runtime comparison permits one outward float32 ULP at each `T(mean)` edge
+to cover the last-bit difference between PyTorch, NumPy and ONNX Runtime
+transcendental kernels; the wider guarded actor limit remains strict.
+
+Four strict JSON metadata arrays carry the unrounded 18-joint raw soft limits
+and guarded actor limits. The runtime independently re-derives all four from
+its compiled-in `NEUTRAL_POSE`, action scale and physical soft limits, using the
+same float32 boundary arithmetic as training, and requires an exact or
+four-float32-epsilon-tight value match (at most `4.7684e-7 rad` with the current
+unit action scale). That narrow allowance covers only the operation-ordering
+difference between MuJoCo/MjLab limit resolution and the runtime's
 already-compiled soft limits; three-decimal metadata remains far outside it.
 Every actor interval must strictly contain zero and be strictly inside its
 corresponding raw soft interval. Missing, rounded, non-finite or materially
-tampered vectors therefore fail closed.
+tampered values therefore fail closed.
 
 They also require the parity-gate version-1 deterministic PyTorch-to-ONNX
 record: `onnx_parity_verified=true`, its fixed runtime/corpus/tolerances, a
@@ -80,20 +96,29 @@ After each inference, the runtime converts every raw action to
 `default_joint_pos + raw_action * scale`, clips that absolute target to the
 compiled-in soft limits, commands the clipped value, then maps it back with
 `(clipped_target - default_joint_pos) / scale`. Only that effective delta is
-stored in the next observation. This exactly matches v5 training and prevents
+stored in the next observation. This exactly matches v7 training and prevents
 unbounded network output from feeding back while a servo target is saturated.
-The v5 actor bijection should keep normal inference inside its narrower guarded
-interval; the wider compiled-in absolute soft clip remains an independent final
-defense and is not removed or widened by model metadata.
+Every live ONNX output must be inside both the guarded actor interval and the
+narrower deterministic `T(mean)` envelope. The resulting absolute target must
+also be strictly inside the robot's compiled soft limit. A violation rejects
+the complete tick before any of its 18 targets are written; it is not silently
+saturated. The absolute clip remains in the matched observation calculation,
+but it is a no-op for every valid v7 output and is never widened by metadata.
 
-V5 must be trained from a clean run. An unversioned v1 checkpoint may be
+V7 must be trained from a clean run. An unversioned v1 checkpoint may be
 inspected only with the simulator evaluator's explicit diagnostic flag; it
-cannot be resumed, exported as v5, accepted by this runtime, or copied into
-`src/agents` as a deployable policy. Versioned-v2, v3 and v4 checkpoints are
-rejected even for that diagnostic path because their tensor widths do not prove
-v5 bounded-actor training semantics. The diagnostic pre-update artifact
-`model_pristine.pt` (iteration `-1`) is also rejected: deployment accepts only
-a parity-gated canonical `model_N.pt` with non-negative `N`.
+cannot be resumed, exported as v7, accepted by this runtime, or copied into
+`src/agents` as a deployable policy. Versioned-v2 through v6 checkpoints are
+rejected even if their tensor shapes match because they do not prove v7's exact
+latent-storage and finite-envelope semantics. The diagnostic pre-update
+artifact `model_pristine.pt` (iteration `-1`) is also rejected: deployment
+accepts only a parity-gated canonical `model_N.pt` with non-negative `N`.
+
+Contract v7 retains v6's neutral-preserving predicted-joint-state guard while
+changing PPO storage and scoring to the exact latent. The runtime cannot
+reconstruct training behavior from an ONNX graph, so the exact version marker
+and metadata are the fail-closed provenance boundary: v5 and v6 artifacts with
+otherwise identical tensor shapes are still rejected.
 
 After metadata validation, the offline validator also runs the same 16 fixed
 neutral, lower-bound, upper-bound, midpoint and seed-`20260924` finite inputs

@@ -20,9 +20,24 @@ from moves.pico_hybrid import (
     EXPECTED_ACTION_DISTRIBUTION_SEMANTICS,
     EXPECTED_ACTION_SCALE,
     EXPECTED_ACTOR_DEFAULT_INTERIOR_EPSILON_RAD,
+    EXPECTED_ACTOR_LATENT_MAX_STD,
+    EXPECTED_ACTOR_LATENT_MEAN_FRACTION,
+    EXPECTED_ACTOR_LATENT_MEAN_LOWER,
+    EXPECTED_ACTOR_LATENT_MEAN_UPPER,
+    EXPECTED_ACTOR_LATENT_MIN_STD,
+    EXPECTED_ACTOR_LATENT_OPERATIONAL_ABS_MAX,
+    EXPECTED_ACTOR_LATENT_OPERATIONAL_LOWER,
+    EXPECTED_ACTOR_LATENT_OPERATIONAL_SCALE_MULTIPLIER,
+    EXPECTED_ACTOR_LATENT_OPERATIONAL_UPPER,
+    EXPECTED_ACTOR_LATENT_STD_ABS_MAX,
+    EXPECTED_ACTOR_LATENT_STD_ENVELOPE_DIVISOR,
+    EXPECTED_ACTOR_LATENT_STD_MIN_ABS_MAX,
+    EXPECTED_ACTOR_LATENT_STD_MIN_ENVELOPE_DIVISOR,
     EXPECTED_ACTOR_RAW_ACTION_LOWER,
     EXPECTED_ACTOR_RAW_ACTION_UPPER,
     EXPECTED_ACTOR_TARGET_GUARD_MARGIN_RATIO,
+    EXPECTED_DETERMINISTIC_RAW_ACTION_LOWER,
+    EXPECTED_DETERMINISTIC_RAW_ACTION_UPPER,
     EXPECTED_OBSERVATION_TERMS,
     EXPECTED_PREVIOUS_ACTION_SEMANTICS,
     EXPECTED_RAW_ACTION_SOFT_LOWER,
@@ -103,7 +118,7 @@ def valid_metadata():
         "onnx_parity_sample_count": "16",
         "onnx_parity_atol": "1e-05",
         "onnx_parity_rtol": "0.0001",
-        "microban_teleop_training_contract_version": "5",
+        "microban_teleop_training_contract_version": "7",
         "observation_schema_version": "2",
         "base_ang_vel_frame": "robot_body_xyz",
         "base_ang_vel_units": "rad_s",
@@ -129,6 +144,21 @@ def valid_metadata():
         ),
         "actor_default_interior_epsilon_rad": str(
             EXPECTED_ACTOR_DEFAULT_INTERIOR_EPSILON_RAD
+        ),
+        "actor_latent_operational_scale_multiplier": str(
+            EXPECTED_ACTOR_LATENT_OPERATIONAL_SCALE_MULTIPLIER
+        ),
+        "actor_latent_operational_abs_max": str(
+            EXPECTED_ACTOR_LATENT_OPERATIONAL_ABS_MAX
+        ),
+        "actor_latent_mean_fraction": str(EXPECTED_ACTOR_LATENT_MEAN_FRACTION),
+        "actor_latent_std_min_abs_max": str(EXPECTED_ACTOR_LATENT_STD_MIN_ABS_MAX),
+        "actor_latent_std_min_envelope_divisor": str(
+            EXPECTED_ACTOR_LATENT_STD_MIN_ENVELOPE_DIVISOR
+        ),
+        "actor_latent_std_abs_max": str(EXPECTED_ACTOR_LATENT_STD_ABS_MAX),
+        "actor_latent_std_envelope_divisor": str(
+            EXPECTED_ACTOR_LATENT_STD_ENVELOPE_DIVISOR
         ),
         "raw_action_soft_lower_json": json.dumps(
             EXPECTED_RAW_ACTION_SOFT_LOWER, separators=(",", ":")
@@ -279,6 +309,53 @@ class PicoHybridMoveTest(unittest.TestCase):
                     "obs",
                 )
 
+    def test_onnxruntime_compatibility_requires_v7_transform_envelope(self):
+        output = np.zeros((1, 18), dtype=np.float64)
+        output[0, 0] = (
+            EXPECTED_DETERMINISTIC_RAW_ACTION_UPPER[0]
+            + EXPECTED_ACTOR_RAW_ACTION_UPPER[0]
+        ) / 2.0
+        with self.assertRaisesRegex(
+            PicoHybridPolicyRuntimeError, "deterministic transform envelope"
+        ):
+            validate_onnxruntime_compatibility(FakeSession(output=output), "obs")
+
+    def test_v7_latent_envelope_is_finite_nested_and_has_ten_sigma_margin(self):
+        vectors = (
+            EXPECTED_ACTOR_LATENT_OPERATIONAL_LOWER,
+            EXPECTED_ACTOR_LATENT_OPERATIONAL_UPPER,
+            EXPECTED_ACTOR_LATENT_MEAN_LOWER,
+            EXPECTED_ACTOR_LATENT_MEAN_UPPER,
+            EXPECTED_ACTOR_LATENT_MIN_STD,
+            EXPECTED_ACTOR_LATENT_MAX_STD,
+            EXPECTED_DETERMINISTIC_RAW_ACTION_LOWER,
+            EXPECTED_DETERMINISTIC_RAW_ACTION_UPPER,
+        )
+        self.assertTrue(all(len(vector) == 18 for vector in vectors))
+        self.assertTrue(
+            all(math.isfinite(value) for vector in vectors for value in vector)
+        )
+        for index in range(18):
+            operational_lower = EXPECTED_ACTOR_LATENT_OPERATIONAL_LOWER[index]
+            operational_upper = EXPECTED_ACTOR_LATENT_OPERATIONAL_UPPER[index]
+            mean_lower = EXPECTED_ACTOR_LATENT_MEAN_LOWER[index]
+            mean_upper = EXPECTED_ACTOR_LATENT_MEAN_UPPER[index]
+            max_std = EXPECTED_ACTOR_LATENT_MAX_STD[index]
+            self.assertLess(operational_lower, mean_lower)
+            self.assertLess(mean_lower, 0.0)
+            self.assertLess(0.0, mean_upper)
+            self.assertLess(mean_upper, operational_upper)
+            self.assertGreaterEqual(mean_lower - 10.0 * max_std, operational_lower)
+            self.assertLessEqual(mean_upper + 10.0 * max_std, operational_upper)
+            self.assertLess(
+                EXPECTED_ACTOR_RAW_ACTION_LOWER[index],
+                EXPECTED_DETERMINISTIC_RAW_ACTION_LOWER[index],
+            )
+            self.assertLess(
+                EXPECTED_DETERMINISTIC_RAW_ACTION_UPPER[index],
+                EXPECTED_ACTOR_RAW_ACTION_UPPER[index],
+            )
+
     def test_model_load_runs_fixed_corpus_and_rejects_actor_endpoint(self):
         session = FakeSession()
         move = PicoHybridMove(session=session)
@@ -335,7 +412,7 @@ class PicoHybridMoveTest(unittest.TestCase):
         with self.assertRaises(PicoHybridPolicyContractError):
             PicoHybridMove(session=FakeSession(metadata=metadata))
 
-    def test_contract_rejects_v1_through_v4_or_missing_effective_action_contract(self):
+    def test_contract_rejects_v1_through_v6_or_missing_effective_action_contract(self):
         mutations = {
             "missing_training_contract": (
                 "microban_teleop_training_contract_version",
@@ -356,6 +433,14 @@ class PicoHybridMoveTest(unittest.TestCase):
             "v4_training_contract": (
                 "microban_teleop_training_contract_version",
                 "4",
+            ),
+            "v5_training_contract": (
+                "microban_teleop_training_contract_version",
+                "5",
+            ),
+            "v6_training_contract": (
+                "microban_teleop_training_contract_version",
+                "6",
             ),
             "v1_schema": ("observation_schema_version", "1"),
             "v1_raw_previous_action": (
@@ -418,7 +503,7 @@ class PicoHybridMoveTest(unittest.TestCase):
                 ):
                     PicoHybridMove(session=FakeSession(metadata=metadata))
 
-    def test_contract_requires_exact_v5_bounded_actor_metadata(self):
+    def test_contract_requires_exact_v7_bounded_actor_metadata(self):
         scalar_mutations = {
             "missing_distribution": ("action_distribution_semantics", None),
             "wrong_distribution": ("action_distribution_semantics", "tanh"),
@@ -427,6 +512,27 @@ class PicoHybridMoveTest(unittest.TestCase):
             "nonfinite_guard_ratio": ("actor_target_guard_margin_ratio", "nan"),
             "missing_epsilon": ("actor_default_interior_epsilon_rad", None),
             "wrong_epsilon": ("actor_default_interior_epsilon_rad", "0.001"),
+            "missing_latent_scale": (
+                "actor_latent_operational_scale_multiplier",
+                None,
+            ),
+            "wrong_latent_scale": (
+                "actor_latent_operational_scale_multiplier",
+                "1025",
+            ),
+            "missing_latent_abs_max": ("actor_latent_operational_abs_max", None),
+            "nonfinite_latent_abs_max": (
+                "actor_latent_operational_abs_max",
+                "inf",
+            ),
+            "wrong_mean_fraction": ("actor_latent_mean_fraction", "0.5"),
+            "wrong_std_min_abs_max": ("actor_latent_std_min_abs_max", "0.02"),
+            "wrong_std_min_divisor": (
+                "actor_latent_std_min_envelope_divisor",
+                "63",
+            ),
+            "wrong_std_abs_max": ("actor_latent_std_abs_max", "0.16"),
+            "wrong_std_divisor": ("actor_latent_std_envelope_divisor", "15"),
         }
         for case, (field, value) in scalar_mutations.items():
             with self.subTest(case=case):
@@ -457,7 +563,7 @@ class PicoHybridMoveTest(unittest.TestCase):
                 metadata[field] = json.dumps(values)
                 with self.assertRaisesRegex(
                     PicoHybridPolicyContractError,
-                    "independently derived Microban v5 contract",
+                    "independently derived Microban v7 contract",
                 ):
                     PicoHybridMove(session=FakeSession(metadata=metadata))
 
@@ -548,35 +654,38 @@ class PicoHybridMoveTest(unittest.TestCase):
         self.assertEqual(values[69:75], [0.03, -0.03, 0.04, 0.0, 0.0, 0.0])
         self.assertEqual(values[75:83], [0.02, 0.03, -0.04, 0.0, 0.0, 0.0, 1.0, 0.0])
 
-    def test_step_feeds_back_effective_action_after_soft_clip(self):
+    def test_step_rejects_out_of_contract_output_before_writing_any_target(self):
         raw = np.full((1, 18), 100.0, dtype=np.float32)
         session = FakeSession()
         move = PicoHybridMove(session=session, gyro_transform=lambda value: value)
-        # The bounded v5 graph cannot normally produce this. Mutate the fake
-        # after the load-time corpus gate to retain coverage of the independent
-        # runtime hard clip as a final defense.
+        # Mutate the fake after the load-time corpus gate. Contract v7 treats a
+        # graph that escapes its physical transform as a fault, not an action
+        # to silently saturate.
+        session.output = raw
+        obs = observation()
+        move.on_start(obs, MotorCommand())
+        command = MotorCommand()
+        initial_targets = dict(command.target_angles)
+        with self.assertRaisesRegex(PicoHybridPolicyRuntimeError, "actor bound"):
+            move.step(obs, command)
+        self.assertEqual(command.target_angles, initial_targets)
+        np.testing.assert_array_equal(move._last_action, np.zeros(18))
+
+    def test_step_consumes_physical_onnx_action_without_second_transform(self):
+        raw = np.zeros((1, 18), dtype=np.float32)
+        raw[0, 0] = 0.25 * EXPECTED_DETERMINISTIC_RAW_ACTION_UPPER[0]
+        session = FakeSession()
+        move = PicoHybridMove(session=session, gyro_transform=lambda value: value)
         session.output = raw
         obs = observation()
         move.on_start(obs, MotorCommand())
         command = MotorCommand()
         move.step(obs, command)
-        expected_effective = []
-        for index, name in enumerate(OBSERVATION_DOF_ORDER):
-            self.assertEqual(
-                command.target_angles[name], EXPECTED_SOFT_JOINT_POS_UPPER[index]
-            )
-            expected_effective.append(
-                (
-                    EXPECTED_SOFT_JOINT_POS_UPPER[index]
-                    - EXPECTED_ACTION_DEFAULT_JOINT_POS[index]
-                )
-                / EXPECTED_ACTION_SCALE[index]
-            )
-        np.testing.assert_allclose(move._last_action, expected_effective, atol=1e-7)
-        np.testing.assert_allclose(
-            move.build_observation(obs)[48:66], expected_effective, atol=1e-7
+        expected_target = EXPECTED_ACTION_DEFAULT_JOINT_POS[0] + float(raw[0, 0])
+        self.assertEqual(
+            command.target_angles[OBSERVATION_DOF_ORDER[0]], expected_target
         )
-        self.assertEqual(session.last_feed["obs"].shape, (1, 83))
+        self.assertEqual(move._last_action[0], raw[0, 0])
 
     def test_simultaneous_both_feet_require_live_bounds_and_zero_twist(self):
         move = PicoHybridMove(session=FakeSession(), gyro_transform=lambda value: value)

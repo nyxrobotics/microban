@@ -36,16 +36,25 @@ from observer import Observation
 
 AGENT_NAME = "pico_teleop.onnx"
 EXPECTED_POLICY_TYPE = "microban_pico_hybrid_teleop"
-EXPECTED_TRAINING_CONTRACT_VERSION = "5"
+EXPECTED_TRAINING_CONTRACT_VERSION = "7"
 EXPECTED_SCHEMA_VERSION = "2"
 EXPECTED_PREVIOUS_ACTION_SEMANTICS = (
     "effective_action_after_absolute_target_soft_clip_in_raw_delta_coordinates"
 )
 EXPECTED_ACTION_DISTRIBUTION_SEMANTICS = (
-    "diagonal_normal_latent_with_per_joint_asymmetric_zero_anchored_arctan_bijection_v1"
+    "diagonal_normal_ppo_latent_stored_exactly_then_per_joint_"
+    "asymmetric_zero_anchored_arctan_environment_transform_with_"
+    "operational_envelope_v1"
 )
 EXPECTED_ACTOR_TARGET_GUARD_MARGIN_RATIO = 0.05
 EXPECTED_ACTOR_DEFAULT_INTERIOR_EPSILON_RAD = 1.0e-4
+EXPECTED_ACTOR_LATENT_OPERATIONAL_SCALE_MULTIPLIER = 1024.0
+EXPECTED_ACTOR_LATENT_OPERATIONAL_ABS_MAX = 32.0
+EXPECTED_ACTOR_LATENT_MEAN_FRACTION = 3.0 / 8.0
+EXPECTED_ACTOR_LATENT_STD_MIN_ABS_MAX = 0.01
+EXPECTED_ACTOR_LATENT_STD_MIN_ENVELOPE_DIVISOR = 64.0
+EXPECTED_ACTOR_LATENT_STD_ABS_MAX = 0.15
+EXPECTED_ACTOR_LATENT_STD_ENVELOPE_DIVISOR = 16.0
 # MjLab applies the soft-limit factor and action offset in float32 after MuJoCo
 # has resolved the XML.  Reassociating those operations from Microban's already
 # compiled soft limits can differ by a few float32 epsilons through cancellation.
@@ -134,7 +143,7 @@ def _derive_expected_action_bound_contract() -> tuple[
     tuple[float, ...],
     tuple[float, ...],
 ]:
-    """Independently derive v5 raw and guarded actor bounds.
+    """Independently derive v7 raw and guarded actor bounds.
 
     MjLab resolves the robot defaults, soft limits and action parameters as
     float32 tensors before exporting the four full-precision JSON vectors.  Do
@@ -188,7 +197,7 @@ def _derive_expected_action_bound_contract() -> tuple[
             strict=True,
         )
     ):
-        raise RuntimeError("compiled-in v5 actor bounds are not strictly guarded")
+        raise RuntimeError("compiled-in v7 actor bounds are not strictly guarded")
     return contract
 
 
@@ -198,6 +207,137 @@ def _derive_expected_action_bound_contract() -> tuple[
     EXPECTED_ACTOR_RAW_ACTION_LOWER,
     EXPECTED_ACTOR_RAW_ACTION_UPPER,
 ) = _derive_expected_action_bound_contract()
+
+
+def _derive_expected_latent_envelope_contract() -> tuple[
+    tuple[float, ...],
+    tuple[float, ...],
+    tuple[float, ...],
+    tuple[float, ...],
+    tuple[float, ...],
+    tuple[float, ...],
+]:
+    """Independently derive v7's finite PPO-latent operating envelope.
+
+    Training performs these operations on float32 actor-bound tensors.  Keep
+    the same precision here so the robot validates the declared scalar
+    transform contract against the same per-joint geometry.  The ONNX graph
+    emits the final physical raw action; this envelope is validation data and
+    is never applied as a second runtime transform.
+    """
+
+    actor_lower = np.asarray(EXPECTED_ACTOR_RAW_ACTION_LOWER, dtype=np.float32)
+    actor_upper = np.asarray(EXPECTED_ACTOR_RAW_ACTION_UPPER, dtype=np.float32)
+    absolute_cap = np.full_like(actor_lower, EXPECTED_ACTOR_LATENT_OPERATIONAL_ABS_MAX)
+    operational_lower = -np.minimum(
+        -actor_lower * np.float32(EXPECTED_ACTOR_LATENT_OPERATIONAL_SCALE_MULTIPLIER),
+        absolute_cap,
+    )
+    operational_upper = np.minimum(
+        actor_upper * np.float32(EXPECTED_ACTOR_LATENT_OPERATIONAL_SCALE_MULTIPLIER),
+        absolute_cap,
+    )
+    mean_lower = operational_lower * np.float32(EXPECTED_ACTOR_LATENT_MEAN_FRACTION)
+    mean_upper = operational_upper * np.float32(EXPECTED_ACTOR_LATENT_MEAN_FRACTION)
+    closest_side = np.minimum(-operational_lower, operational_upper)
+    min_std = np.minimum(
+        np.full_like(actor_lower, EXPECTED_ACTOR_LATENT_STD_MIN_ABS_MAX),
+        closest_side / np.float32(EXPECTED_ACTOR_LATENT_STD_MIN_ENVELOPE_DIVISOR),
+    )
+    max_std = np.minimum(
+        np.full_like(actor_lower, EXPECTED_ACTOR_LATENT_STD_ABS_MAX),
+        closest_side / np.float32(EXPECTED_ACTOR_LATENT_STD_ENVELOPE_DIVISOR),
+    )
+
+    contract = tuple(
+        tuple(float(value) for value in values)
+        for values in (
+            operational_lower,
+            operational_upper,
+            mean_lower,
+            mean_upper,
+            min_std,
+            max_std,
+        )
+    )
+    if not all(
+        op_lo < mean_lo < 0.0 < mean_hi < op_hi
+        and 0.0 < std_min < std_max
+        and mean_lo - 10.0 * std_max >= op_lo
+        and mean_hi + 10.0 * std_max <= op_hi
+        for op_lo, op_hi, mean_lo, mean_hi, std_min, std_max in zip(
+            *contract,
+            strict=True,
+        )
+    ):
+        raise RuntimeError("compiled-in v7 latent envelope is inconsistent")
+    return contract
+
+
+(
+    EXPECTED_ACTOR_LATENT_OPERATIONAL_LOWER,
+    EXPECTED_ACTOR_LATENT_OPERATIONAL_UPPER,
+    EXPECTED_ACTOR_LATENT_MEAN_LOWER,
+    EXPECTED_ACTOR_LATENT_MEAN_UPPER,
+    EXPECTED_ACTOR_LATENT_MIN_STD,
+    EXPECTED_ACTOR_LATENT_MAX_STD,
+) = _derive_expected_latent_envelope_contract()
+
+
+def _asymmetric_arctan_transform_float32(
+    latent: Sequence[float],
+) -> tuple[float, ...]:
+    """Mirror the export graph's one physical-action transform in float32."""
+
+    latent_values = np.asarray(latent, dtype=np.float32)
+    actor_lower = np.asarray(EXPECTED_ACTOR_RAW_ACTION_LOWER, dtype=np.float32)
+    actor_upper = np.asarray(EXPECTED_ACTOR_RAW_ACTION_UPPER, dtype=np.float32)
+    scale = np.where(latent_values >= 0.0, actor_upper, -actor_lower)
+    transformed = (
+        np.float32(2.0)
+        * scale
+        / np.float32(math.pi)
+        * np.arctan(np.float32(math.pi) * latent_values / (np.float32(2.0) * scale))
+    )
+    return tuple(float(value) for value in transformed)
+
+
+_deterministic_lower = np.asarray(
+    _asymmetric_arctan_transform_float32(EXPECTED_ACTOR_LATENT_MEAN_LOWER),
+    dtype=np.float32,
+)
+_deterministic_upper = np.asarray(
+    _asymmetric_arctan_transform_float32(EXPECTED_ACTOR_LATENT_MEAN_UPPER),
+    dtype=np.float32,
+)
+# NumPy, PyTorch and ONNX Runtime can differ by one last-place float32 bit in
+# the transcendental kernel.  Move the inclusive validation envelope one ULP
+# outward; this is many orders of magnitude inside the guarded actor bounds.
+EXPECTED_DETERMINISTIC_RAW_ACTION_LOWER = tuple(
+    float(value)
+    for value in np.nextafter(
+        _deterministic_lower,
+        np.full_like(_deterministic_lower, -np.inf),
+    )
+)
+EXPECTED_DETERMINISTIC_RAW_ACTION_UPPER = tuple(
+    float(value)
+    for value in np.nextafter(
+        _deterministic_upper,
+        np.full_like(_deterministic_upper, np.inf),
+    )
+)
+if not all(
+    actor_lo < output_lo < 0.0 < output_hi < actor_hi
+    for actor_lo, actor_hi, output_lo, output_hi in zip(
+        EXPECTED_ACTOR_RAW_ACTION_LOWER,
+        EXPECTED_ACTOR_RAW_ACTION_UPPER,
+        EXPECTED_DETERMINISTIC_RAW_ACTION_LOWER,
+        EXPECTED_DETERMINISTIC_RAW_ACTION_UPPER,
+        strict=True,
+    )
+):
+    raise RuntimeError("compiled-in v7 deterministic transform envelope is unsafe")
 
 # These ranges are the command support used by Mjlab-Teleop-Microban.  The
 # exporter also records them in the policy metadata; these constants are only
@@ -315,7 +455,7 @@ def _require_tight_json_vector(
         None,
     )
     raise PicoHybridPolicyContractError(
-        f"{name} does not match the independently derived Microban v5 contract"
+        f"{name} does not match the independently derived Microban v7 contract"
         + (
             ""
             if mismatch is None
@@ -339,7 +479,7 @@ def _require_exact_finite_scalar(
         raise PicoHybridPolicyContractError(f"{name} must be numeric") from exc
     if not math.isfinite(actual) or actual != expected:
         raise PicoHybridPolicyContractError(
-            f"{name} does not match the fixed Microban v5 contract"
+            f"{name} does not match the fixed Microban v7 contract"
         )
 
 
@@ -499,26 +639,40 @@ def validate_onnxruntime_compatibility(
     input_name: str,
     actor_lower: Sequence[float] = EXPECTED_ACTOR_RAW_ACTION_LOWER,
     actor_upper: Sequence[float] = EXPECTED_ACTOR_RAW_ACTION_UPPER,
+    deterministic_lower: Sequence[float] = EXPECTED_DETERMINISTIC_RAW_ACTION_LOWER,
+    deterministic_upper: Sequence[float] = EXPECTED_DETERMINISTIC_RAW_ACTION_UPPER,
 ) -> int:
     """Run the fixed corpus through ONNX Runtime and validate its outputs.
 
     Returns the number of observations executed.  This deliberately does not
     compare against PyTorch: the export gate owns that numerical parity check.
-    V5's exported deterministic graph must also keep every result strictly
+    V7's exported deterministic graph must also keep every result strictly
     inside its open actor interval; reaching either endpoint fails the load.
     """
 
     lower = np.asarray(actor_lower, dtype=np.float64)
     upper = np.asarray(actor_upper, dtype=np.float64)
+    output_lower = np.asarray(deterministic_lower, dtype=np.float64)
+    output_upper = np.asarray(deterministic_upper, dtype=np.float64)
     if (
         lower.shape != (EXPECTED_ACTION_WIDTH,)
         or upper.shape != (EXPECTED_ACTION_WIDTH,)
+        or output_lower.shape != (EXPECTED_ACTION_WIDTH,)
+        or output_upper.shape != (EXPECTED_ACTION_WIDTH,)
         or not np.isfinite(lower).all()
         or not np.isfinite(upper).all()
+        or not np.isfinite(output_lower).all()
+        or not np.isfinite(output_upper).all()
         or not np.all(lower < 0.0)
         or not np.all(upper > 0.0)
+        or not np.all(lower < output_lower)
+        or not np.all(output_lower < 0.0)
+        or not np.all(output_upper > 0.0)
+        or not np.all(output_upper < upper)
     ):
-        raise PicoHybridPolicyRuntimeError("invalid ORT actor-bound contract")
+        raise PicoHybridPolicyRuntimeError(
+            "invalid ORT actor-bound or deterministic-envelope contract"
+        )
 
     observations = onnxruntime_compatibility_smoke_inputs()
     for sample_index, observation in enumerate(observations):
@@ -550,6 +704,13 @@ def validate_onnxruntime_compatibility(
             raise PicoHybridPolicyRuntimeError(
                 "ONNX Runtime compatibility smoke output reached or exceeded "
                 f"an open actor bound at sample {sample_index}"
+            )
+        if not bool(
+            np.all(output[0] >= output_lower) and np.all(output[0] <= output_upper)
+        ):
+            raise PicoHybridPolicyRuntimeError(
+                "ONNX Runtime compatibility smoke output escaped the v7 "
+                f"deterministic transform envelope at sample {sample_index}"
             )
     return len(observations)
 
@@ -754,6 +915,31 @@ def _parse_contract(session: Any) -> _PolicyContract:
         "actor_default_interior_epsilon_rad",
         EXPECTED_ACTOR_DEFAULT_INTERIOR_EPSILON_RAD,
     )
+    for name, expected in (
+        (
+            "actor_latent_operational_scale_multiplier",
+            EXPECTED_ACTOR_LATENT_OPERATIONAL_SCALE_MULTIPLIER,
+        ),
+        (
+            "actor_latent_operational_abs_max",
+            EXPECTED_ACTOR_LATENT_OPERATIONAL_ABS_MAX,
+        ),
+        ("actor_latent_mean_fraction", EXPECTED_ACTOR_LATENT_MEAN_FRACTION),
+        (
+            "actor_latent_std_min_abs_max",
+            EXPECTED_ACTOR_LATENT_STD_MIN_ABS_MAX,
+        ),
+        (
+            "actor_latent_std_min_envelope_divisor",
+            EXPECTED_ACTOR_LATENT_STD_MIN_ENVELOPE_DIVISOR,
+        ),
+        ("actor_latent_std_abs_max", EXPECTED_ACTOR_LATENT_STD_ABS_MAX),
+        (
+            "actor_latent_std_envelope_divisor",
+            EXPECTED_ACTOR_LATENT_STD_ENVELOPE_DIVISOR,
+        ),
+    ):
+        _require_exact_finite_scalar(metadata, name, expected)
 
     try:
         control_hz = float(metadata.get("control_hz", "nan"))
@@ -953,8 +1139,8 @@ def _parse_contract(session: Any) -> _PolicyContract:
         soft_upper=EXPECTED_SOFT_JOINT_POS_UPPER,
         raw_action_soft_lower=raw_action_soft_lower,
         raw_action_soft_upper=raw_action_soft_upper,
-        actor_raw_action_lower=actor_raw_action_lower,
-        actor_raw_action_upper=actor_raw_action_upper,
+        actor_raw_action_lower=EXPECTED_ACTOR_RAW_ACTION_LOWER,
+        actor_raw_action_upper=EXPECTED_ACTOR_RAW_ACTION_UPPER,
         foot_lower=foot_lower,
         foot_upper=foot_upper,
         simultaneous_both_feet_lower=simultaneous_both_feet_lower,
@@ -1016,6 +1202,8 @@ class PicoHybridMove(Move):
             self._contract.input_name,
             self._contract.actor_raw_action_lower,
             self._contract.actor_raw_action_upper,
+            EXPECTED_DETERMINISTIC_RAW_ACTION_LOWER,
+            EXPECTED_DETERMINISTIC_RAW_ACTION_UPPER,
         )
         self._last_action = np.zeros(EXPECTED_ACTION_WIDTH, dtype=np.float32)
         self._stop_start_time_s: float | None = None
@@ -1176,23 +1364,58 @@ class PicoHybridMove(Move):
                 f"unsafe policy output shape/value: {action.shape}"
             )
         raw_action = action[0]
+        targets: list[float] = []
         effective_action = np.empty(EXPECTED_ACTION_WIDTH, dtype=np.float32)
         for index, name in enumerate(self._contract.action_joint_names):
+            raw_value = float(raw_action[index])
+            if not (
+                self._contract.actor_raw_action_lower[index]
+                < raw_value
+                < self._contract.actor_raw_action_upper[index]
+            ):
+                raise PicoHybridPolicyRuntimeError(
+                    "policy output reached or exceeded its guarded actor bound "
+                    f"for {name}"
+                )
+            if not (
+                EXPECTED_DETERMINISTIC_RAW_ACTION_LOWER[index]
+                <= raw_value
+                <= EXPECTED_DETERMINISTIC_RAW_ACTION_UPPER[index]
+            ):
+                raise PicoHybridPolicyRuntimeError(
+                    "policy output escaped the v7 deterministic transform "
+                    f"envelope for {name}"
+                )
             target = (
                 self._contract.action_default_joint_pos[index]
-                + float(raw_action[index]) * self._contract.action_scale[index]
+                + raw_value * self._contract.action_scale[index]
             )
+            if not math.isfinite(target) or not (
+                self._contract.soft_lower[index]
+                < target
+                < self._contract.soft_upper[index]
+            ):
+                raise PicoHybridPolicyRuntimeError(
+                    "policy output produced a target outside the compiled-in "
+                    f"soft limits for {name}"
+                )
             clipped_target = max(
                 self._contract.soft_lower[index],
                 min(self._contract.soft_upper[index], target),
             )
-            command.target_angles[name] = clipped_target
+            targets.append(clipped_target)
             # V2 observes the action that actually survived the absolute target
             # soft clip, expressed back in the actor's raw delta coordinates.
             # This is algebraically the same formula as the training MDP term.
             effective_action[index] = (
                 clipped_target - self._contract.action_default_joint_pos[index]
             ) / self._contract.action_scale[index]
+        # Validate the complete 18-joint output before writing any target so a
+        # bad later joint cannot leave a partial motor command behind.
+        for name, target in zip(
+            self._contract.action_joint_names, targets, strict=True
+        ):
+            command.target_angles[name] = target
         self._last_action = effective_action
 
     def on_stop(self, obs: Observation, command: MotorCommand) -> None:
