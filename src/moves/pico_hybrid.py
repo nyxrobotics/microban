@@ -11,11 +11,12 @@ whose observation order changed, therefore fails before motor torque is used.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 import math
-from pathlib import Path
 import re
-from typing import Any, Callable, Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any
 
 import numpy as np
 import onnxruntime as ort
@@ -32,10 +33,13 @@ from controller import ControllerProtocol
 from moves.move import MotorCommand, Move, MoveState
 from observer import Observation
 
-
 AGENT_NAME = "pico_teleop.onnx"
 EXPECTED_POLICY_TYPE = "microban_pico_hybrid_teleop"
-EXPECTED_SCHEMA_VERSION = "1"
+EXPECTED_TRAINING_CONTRACT_VERSION = "2"
+EXPECTED_SCHEMA_VERSION = "2"
+EXPECTED_PREVIOUS_ACTION_SEMANTICS = (
+    "effective_action_after_absolute_target_soft_clip_in_raw_delta_coordinates"
+)
 EXPECTED_OBSERVATION_TERMS = (
     "base_ang_vel",
     "projected_gravity",
@@ -115,6 +119,13 @@ EXPECTED_SOFT_JOINT_POS_UPPER = (
 # the expected contract used to reject a mismatched model.
 EXPECTED_FOOT_TARGET_LOWER = (-0.03, -0.03, 0.0) * 2
 EXPECTED_FOOT_TARGET_UPPER = (0.03, 0.03, 0.05) * 2
+EXPECTED_SIMULTANEOUS_BOTH_FEET_TARGET_LOWER = (-0.01, -0.01, 0.0) * 2
+EXPECTED_SIMULTANEOUS_BOTH_FEET_TARGET_UPPER = (0.01, 0.01, 0.02) * 2
+EXPECTED_SIMULTANEOUS_BOTH_FEET_TARGET_SEMANTICS = (
+    "left_and_right_nonzero_offsets_use_conservative_stationary_training_support"
+)
+LIVE_BODY_TARGET_SAFETY_MARGIN = 0.8
+SUPPORT_FOOT_FLOOR_BAND_M = 0.0025
 EXPECTED_HAND_TARGET_LOWER = (-0.08, -0.08, -0.08) * 2
 EXPECTED_HAND_TARGET_UPPER = (0.08, 0.08, 0.08) * 2
 
@@ -200,9 +211,7 @@ def _require_gated_export_provenance(
         except (TypeError, ValueError) as exc:
             raise PicoHybridPolicyContractError(f"{name} must be numeric") from exc
         if not math.isfinite(actual) or actual != expected:
-            raise PicoHybridPolicyContractError(
-                f"{name} does not match parity gate v1"
-            )
+            raise PicoHybridPolicyContractError(f"{name} does not match parity gate v1")
 
     filename = metadata.get("checkpoint_filename", "")
     filename_match = _CHECKPOINT_FILENAME_RE.fullmatch(filename)
@@ -285,7 +294,10 @@ def onnxruntime_compatibility_smoke_inputs() -> np.ndarray:
     random_rows = rng.uniform(
         lower,
         upper,
-        size=(EXPECTED_ONNX_PARITY_SAMPLE_COUNT - len(rows), EXPECTED_OBSERVATION_WIDTH),
+        size=(
+            EXPECTED_ONNX_PARITY_SAMPLE_COUNT - len(rows),
+            EXPECTED_OBSERVATION_WIDTH,
+        ),
     ).astype(np.float32)
     random_rows[:, -2:] = rng.integers(0, 2, size=(random_rows.shape[0], 2)).astype(
         np.float32
@@ -443,6 +455,8 @@ class _PolicyContract:
     soft_upper: tuple[float, ...]
     foot_lower: tuple[float, ...]
     foot_upper: tuple[float, ...]
+    simultaneous_both_feet_lower: tuple[float, ...]
+    simultaneous_both_feet_upper: tuple[float, ...]
     hand_lower: tuple[float, ...]
     hand_upper: tuple[float, ...]
     checkpoint_filename: str
@@ -455,7 +469,9 @@ def _parse_contract(session: Any) -> _PolicyContract:
     inputs = session.get_inputs()
     outputs = session.get_outputs()
     if len(inputs) != 1 or len(outputs) != 1:
-        raise PicoHybridPolicyContractError("policy must have exactly one input and output")
+        raise PicoHybridPolicyContractError(
+            "policy must have exactly one input and output"
+        )
     if _fixed_width(inputs[0], "policy input") != EXPECTED_OBSERVATION_WIDTH:
         raise PicoHybridPolicyContractError("policy input width must be exactly 83")
     if _fixed_width(outputs[0], "policy output") != EXPECTED_ACTION_WIDTH:
@@ -470,6 +486,13 @@ def _parse_contract(session: Any) -> _PolicyContract:
         checkpoint_completed_updates,
         checkpoint_sha256,
     ) = _require_gated_export_provenance(metadata)
+    if (
+        metadata.get("microban_teleop_training_contract_version")
+        != EXPECTED_TRAINING_CONTRACT_VERSION
+    ):
+        raise PicoHybridPolicyContractError(
+            "unsupported or missing Microban teleop training contract version"
+        )
     if metadata.get("observation_schema_version") != EXPECTED_SCHEMA_VERSION:
         raise PicoHybridPolicyContractError("unsupported observation schema version")
     if metadata.get("base_ang_vel_frame") != "robot_body_xyz":
@@ -478,13 +501,17 @@ def _parse_contract(session: Any) -> _PolicyContract:
         raise PicoHybridPolicyContractError("base_ang_vel_units must be rad_s")
     if metadata.get("observation_width") != str(EXPECTED_OBSERVATION_WIDTH):
         raise PicoHybridPolicyContractError("observation_width metadata must be 83")
-    if _split_csv(metadata.get("locomotion_command_order"), "locomotion_command_order") != (
+    if _split_csv(
+        metadata.get("locomotion_command_order"), "locomotion_command_order"
+    ) != (
         "linear_velocity_x",
         "linear_velocity_y",
         "angular_velocity_z",
     ):
         raise PicoHybridPolicyContractError("unsupported locomotion command order")
-    if _split_csv(metadata.get("locomotion_command_units"), "locomotion_command_units") != (
+    if _split_csv(
+        metadata.get("locomotion_command_units"), "locomotion_command_units"
+    ) != (
         "m_s",
         "m_s",
         "rad_s",
@@ -492,9 +519,12 @@ def _parse_contract(session: Any) -> _PolicyContract:
         raise PicoHybridPolicyContractError("unsupported locomotion command units")
     if metadata.get("locomotion_command_frame") != "robot_body_forward_left_yaw_up":
         raise PicoHybridPolicyContractError("unsupported locomotion command frame")
-    if metadata.get("previous_action_semantics") != "raw_policy_output_before_target_clip":
+    if metadata.get("previous_action_semantics") != EXPECTED_PREVIOUS_ACTION_SEMANTICS:
         raise PicoHybridPolicyContractError("unsupported previous-action semantics")
-    if metadata.get("action_target_semantics") != "default_joint_pos_plus_raw_action_times_scale":
+    if (
+        metadata.get("action_target_semantics")
+        != "default_joint_pos_plus_raw_action_times_scale"
+    ):
         raise PicoHybridPolicyContractError("unsupported action target semantics")
     if metadata.get("action_clip_semantics") != "absolute_joint_position_radians":
         raise PicoHybridPolicyContractError("unsupported action clipping semantics")
@@ -504,9 +534,13 @@ def _parse_contract(session: Any) -> _PolicyContract:
     except ValueError as exc:
         raise PicoHybridPolicyContractError("control_hz must be numeric") from exc
     if not math.isclose(control_hz, 50.0, abs_tol=1e-6):
-        raise PicoHybridPolicyContractError(f"policy control_hz must be 50, got {control_hz}")
+        raise PicoHybridPolicyContractError(
+            f"policy control_hz must be 50, got {control_hz}"
+        )
 
-    observation_names = _split_csv(metadata.get("observation_names"), "observation_names")
+    observation_names = _split_csv(
+        metadata.get("observation_names"), "observation_names"
+    )
     if observation_names != EXPECTED_OBSERVATION_TERMS:
         raise PicoHybridPolicyContractError(
             f"unsafe observation order: {observation_names!r}"
@@ -514,15 +548,15 @@ def _parse_contract(session: Any) -> _PolicyContract:
     observation_joints = _split_csv(
         metadata.get("observation_joint_names"), "observation_joint_names"
     )
-    if len(observation_joints) != len(MOTOR_TO_ID) or set(observation_joints) != set(MOTOR_TO_ID):
+    if len(observation_joints) != len(MOTOR_TO_ID) or set(observation_joints) != set(
+        MOTOR_TO_ID
+    ):
         raise PicoHybridPolicyContractError(
             "observation_joint_names must contain each of Microban's 21 joints exactly once"
         )
     action_joints = _split_csv(metadata.get("action_joint_names"), "action_joint_names")
     if action_joints != tuple(OBSERVATION_DOF_ORDER):
-        raise PicoHybridPolicyContractError(
-            f"unsafe action order: {action_joints!r}"
-        )
+        raise PicoHybridPolicyContractError(f"unsafe action order: {action_joints!r}")
 
     observation_defaults = _float_csv(
         metadata.get("observation_default_joint_pos"),
@@ -532,7 +566,9 @@ def _parse_contract(session: Any) -> _PolicyContract:
     action_defaults = _float_csv(
         metadata.get("default_joint_pos"), "default_joint_pos", len(action_joints)
     )
-    scales = _float_csv(metadata.get("action_scale"), "action_scale", len(action_joints))
+    scales = _float_csv(
+        metadata.get("action_scale"), "action_scale", len(action_joints)
+    )
     soft_lower = _float_csv(
         metadata.get("soft_joint_pos_lower"), "soft_joint_pos_lower", len(action_joints)
     )
@@ -565,15 +601,26 @@ def _parse_contract(session: Any) -> _PolicyContract:
 
     foot_lower = _float_csv(metadata.get("foot_target_lower"), "foot_target_lower", 6)
     foot_upper = _float_csv(metadata.get("foot_target_upper"), "foot_target_upper", 6)
+    simultaneous_both_feet_lower = _float_csv(
+        metadata.get("simultaneous_both_feet_target_lower"),
+        "simultaneous_both_feet_target_lower",
+        6,
+    )
+    simultaneous_both_feet_upper = _float_csv(
+        metadata.get("simultaneous_both_feet_target_upper"),
+        "simultaneous_both_feet_target_upper",
+        6,
+    )
     hand_lower = _float_csv(metadata.get("hand_target_lower"), "hand_target_lower", 6)
     hand_upper = _float_csv(metadata.get("hand_target_upper"), "hand_target_upper", 6)
     if metadata.get("foot_target_frame") != "robot_trunk_xyz_forward_left_up":
         raise PicoHybridPolicyContractError("unsupported foot target frame")
     if metadata.get("hand_target_frame") != "robot_trunk_xyz_forward_left_up":
         raise PicoHybridPolicyContractError("unsupported hand target frame")
-    if metadata.get("foot_target_units") != "metres" or metadata.get(
-        "hand_target_units"
-    ) != "metres":
+    if (
+        metadata.get("foot_target_units") != "metres"
+        or metadata.get("hand_target_units") != "metres"
+    ):
         raise PicoHybridPolicyContractError("body targets must be expressed in metres")
     if metadata.get("foot_target_semantics") != (
         "left_xyz_then_right_xyz_trunk_frame_offset_from_episode_reset_"
@@ -586,9 +633,30 @@ def _parse_contract(session: Any) -> _PolicyContract:
         "periodic_command_resampling_does_not_move_reference"
     ):
         raise PicoHybridPolicyContractError("unsupported hand target semantics")
+    if (
+        metadata.get("simultaneous_both_feet_target_semantics")
+        != EXPECTED_SIMULTANEOUS_BOTH_FEET_TARGET_SEMANTICS
+    ):
+        raise PicoHybridPolicyContractError(
+            "unsupported simultaneous-both-feet target semantics"
+        )
+    if metadata.get("simultaneous_both_feet_requires_zero_twist") != "true":
+        raise PicoHybridPolicyContractError(
+            "simultaneous-both-feet targets must require zero twist"
+        )
     for name, actual, expected in (
         ("foot_target_lower", foot_lower, EXPECTED_FOOT_TARGET_LOWER),
         ("foot_target_upper", foot_upper, EXPECTED_FOOT_TARGET_UPPER),
+        (
+            "simultaneous_both_feet_target_lower",
+            simultaneous_both_feet_lower,
+            EXPECTED_SIMULTANEOUS_BOTH_FEET_TARGET_LOWER,
+        ),
+        (
+            "simultaneous_both_feet_target_upper",
+            simultaneous_both_feet_upper,
+            EXPECTED_SIMULTANEOUS_BOTH_FEET_TARGET_UPPER,
+        ),
         ("hand_target_lower", hand_lower, EXPECTED_HAND_TARGET_LOWER),
         ("hand_target_upper", hand_upper, EXPECTED_HAND_TARGET_UPPER),
     ):
@@ -608,6 +676,8 @@ def _parse_contract(session: Any) -> _PolicyContract:
         soft_upper=EXPECTED_SOFT_JOINT_POS_UPPER,
         foot_lower=foot_lower,
         foot_upper=foot_upper,
+        simultaneous_both_feet_lower=simultaneous_both_feet_lower,
+        simultaneous_both_feet_upper=simultaneous_both_feet_upper,
         hand_lower=hand_lower,
         hand_upper=hand_upper,
         checkpoint_filename=checkpoint_filename,
@@ -626,7 +696,9 @@ def _bounded_targets(
     for value, lo, hi in zip(values, lower, upper):
         numeric = float(value)
         if not math.isfinite(numeric):
-            raise PicoHybridPolicyRuntimeError("body target contains a non-finite value")
+            raise PicoHybridPolicyRuntimeError(
+                "body target contains a non-finite value"
+            )
         # Clipping at the policy's training support is safer than extrapolating a
         # human-size or corrupt target into an unseen command.
         result.append(max(lo, min(hi, numeric)))
@@ -648,7 +720,9 @@ class PicoHybridMove(Move):
         neutral_return_duration_s: float = 0.8,
         *,
         session: Any | None = None,
-        gyro_transform: Callable[[Sequence[float]], Sequence[float]] = sensor_gyro_to_body,
+        gyro_transform: Callable[
+            [Sequence[float]], Sequence[float]
+        ] = sensor_gyro_to_body,
     ) -> None:
         super().__init__()
         self._controller = controller
@@ -697,11 +771,50 @@ class PicoHybridMove(Move):
         foot_values: list[float] = []
         for side in ("left", "right"):
             foot_values.extend(foot_mapping.get(side, (0.0, 0.0, 0.0)))
+        for start in (0, 3):
+            vector = tuple(float(value) for value in foot_values[start : start + 3])
+            if vector[2] <= SUPPORT_FOOT_FLOOR_BAND_M and vector != (
+                0.0,
+                0.0,
+                0.0,
+            ):
+                raise PicoHybridPolicyRuntimeError(
+                    "support-foot floor-band target must be exact XYZ zero"
+                )
+        active_feet = [
+            any(abs(value) > 1.0e-12 for value in foot_values[start : start + 3])
+            for start in (0, 3)
+        ]
+        if all(active_feet):
+            live_lower = tuple(
+                value * LIVE_BODY_TARGET_SAFETY_MARGIN
+                for value in self._contract.simultaneous_both_feet_lower
+            )
+            live_upper = tuple(
+                value * LIVE_BODY_TARGET_SAFETY_MARGIN
+                for value in self._contract.simultaneous_both_feet_upper
+            )
+            if any(
+                value < live_lower[index] or value > live_upper[index]
+                for index, value in enumerate(foot_values)
+            ):
+                raise PicoHybridPolicyRuntimeError(
+                    "simultaneous foot targets exceed their conservative live bound"
+                )
+            if any(
+                float(obs.user_input.velocity[axis]) != 0.0
+                for axis in ("vx", "vy", "vtheta")
+            ):
+                raise PicoHybridPolicyRuntimeError(
+                    "simultaneous foot targets require zero locomotion command"
+                )
         feet = _bounded_targets(
             foot_values, self._contract.foot_lower, self._contract.foot_upper
         )
 
-        hand_mapping: Mapping[str, Sequence[float] | None] = obs.user_input.hand_target or {}
+        hand_mapping: Mapping[str, Sequence[float] | None] = (
+            obs.user_input.hand_target or {}
+        )
         hand_values: list[float] = []
         active: list[float] = []
         for side in ("left", "right"):
@@ -716,12 +829,18 @@ class PicoHybridMove(Move):
 
     def build_observation(self, obs: Observation) -> list[float]:
         try:
-            gyro_body = [float(value) for value in self._gyro_transform(obs.robot_state.gyro)]
+            gyro_body = [
+                float(value) for value in self._gyro_transform(obs.robot_state.gyro)
+            ]
         except (TypeError, ValueError, OverflowError) as exc:
-            raise PicoHybridPolicyRuntimeError("failed to transform gyro to body frame") from exc
+            raise PicoHybridPolicyRuntimeError(
+                "failed to transform gyro to body frame"
+            ) from exc
         gravity = [float(value) for value in obs.robot_state.projected_gravity]
         if len(gyro_body) != 3 or len(gravity) != 3:
-            raise PicoHybridPolicyRuntimeError("gyro and projected gravity must be 3-vectors")
+            raise PicoHybridPolicyRuntimeError(
+                "gyro and projected gravity must be 3-vectors"
+            )
 
         values: list[float] = gyro_body + gravity
         for name, default in zip(
@@ -750,7 +869,9 @@ class PicoHybridMove(Move):
         # Match the existing fall gate.  Scheduler/get-up arbitration owns the
         # sustained-fall transition; this tick only holds measured action joints.
         gravity = obs.robot_state.projected_gravity
-        if len(gravity) != 3 or not all(math.isfinite(float(value)) for value in gravity):
+        if len(gravity) != 3 or not all(
+            math.isfinite(float(value)) for value in gravity
+        ):
             raise PicoHybridPolicyRuntimeError("projected gravity is invalid")
         if float(gravity[2]) > -0.5:
             measured_positions = self._measured_action_positions(obs)
@@ -768,16 +889,24 @@ class PicoHybridMove(Move):
                 f"unsafe policy output shape/value: {action.shape}"
             )
         raw_action = action[0]
-        self._last_action = raw_action.astype(np.float32)
+        effective_action = np.empty(EXPECTED_ACTION_WIDTH, dtype=np.float32)
         for index, name in enumerate(self._contract.action_joint_names):
             target = (
                 self._contract.action_default_joint_pos[index]
                 + float(raw_action[index]) * self._contract.action_scale[index]
             )
-            command.target_angles[name] = max(
+            clipped_target = max(
                 self._contract.soft_lower[index],
                 min(self._contract.soft_upper[index], target),
             )
+            command.target_angles[name] = clipped_target
+            # V2 observes the action that actually survived the absolute target
+            # soft clip, expressed back in the actor's raw delta coordinates.
+            # This is algebraically the same formula as the training MDP term.
+            effective_action[index] = (
+                clipped_target - self._contract.action_default_joint_pos[index]
+            ) / self._contract.action_scale[index]
+        self._last_action = effective_action
 
     def on_stop(self, obs: Observation, command: MotorCommand) -> None:
         if "getup" in obs.user_input.active_moves:

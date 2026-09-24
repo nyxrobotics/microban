@@ -13,7 +13,7 @@ Wire format: one complete JSON snapshot per UDP packet —
       "locomotion_policy": "walk" | "pico_teleop",
       "head_orientation": {"roll": 0.0, "pitch": -0.2, "yaw": 0.3} | null,
       "head_yaw_front": false,
-      "body_target_contract": "microban_pico_offsets_v1",
+      "body_target_contract": "microban_pico_offsets_v2_both_feet_stationary",
       "body_target_safety_margin": 0.8,
       "foot_target": {"left": [dx, dy, dz], "right": [dx, dy, dz]} | null,
       "hand_target": {"left": [dx, dy, dz] | null, "right": [dx, dy, dz] | null} | null
@@ -28,6 +28,9 @@ Hybrid ``pico_teleop`` walk snapshots use fixed policy-session calibration
 offsets in the robot trunk frame (+X forward, +Y left, +Z up), in metres. They
 must declare the exact contract and 0.8 safety margin above, provide complete
 paired feet and hands, and stay inside the bridge's 80% training envelope.
+After the bridge projects a support foot into its floor band, two active foot
+offsets use the narrower simultaneous-foot envelope and require an exactly zero
+twist command.
 Any mismatch stops and disarms walking immediately, clears both target pairs,
 and requires another trigger release.
 """
@@ -40,16 +43,22 @@ import time
 
 from input.input_source import InputSource, UserInput
 
-
 _NETWORK_MOVES = frozenset({"walk", "hmd_head"})
 _LOCOMOTION_POLICIES = frozenset({"walk", "pico_teleop"})
-_PICO_BODY_TARGET_CONTRACT = "microban_pico_offsets_v1"
+_PICO_BODY_TARGET_CONTRACT = "microban_pico_offsets_v2_both_feet_stationary"
 _PICO_BODY_TARGET_SAFETY_MARGIN = 0.8
+_PICO_SUPPORT_FOOT_FLOOR_BAND_M = 0.0025
 _PICO_FOOT_TARGET_LOWER = tuple(
     value * _PICO_BODY_TARGET_SAFETY_MARGIN for value in (-0.03, -0.03, 0.0)
 )
 _PICO_FOOT_TARGET_UPPER = tuple(
     value * _PICO_BODY_TARGET_SAFETY_MARGIN for value in (0.03, 0.03, 0.05)
+)
+_PICO_SIMULTANEOUS_BOTH_FEET_LOWER = tuple(
+    value * _PICO_BODY_TARGET_SAFETY_MARGIN for value in (-0.01, -0.01, 0.0)
+)
+_PICO_SIMULTANEOUS_BOTH_FEET_UPPER = tuple(
+    value * _PICO_BODY_TARGET_SAFETY_MARGIN for value in (0.01, 0.01, 0.02)
 )
 _PICO_HAND_TARGET_LOWER = tuple(
     value * _PICO_BODY_TARGET_SAFETY_MARGIN for value in (-0.08, -0.08, -0.08)
@@ -117,6 +126,53 @@ def _matches_pico_safety_margin(value) -> bool:
     )
 
 
+def _simultaneous_both_feet_valid(
+    foot_target: dict[str, tuple[float, float, float] | None] | None,
+    velocity: dict[str, float],
+) -> bool:
+    """Apply the narrow stationary contract when both offsets are non-zero."""
+
+    if foot_target is None:
+        return False
+    left = foot_target.get("left")
+    right = foot_target.get("right")
+    if left is None or right is None:
+        return False
+    both_active = all(
+        any(abs(component) > 1.0e-12 for component in vector)
+        for vector in (left, right)
+    )
+    if not both_active:
+        return True
+    if any(velocity[axis] != 0.0 for axis in ("vx", "vy", "vtheta")):
+        return False
+    return _target_pair_in_bounds(
+        foot_target,
+        _PICO_SIMULTANEOUS_BOTH_FEET_LOWER,
+        _PICO_SIMULTANEOUS_BOTH_FEET_UPPER,
+    )
+
+
+def _support_foot_floor_projection_valid(
+    foot_target: dict[str, tuple[float, float, float] | None] | None,
+) -> bool:
+    """Require the bridge's support-floor band to arrive as exact XYZ zero."""
+
+    if foot_target is None:
+        return False
+    for side in ("left", "right"):
+        vector = foot_target.get(side)
+        if vector is None:
+            return False
+        if vector[2] <= _PICO_SUPPORT_FOOT_FLOOR_BAND_M and vector != (
+            0.0,
+            0.0,
+            0.0,
+        ):
+            return False
+    return True
+
+
 class NetworkInputSource(InputSource):
     """Non-blocking UDP JSON input source. See module docstring for the wire format."""
 
@@ -126,10 +182,16 @@ class NetworkInputSource(InputSource):
         stale_after_s: float = 0.3,
         allowed_remote: str | None = None,
     ) -> None:
-        if not isinstance(port, int) or isinstance(port, bool) or not 1 <= port <= 65535:
+        if (
+            not isinstance(port, int)
+            or isinstance(port, bool)
+            or not 1 <= port <= 65535
+        ):
             raise ValueError("port must be between 1 and 65535")
         if not math.isfinite(stale_after_s) or not 0.05 <= stale_after_s <= 0.5:
-            raise ValueError("stale_after_s must be finite and between 0.05 and 0.5 seconds")
+            raise ValueError(
+                "stale_after_s must be finite and between 0.05 and 0.5 seconds"
+            )
         self._port = port
         self._stale_after_s = stale_after_s
         self._allowed_remote = (
@@ -185,10 +247,16 @@ class NetworkInputSource(InputSource):
                 velocity=dict(self._state.velocity),
                 show_imu=self._state.show_imu,
                 locomotion_policy=self._state.locomotion_policy,
-                head_orientation=dict(self._state.head_orientation) if self._state.head_orientation else None,
+                head_orientation=dict(self._state.head_orientation)
+                if self._state.head_orientation
+                else None,
                 head_yaw_front=self._state.head_yaw_front,
-                foot_target=dict(self._state.foot_target) if self._state.foot_target else None,
-                hand_target=dict(self._state.hand_target) if self._state.hand_target else None,
+                foot_target=dict(self._state.foot_target)
+                if self._state.foot_target
+                else None,
+                hand_target=dict(self._state.hand_target)
+                if self._state.hand_target
+                else None,
             )
 
     def set_motion_inhibited(self, inhibited: bool) -> None:
@@ -217,7 +285,7 @@ class NetworkInputSource(InputSource):
         while self._running:
             try:
                 data, addr = sock.recvfrom(16384)
-            except (socket.timeout, OSError):
+            except (TimeoutError, OSError):
                 continue
             if self._allowed_remote is not None and addr[0] != self._allowed_remote:
                 continue
@@ -241,7 +309,9 @@ class NetworkInputSource(InputSource):
         session_id = packet.get("session_id")
         seq = packet.get("seq")
         if not isinstance(session_id, str) or not session_id or len(session_id) > 128:
-            raise TypeError("session_id must be a non-empty string of at most 128 characters")
+            raise TypeError(
+                "session_id must be a non-empty string of at most 128 characters"
+            )
         if not isinstance(seq, int) or isinstance(seq, bool) or seq < 0:
             raise TypeError("seq must be a non-negative integer")
 
@@ -255,7 +325,9 @@ class NetworkInputSource(InputSource):
         }
 
         move_values = packet.get("active_moves") or []
-        if not isinstance(move_values, list) or not all(isinstance(v, str) for v in move_values):
+        if not isinstance(move_values, list) or not all(
+            isinstance(v, str) for v in move_values
+        ):
             raise TypeError("active_moves must be a list of strings")
         requested_moves = set(move_values)
         if not requested_moves <= _NETWORK_MOVES:
@@ -265,9 +337,7 @@ class NetworkInputSource(InputSource):
         if locomotion_policy not in _LOCOMOTION_POLICIES:
             raise ValueError("unsupported locomotion_policy")
         incoming_pico_packet = locomotion_policy == "pico_teleop"
-        pico_walk_requested = (
-            incoming_pico_packet and "walk" in requested_moves
-        )
+        pico_walk_requested = incoming_pico_packet and "walk" in requested_moves
 
         orientation = packet.get("head_orientation")
         if orientation is not None:
@@ -334,11 +404,10 @@ class NetworkInputSource(InputSource):
             parsed_foot_target = None
             parsed_hand_target = None
 
-        pico_metadata_valid = (
-            packet.get("body_target_contract") == _PICO_BODY_TARGET_CONTRACT
-            and _matches_pico_safety_margin(
-                packet.get("body_target_safety_margin")
-            )
+        pico_metadata_valid = packet.get(
+            "body_target_contract"
+        ) == _PICO_BODY_TARGET_CONTRACT and _matches_pico_safety_margin(
+            packet.get("body_target_safety_margin")
         )
         if pico_walk_requested:
             pico_body_target_valid = (
@@ -350,6 +419,11 @@ class NetworkInputSource(InputSource):
                     parsed_foot_target,
                     _PICO_FOOT_TARGET_LOWER,
                     _PICO_FOOT_TARGET_UPPER,
+                )
+                and _support_foot_floor_projection_valid(parsed_foot_target)
+                and _simultaneous_both_feet_valid(
+                    parsed_foot_target,
+                    parsed_velocity,
                 )
                 and _target_pair_in_bounds(
                     parsed_hand_target,

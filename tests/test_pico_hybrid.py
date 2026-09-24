@@ -1,7 +1,7 @@
 import math
-from pathlib import Path
 import unittest
 import xml.etree.ElementTree as ET
+from pathlib import Path
 
 import numpy as np
 
@@ -18,6 +18,10 @@ from moves.pico_hybrid import (
     EXPECTED_ACTION_DEFAULT_JOINT_POS,
     EXPECTED_ACTION_SCALE,
     EXPECTED_OBSERVATION_TERMS,
+    EXPECTED_PREVIOUS_ACTION_SEMANTICS,
+    EXPECTED_SIMULTANEOUS_BOTH_FEET_TARGET_LOWER,
+    EXPECTED_SIMULTANEOUS_BOTH_FEET_TARGET_SEMANTICS,
+    EXPECTED_SIMULTANEOUS_BOTH_FEET_TARGET_UPPER,
     EXPECTED_SOFT_JOINT_POS_LOWER,
     EXPECTED_SOFT_JOINT_POS_UPPER,
     PicoHybridMove,
@@ -28,7 +32,6 @@ from moves.pico_hybrid import (
     validate_onnxruntime_compatibility,
 )
 from observer import Observation, RobotState
-
 
 OBSERVATION_JOINTS = (
     "head",
@@ -92,7 +95,8 @@ def valid_metadata():
         "onnx_parity_sample_count": "16",
         "onnx_parity_atol": "1e-05",
         "onnx_parity_rtol": "0.0001",
-        "observation_schema_version": "1",
+        "microban_teleop_training_contract_version": "2",
+        "observation_schema_version": "2",
         "base_ang_vel_frame": "robot_body_xyz",
         "base_ang_vel_units": "rad_s",
         "observation_width": "83",
@@ -108,11 +112,21 @@ def valid_metadata():
         "action_scale": _metadata_csv(EXPECTED_ACTION_SCALE),
         "soft_joint_pos_lower": _metadata_csv(EXPECTED_SOFT_JOINT_POS_LOWER),
         "soft_joint_pos_upper": _metadata_csv(EXPECTED_SOFT_JOINT_POS_UPPER),
-        "previous_action_semantics": "raw_policy_output_before_target_clip",
+        "previous_action_semantics": EXPECTED_PREVIOUS_ACTION_SEMANTICS,
         "action_target_semantics": "default_joint_pos_plus_raw_action_times_scale",
         "action_clip_semantics": "absolute_joint_position_radians",
         "foot_target_lower": _csv((-0.03, -0.03, 0.0) * 2),
         "foot_target_upper": _csv((0.03, 0.03, 0.05) * 2),
+        "simultaneous_both_feet_target_lower": _csv(
+            EXPECTED_SIMULTANEOUS_BOTH_FEET_TARGET_LOWER
+        ),
+        "simultaneous_both_feet_target_upper": _csv(
+            EXPECTED_SIMULTANEOUS_BOTH_FEET_TARGET_UPPER
+        ),
+        "simultaneous_both_feet_target_semantics": (
+            EXPECTED_SIMULTANEOUS_BOTH_FEET_TARGET_SEMANTICS
+        ),
+        "simultaneous_both_feet_requires_zero_twist": "true",
         "foot_target_frame": "robot_trunk_xyz_forward_left_up",
         "foot_target_units": "metres",
         "foot_target_semantics": (
@@ -176,8 +190,8 @@ def observation(time_s=0.0):
             active_moves={"walk"},
             velocity={"vx": 0.2, "vy": -0.1, "vtheta": 0.3},
             foot_target={
-                "left": (0.01, -0.02, 0.04),
-                "right": (9.0, -9.0, -9.0),
+                "left": (9.0, -9.0, 0.04),
+                "right": (0.0, 0.0, 0.0),
             },
             hand_target={"left": (0.02, 0.03, -0.04), "right": None},
         ),
@@ -205,12 +219,14 @@ class PicoHybridMoveTest(unittest.TestCase):
             ("nonfinite", np.full((1, 18), np.nan, dtype=np.float32)),
             ("nonnumeric", np.full((1, 18), "bad", dtype=object)),
         ):
-            with self.subTest(case=case):
-                with self.assertRaises(PicoHybridPolicyRuntimeError):
-                    validate_onnxruntime_compatibility(
-                        FakeSession(output=output),
-                        "obs",
-                    )
+            with (
+                self.subTest(case=case),
+                self.assertRaises(PicoHybridPolicyRuntimeError),
+            ):
+                validate_onnxruntime_compatibility(
+                    FakeSession(output=output),
+                    "obs",
+                )
 
     def test_contract_accepts_and_exposes_gated_export_provenance(self):
         move = PicoHybridMove(session=FakeSession())
@@ -258,6 +274,58 @@ class PicoHybridMoveTest(unittest.TestCase):
         with self.assertRaises(PicoHybridPolicyContractError):
             PicoHybridMove(session=FakeSession(metadata=metadata))
 
+    def test_contract_rejects_v1_or_missing_effective_action_contract(self):
+        mutations = {
+            "missing_training_contract": (
+                "microban_teleop_training_contract_version",
+                None,
+            ),
+            "v1_training_contract": (
+                "microban_teleop_training_contract_version",
+                "1",
+            ),
+            "v1_schema": ("observation_schema_version", "1"),
+            "v1_raw_previous_action": (
+                "previous_action_semantics",
+                "raw_policy_output_before_target_clip",
+            ),
+        }
+        for case, (field, value) in mutations.items():
+            with self.subTest(case=case):
+                metadata = valid_metadata()
+                if value is None:
+                    del metadata[field]
+                else:
+                    metadata[field] = value
+                with self.assertRaises(PicoHybridPolicyContractError):
+                    PicoHybridMove(session=FakeSession(metadata=metadata))
+
+    def test_contract_rejects_missing_or_widened_both_feet_support(self):
+        mutations = {
+            "missing_lower": ("simultaneous_both_feet_target_lower", None),
+            "widened_upper": (
+                "simultaneous_both_feet_target_upper",
+                _csv((0.03, 0.03, 0.05) * 2),
+            ),
+            "wrong_semantics": (
+                "simultaneous_both_feet_target_semantics",
+                "ordinary_foot_bounds",
+            ),
+            "moving_allowed": (
+                "simultaneous_both_feet_requires_zero_twist",
+                "false",
+            ),
+        }
+        for case, (field, value) in mutations.items():
+            with self.subTest(case=case):
+                metadata = valid_metadata()
+                if value is None:
+                    del metadata[field]
+                else:
+                    metadata[field] = value
+                with self.assertRaises(PicoHybridPolicyContractError):
+                    PicoHybridMove(session=FakeSession(metadata=metadata))
+
     def test_contract_rejects_mutated_action_safety_vectors(self):
         mutations = {
             "default_joint_pos": (0, 0.5),
@@ -301,10 +369,10 @@ class PicoHybridMoveTest(unittest.TestCase):
         self.assertEqual(values[27:48], [0.0] * 21)
         self.assertEqual(values[48:66], [0.0] * 18)
         self.assertEqual(values[66:69], [0.2, -0.1, 0.3])
-        self.assertEqual(values[69:75], [0.01, -0.02, 0.04, 0.03, -0.03, 0.0])
+        self.assertEqual(values[69:75], [0.03, -0.03, 0.04, 0.0, 0.0, 0.0])
         self.assertEqual(values[75:83], [0.02, 0.03, -0.04, 0.0, 0.0, 0.0, 1.0, 0.0])
 
-    def test_step_keeps_raw_previous_action_but_soft_clips_target(self):
+    def test_step_feeds_back_effective_action_after_soft_clip(self):
         raw = np.full((1, 18), 100.0, dtype=np.float32)
         session = FakeSession(output=raw)
         move = PicoHybridMove(session=session, gyro_transform=lambda value: value)
@@ -312,17 +380,73 @@ class PicoHybridMoveTest(unittest.TestCase):
         move.on_start(obs, MotorCommand())
         command = MotorCommand()
         move.step(obs, command)
-        self.assertEqual(move._last_action.tolist(), [100.0] * 18)
+        expected_effective = []
         for index, name in enumerate(OBSERVATION_DOF_ORDER):
             self.assertEqual(
                 command.target_angles[name], EXPECTED_SOFT_JOINT_POS_UPPER[index]
             )
+            expected_effective.append(
+                (
+                    EXPECTED_SOFT_JOINT_POS_UPPER[index]
+                    - EXPECTED_ACTION_DEFAULT_JOINT_POS[index]
+                )
+                / EXPECTED_ACTION_SCALE[index]
+            )
+        np.testing.assert_allclose(move._last_action, expected_effective, atol=1e-7)
+        np.testing.assert_allclose(
+            move.build_observation(obs)[48:66], expected_effective, atol=1e-7
+        )
         self.assertEqual(session.last_feed["obs"].shape, (1, 83))
+
+    def test_simultaneous_both_feet_require_live_bounds_and_zero_twist(self):
+        move = PicoHybridMove(session=FakeSession(), gyro_transform=lambda value: value)
+        obs = observation()
+        obs.user_input.velocity = {"vx": 0.0, "vy": 0.0, "vtheta": 0.0}
+        obs.user_input.foot_target = {
+            "left": (0.008, -0.008, 0.016),
+            "right": (-0.008, 0.008, 0.016),
+        }
+        feet, _hands = move._body_targets(obs)
+        np.testing.assert_allclose(
+            feet,
+            [*obs.user_input.foot_target["left"], *obs.user_input.foot_target["right"]],
+        )
+
+        obs.user_input.foot_target["left"] = (0.0080001, 0.0, 0.01)
+        with self.assertRaisesRegex(PicoHybridPolicyRuntimeError, "live bound"):
+            move._body_targets(obs)
+
+        obs.user_input.foot_target["left"] = (0.005, 0.0, 0.01)
+        obs.user_input.velocity["vx"] = 0.01
+        with self.assertRaisesRegex(
+            PicoHybridPolicyRuntimeError, "zero locomotion command"
+        ):
+            move._body_targets(obs)
+
+    def test_support_floor_band_must_arrive_as_exact_zero(self):
+        move = PicoHybridMove(session=FakeSession(), gyro_transform=lambda value: value)
+        obs = observation()
+        obs.user_input.foot_target = {
+            "left": (0.001, 0.0, 0.0),
+            "right": (0.0, 0.0, 0.0),
+        }
+        with self.assertRaisesRegex(PicoHybridPolicyRuntimeError, "floor-band"):
+            move._body_targets(obs)
+
+        obs.user_input.foot_target["left"] = (0.0, 0.0, 0.0025)
+        with self.assertRaisesRegex(PicoHybridPolicyRuntimeError, "floor-band"):
+            move._body_targets(obs)
+
+        obs.user_input.foot_target["left"] = (0.0, 0.0, 0.0)
+        feet, _hands = move._body_targets(obs)
+        self.assertEqual(feet, [0.0] * 6)
 
     def test_nonfinite_policy_output_fails_closed(self):
         output = np.zeros((1, 18), dtype=np.float32)
         output[0, 0] = math.nan
-        move = PicoHybridMove(session=FakeSession(output=output), gyro_transform=lambda value: value)
+        move = PicoHybridMove(
+            session=FakeSession(output=output), gyro_transform=lambda value: value
+        )
         obs = observation()
         move.on_start(obs, MotorCommand())
         with self.assertRaises(PicoHybridPolicyRuntimeError):

@@ -2,12 +2,11 @@ import unittest
 
 from input.network_input import NetworkInputSource
 
-
-BODY_TARGET_CONTRACT = "microban_pico_offsets_v1"
+BODY_TARGET_CONTRACT = "microban_pico_offsets_v2_both_feet_stationary"
 BODY_TARGET_SAFETY_MARGIN = 0.8
 COMPLETE_FEET = {
     "left": [0.01, 0.0, 0.02],
-    "right": [-0.01, 0.0, 0.02],
+    "right": [0.0, 0.0, 0.0],
 }
 COMPLETE_HANDS = {
     "left": [0.01, -0.02, 0.03],
@@ -235,10 +234,8 @@ class NetworkInputTest(unittest.TestCase):
         source = NetworkInputSource(stale_after_s=0.5)
         arm_pico(source)
         feet = {
-            "left": [-0.024, 0.024, 0.0],
-            # Match the bridge's actual 0.05 * 0.8 float, as well as the
-            # mathematical 0.04 boundary, without admitting a real epsilon.
-            "right": [0.024, -0.024, 0.05 * BODY_TARGET_SAFETY_MARGIN],
+            "left": [-0.024, 0.024, 0.01],
+            "right": [0.0, 0.0, 0.0],
         }
         hands = {
             "left": [-0.064, 0.064, -0.064],
@@ -259,6 +256,70 @@ class NetworkInputTest(unittest.TestCase):
         self.assertEqual(accepted.velocity["vx"], 0.4)
         self.assertEqual(accepted.foot_target["left"], tuple(feet["left"]))
         self.assertEqual(accepted.hand_target["right"], tuple(hands["right"]))
+
+    def test_pico_contract_accepts_only_stationary_narrow_both_feet(self):
+        source = NetworkInputSource(stale_after_s=0.5)
+        arm_pico(source)
+        boundary = {
+            "left": [-0.008, 0.008, 0.016],
+            "right": [0.008, -0.008, 0.016],
+        }
+        source._apply(pico_walk_packet(2, foot_target=boundary))
+        accepted = source.read()
+        self.assertIn("walk", accepted.active_moves)
+        self.assertEqual(accepted.foot_target["left"], tuple(boundary["left"]))
+
+        invalid_cases = (
+            (
+                "too_wide",
+                {**boundary, "left": [-0.0080001, 0.0, 0.01]},
+                {},
+            ),
+            ("moving", boundary, {"vx": 0.01}),
+            ("turning", boundary, {"vtheta": -0.01}),
+        )
+        for case, feet, velocity in invalid_cases:
+            with self.subTest(case=case):
+                source = NetworkInputSource(stale_after_s=0.5)
+                arm_pico(source)
+                source._apply(pico_walk_packet(2, velocity, foot_target=feet))
+                refused = source.read()
+                self.assertNotIn("walk", refused.active_moves)
+                self.assertEqual(
+                    refused.velocity,
+                    {"vx": 0.0, "vy": 0.0, "vtheta": 0.0},
+                )
+                self.assertIsNone(refused.foot_target)
+                self.assertFalse(source._walk_armed)
+
+    def test_pico_contract_rejects_unprojected_support_floor_band(self):
+        invalid_feet = (
+            {
+                "left": [0.001, 0.0, 0.0],
+                "right": [0.0, 0.0, 0.0],
+            },
+            {
+                "left": [0.0, 0.0, 0.0025],
+                "right": [0.0, 0.0, 0.0],
+            },
+            {
+                "left": [-0.001, 0.001, 0.0025],
+                "right": [0.0, 0.0, 0.0],
+            },
+        )
+        for feet in invalid_feet:
+            with self.subTest(feet=feet):
+                source = NetworkInputSource(stale_after_s=0.5)
+                arm_pico(source)
+                source._apply(pico_walk_packet(2, foot_target=feet))
+                refused = source.read()
+                self.assertNotIn("walk", refused.active_moves)
+                self.assertEqual(
+                    refused.velocity,
+                    {"vx": 0.0, "vy": 0.0, "vtheta": 0.0},
+                )
+                self.assertIsNone(refused.foot_target)
+                self.assertFalse(source._walk_armed)
 
     def test_pico_contract_rejects_epsilon_outside_80_percent_bounds(self):
         invalid_targets = (
@@ -309,7 +370,12 @@ class NetworkInputTest(unittest.TestCase):
     def test_pico_contract_missing_or_wrong_metadata_stops_current_walk(self):
         mutations = (
             ("missing_contract", lambda value: value.pop("body_target_contract")),
-            ("wrong_contract", lambda value: value.update(body_target_contract="v2")),
+            (
+                "legacy_contract",
+                lambda value: value.update(
+                    body_target_contract="microban_pico_offsets_v1"
+                ),
+            ),
             (
                 "missing_margin",
                 lambda value: value.pop("body_target_safety_margin"),
@@ -370,9 +436,7 @@ class NetworkInputTest(unittest.TestCase):
                 source = NetworkInputSource(stale_after_s=0.5)
                 arm_pico(source)
                 source._apply(pico_walk_packet(2, {"vx": 0.8}))
-                source._apply(
-                    pico_walk_packet(3, {"vx": 0.8}, hand_target=hands)
-                )
+                source._apply(pico_walk_packet(3, {"vx": 0.8}, hand_target=hands))
                 refused = source.read()
                 self.assertNotIn("walk", refused.active_moves)
                 self.assertEqual(
@@ -526,7 +590,10 @@ class NetworkInputTest(unittest.TestCase):
         for missing in ("version", "session_id", "seq"):
             bad = packet(0)
             del bad[missing]
-            with self.subTest(missing=missing), self.assertRaises((TypeError, ValueError)):
+            with (
+                self.subTest(missing=missing),
+                self.assertRaises((TypeError, ValueError)),
+            ):
                 source._apply(bad)
 
     def test_watchdog_cannot_be_disabled_with_non_finite_timeout(self):

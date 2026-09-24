@@ -1,15 +1,16 @@
 # PICO 4 Ultra hybrid-policy runtime
 
 The robot runtime keeps the existing walking policy as the startup mode. With
-network control active, press the **left-controller X button while the left
-trigger is released** to toggle between:
+network control active, the **current state of the left-controller X button**
+selects the policy momentarily:
 
-- `walk`: the existing velocity walking policy;
-- `pico_teleop`: the independently trained 83-observation/18-action policy.
+- X released: `walk`, the existing velocity walking policy;
+- X held: `pico_teleop`, the independently trained
+  83-observation/18-action policy.
 
 This is a controller state, not an environment-variable switch. The bridge
-places `locomotion_policy` in every complete UDP snapshot. A mode change while
-the left trigger is held is rejected, walking is disarmed, and another released
+places `locomotion_policy` in every complete UDP snapshot. Changing X state while
+the left trigger is held immediately disarms walking, and a released-trigger
 snapshot is required before a later trigger press can move the robot. The two
 policies never own the same 18 joints in the same scheduler tick.
 
@@ -23,7 +24,7 @@ The other controls are unchanged:
 | right trigger (held) | slew camera-head yaw to trunk-forward |
 | HMD orientation | camera-head yaw/roll/pitch |
 | left grip (held) | show calibrated robot stereo view; otherwise passthrough |
-| left X, trigger released | toggle `walk` / `pico_teleop` |
+| left X (held) | select `pico_teleop`; releasing X selects `walk` |
 
 ## Install and validate a trained policy
 
@@ -45,13 +46,31 @@ The validator and runtime both fail closed unless the model has exactly one
 `[1,83]` input and one `[1,18]` output and its metadata agrees on observation
 order, all 21 encoder defaults, the 18 action joint names/order, body-frame gyro,
 50 Hz rate, action scale/soft limits, target coordinate frames and training
-bounds. They also require the v1 deterministic PyTorch-to-ONNX parity-gate
+bounds. The learned-policy training contract and observation schema must both be
+version `2`, with previous-action semantics exactly
+`effective_action_after_absolute_target_soft_clip_in_raw_delta_coordinates`.
+Missing/unversioned models and v1 raw-action-feedback models are rejected even
+though their tensor shapes are also `[1,83] -> [1,18]`.
+
+They also require the parity-gate version-1 deterministic PyTorch-to-ONNX
 record: `onnx_parity_verified=true`, its fixed runtime/corpus/tolerances, a
 canonical `model_N.pt` checkpoint filename, iteration `N`, completed-update
 count `N+1`, and a lowercase 64-hex checkpoint SHA-256. The validator prints
 that checkpoint identity for the deployment record. Legacy or manually
 exported artifacts without this gate record, including `walk.onnx`, are
 rejected.
+
+After each inference, the runtime converts every raw action to
+`default_joint_pos + raw_action * scale`, clips that absolute target to the
+compiled-in soft limits, commands the clipped value, then maps it back with
+`(clipped_target - default_joint_pos) / scale`. Only that effective delta is
+stored in the next observation. This exactly matches v2 training and prevents
+unbounded network output from feeding back while a servo target is saturated.
+
+V2 must be trained from a clean run. A legacy checkpoint may be inspected only
+with the simulator evaluator's explicit diagnostic flag; it cannot be resumed,
+exported as v2, accepted by this runtime, or copied into `src/agents` as a
+deployable policy.
 
 After metadata validation, the offline validator also runs the same 16 fixed
 neutral, lower-bound, upper-bound, midpoint and seed-`20260924` finite inputs
@@ -87,12 +106,21 @@ keep it fixed. It must never send the absolute human pelvis-to-limb positions.
 Stale/jumping tracking clears the calibration, removes `walk`, zeros velocity
 and sends no hand/foot target. Walking stays disarmed until the left trigger is
 released and a fresh reference can be established again. The robot receiver
-independently requires `body_target_contract: "microban_pico_offsets_v1"`,
+independently requires
+`body_target_contract: "microban_pico_offsets_v2_both_feet_stationary"`,
 `body_target_safety_margin: 0.8`, complete left/right foot and hand pairs, and
 the same live bounds as the bridge: hands `[-0.064, 0.064] m` on every axis,
-feet `[-0.024, 0.024] m` on X/Y and `[0, 0.040] m` on Z. A missing, malformed or
-out-of-range value immediately removes `walk`, zeros velocity, clears both
-target pairs and requires a valid released-trigger snapshot before rearming.
+single-foot offsets `[-0.024, 0.024] m` on X/Y and `[0, 0.040] m` on Z. The
+bridge must project a support foot at Z `<= 0.0025 m` to exact XYZ zero; the
+receiver rejects any non-zero vector left in that band. Thus the exported zero
+lower bound represents only the exact-zero inactive command; an active
+single-foot Z is `(0.0025, 0.040] m`, matching clean-v2 training from the floor
+boundary upward. After that projection, if both foot offsets are active, each is
+limited to X/Y `[-0.008, 0.008] m` and active Z `(0.0025, 0.016] m`, and `vx`,
+`vy` and `vtheta` must all be exactly zero. A missing, legacy-v1, malformed,
+out-of-range or moving-both-feet snapshot immediately removes `walk`, zeros
+velocity, clears both target pairs and requires a valid released-trigger
+snapshot before rearming.
 
 The runtime clips received offsets to the ONNX-recorded training support before
 inference. This is a last safety boundary, not a substitute for bridge-side

@@ -9,10 +9,10 @@ from pathlib import Path
 
 from controller import ControllerProtocol
 from moves.move import MotorCommand, Move, MoveState
-from moves.pico_hybrid import AGENT_NAME as PICO_AGENT_NAME, PicoHybridMove
+from moves.pico_hybrid import AGENT_NAME as PICO_AGENT_NAME
+from moves.pico_hybrid import PicoHybridMove
 from moves.walk import WalkMove
 from observer import Observation
-
 
 POLICY_NAMES = frozenset({"walk", "pico_teleop"})
 
@@ -20,9 +20,10 @@ POLICY_NAMES = frozenset({"walk", "pico_teleop"})
 class PolicySelectableWalkMove(Move):
     """Expose one scheduler move while keeping low-level policy ownership exclusive.
 
-    The PICO's left X button changes ``UserInput.locomotion_policy`` only while
-    the trigger is released.  Consequently the current child first completes its
-    smooth return to neutral.  A subsequent trigger press starts exactly one child.
+    The PICO's left X state selects ``pico_teleop`` while held and ``walk`` while
+    released.  The input bridge disarms locomotion if that state changes under a
+    held trigger, so the current child first completes its smooth return to
+    neutral.  A subsequent trigger release and press starts exactly one child.
     This wrapper still detects an unexpected in-motion mode change and initiates
     the same stop path rather than allowing two policies to write the 18 joints.
     """
