@@ -10,6 +10,7 @@ Wire format: one complete JSON snapshot per UDP packet —
       "seq": 42,
       "velocity": {"vx": 0.3, "vy": 0.0, "vtheta": 0.0},
       "active_moves": ["walk"],
+      "locomotion_policy": "walk" | "pico_teleop",
       "head_orientation": {"roll": 0.0, "pitch": -0.2, "yaw": 0.3} | null,
       "head_yaw_front": false,
       "foot_target": {"left": [dx, dy, dz], "right": [dx, dy, dz]} | null,
@@ -21,6 +22,8 @@ arrives within `stale_after_s`, read() returns a fully-neutral UserInput. After 
 or a timeout, walking stays disarmed until at least one released-trigger snapshot
 (``"walk"`` absent) arrives. A dead/reconnecting link therefore cannot resume walking
 from a trigger that was held before the interruption.
+Hybrid ``pico_teleop`` walk snapshots additionally require both foot targets;
+an incomplete pair stops and disarms walking until another trigger release.
 """
 
 import json
@@ -33,6 +36,7 @@ from input.input_source import InputSource, UserInput
 
 
 _NETWORK_MOVES = frozenset({"walk", "hmd_head"})
+_LOCOMOTION_POLICIES = frozenset({"walk", "pico_teleop"})
 
 
 def _finite_float(value) -> float:
@@ -119,6 +123,7 @@ class NetworkInputSource(InputSource):
                 active_moves=set(self._state.active_moves),
                 velocity=dict(self._state.velocity),
                 show_imu=self._state.show_imu,
+                locomotion_policy=self._state.locomotion_policy,
                 head_orientation=dict(self._state.head_orientation) if self._state.head_orientation else None,
                 head_yaw_front=self._state.head_yaw_front,
                 foot_target=dict(self._state.foot_target) if self._state.foot_target else None,
@@ -195,6 +200,10 @@ class NetworkInputSource(InputSource):
         if not requested_moves <= _NETWORK_MOVES:
             raise ValueError("network packet requested an unsupported move")
 
+        locomotion_policy = packet.get("locomotion_policy", "walk")
+        if locomotion_policy not in _LOCOMOTION_POLICIES:
+            raise ValueError("unsupported locomotion_policy")
+
         orientation = packet.get("head_orientation")
         if orientation is not None:
             if not isinstance(orientation, dict):
@@ -214,11 +223,17 @@ class NetworkInputSource(InputSource):
         if foot_target is not None:
             if not isinstance(foot_target, dict):
                 raise TypeError("foot_target must be an object or null")
+            left_foot_target = _tuple3(foot_target.get("left"))
+            right_foot_target = _tuple3(foot_target.get("right"))
+            complete_foot_target = (
+                left_foot_target is not None and right_foot_target is not None
+            )
             parsed_foot_target = {
-                "left": _tuple3(foot_target.get("left")) or (0.0, 0.0, 0.0),
-                "right": _tuple3(foot_target.get("right")) or (0.0, 0.0, 0.0),
+                "left": left_foot_target or (0.0, 0.0, 0.0),
+                "right": right_foot_target or (0.0, 0.0, 0.0),
             }
         else:
+            complete_foot_target = False
             parsed_foot_target = None
 
         hand_target = packet.get("hand_target")
@@ -251,11 +266,37 @@ class NetworkInputSource(InputSource):
                 return
             self._last_seq = seq
 
+            mode_changed = locomotion_policy != self._state.locomotion_policy
+            force_disarmed = mode_changed
+            if mode_changed:
+                self._walk_armed = False
+            if mode_changed and "walk" in requested_moves:
+                # A policy may never change while either policy owns the joints.
+                # Ignore the requested mode and force a deadman release instead.
+                locomotion_policy = self._state.locomotion_policy
+                requested_moves.discard("walk")
+                parsed_velocity = {"vx": 0.0, "vy": 0.0, "vtheta": 0.0}
+                mode_changed = False
+
+            if (
+                locomotion_policy == "pico_teleop"
+                and "walk" in requested_moves
+                and not complete_foot_target
+            ):
+                # The hybrid policy was trained with a paired, reset-relative
+                # foot command.  WebXR and malformed/native snapshots without
+                # both feet must fail closed, then require a trigger release
+                # before a later complete snapshot may walk.
+                self._walk_armed = False
+                force_disarmed = True
+                requested_moves.discard("walk")
+                parsed_velocity = {"vx": 0.0, "vy": 0.0, "vtheta": 0.0}
+
             if self._motion_inhibited:
                 self._walk_armed = False
                 requested_moves.discard("walk")
                 parsed_velocity = {"vx": 0.0, "vy": 0.0, "vtheta": 0.0}
-            elif "walk" not in requested_moves:
+            elif "walk" not in requested_moves and not force_disarmed:
                 self._walk_armed = True
             elif not self._walk_armed:
                 requested_moves.discard("walk")
@@ -264,6 +305,7 @@ class NetworkInputSource(InputSource):
             self._state = UserInput(
                 active_moves=requested_moves,
                 velocity=parsed_velocity,
+                locomotion_policy=locomotion_policy,
                 head_orientation=parsed_orientation,
                 head_yaw_front=head_yaw_front,
                 foot_target=parsed_foot_target,

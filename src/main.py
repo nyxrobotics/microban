@@ -12,6 +12,7 @@ from scheduler import Scheduler
 from input.input_source import InputSource
 from input.keyboard_input import KeyboardInputSource
 from moves.hmd_head import HmdHeadTrackingMove
+from moves.policy_selector import PolicySelectableWalkMove
 from moves.rotate_head import RotateHeadMove
 from moves.squat import SquatMove
 from moves.walk import WalkMove
@@ -118,7 +119,7 @@ def main() -> None:
             moves={
                 "head": RotateHeadMove(),
                 "squat": SquatMove(),
-                "walk": WalkMove(controller=controller),
+                "walk": PolicySelectableWalkMove(controller=controller),
                 "hmd_head": HmdHeadTrackingMove(),
             },
         )

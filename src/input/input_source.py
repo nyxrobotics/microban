@@ -16,6 +16,12 @@ class UserInput:
     velocity: dict[str, float] = field(default_factory=lambda: {"vx": 0.0, "vy": 0.0, "vtheta": 0.0})
     show_imu: bool = False
 
+    # Low-level locomotion policy selected by the PICO controller.  The network
+    # receiver accepts only these named modes and changes mode only while the
+    # walking deadman is released.  Keyboard/gamepad operation stays on the
+    # established walking policy.
+    locomotion_policy: str = "walk"
+
     # Desired camera orientation in radians. Roll/pitch are gravity-aligned; yaw is
     # relative to the trunk (the IMU has no stable absolute-yaw reference). None means
     # "level and forward". VR teleop sends all three axes.
