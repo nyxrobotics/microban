@@ -1,7 +1,5 @@
 **__pycache__/
 
-uv.lock
-
 logs/
 logs_processed/
 

@@ -3,6 +3,7 @@ import unittest
 from pathlib import Path
 
 from input.input_source import UserInput
+from input.network_input import NetworkInputSource
 from moves.move import MotorCommand, Move, MoveState
 from moves.policy_selector import PolicySelectableWalkMove
 from observer import Observation, RobotState
@@ -65,7 +66,67 @@ def observation(policy="walk", active=True, vx=0.0, degraded=False):
     )
 
 
+def bridge_pico_packet(seq: int, *, trigger_held: bool) -> dict:
+    """Current bridge wire shape: policy is fixed; only deadman state changes."""
+
+    return {
+        "version": 1,
+        "session_id": "trigger-only-bridge",
+        "seq": seq,
+        "active_moves": ["walk", "hmd_head"] if trigger_held else [],
+        "locomotion_policy": "pico_teleop",
+        "velocity": {
+            "vx": 0.4 if trigger_held else 0.0,
+            "vy": 0.0,
+            "vtheta": 0.0,
+        },
+        "head_orientation": (
+            {"roll": 0.0, "pitch": 0.0, "yaw": 0.0}
+            if trigger_held
+            else None
+        ),
+        "head_yaw_front": False,
+        "body_target_contract": "microban_pico_offsets_v2_both_feet_stationary",
+        "body_target_safety_margin": 0.8,
+        "foot_target": (
+            {"left": [0.01, 0.0, 0.02], "right": [0.0, 0.0, 0.0]}
+            if trigger_held
+            else None
+        ),
+        "hand_target": (
+            {"left": [0.01, 0.0, 0.0], "right": [-0.01, 0.0, 0.0]}
+            if trigger_held
+            else None
+        ),
+    }
+
+
 class PolicySelectorTest(unittest.TestCase):
+    def test_bridge_packet_to_selector_is_trigger_only_without_x(self):
+        source = NetworkInputSource(stale_after_s=0.5)
+        released_packet = bridge_pico_packet(0, trigger_held=False)
+        self.assertNotIn("primary_button", released_packet)
+        source._apply(released_packet)
+        released = source.read()
+        self.assertEqual(released.locomotion_policy, "pico_teleop")
+        self.assertNotIn("walk", released.active_moves)
+
+        source._apply(bridge_pico_packet(1, trigger_held=True))
+        held = source.read()
+        self.assertEqual(held.locomotion_policy, "pico_teleop")
+        self.assertIn("walk", held.active_moves)
+
+        walk = FakeMove(marker=10.0)
+        pico = FakeMove(marker=20.0)
+        selector = PolicySelectableWalkMove(legacy_move=walk, pico_move=pico)
+        selector.on_start(
+            Observation(robot_state=RobotState(time_s=0.0), user_input=held),
+            MotorCommand(),
+        )
+        self.assertEqual(selector.effective_policy, "pico_teleop")
+        self.assertEqual(pico.start_count, 1)
+        self.assertEqual(walk.start_count, 0)
+
     def test_selects_exactly_one_policy_per_activation(self):
         walk = FakeMove(marker=10.0)
         pico = FakeMove(marker=20.0)
@@ -183,7 +244,7 @@ class PolicySelectorTest(unittest.TestCase):
         self.assertEqual(selector.effective_policy, "pico_teleop")
         self.assertEqual(pico.start_count, 1)
 
-    def test_momentary_policy_button_switches_without_stopping_joystick(self):
+    def test_wire_policy_change_switches_without_stopping_joystick(self):
         walk = FakeMove()
         pico = FakeMove()
         selector = PolicySelectableWalkMove(legacy_move=walk, pico_move=pico)

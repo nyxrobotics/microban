@@ -37,13 +37,12 @@ from observer import Observation
 AGENT_NAME = "pico_teleop.onnx"
 EXPECTED_POLICY_TYPE = "microban_pico_hybrid_teleop"
 EXPECTED_TRAINING_CONTRACT_VERSION = "10"
+EXPECTED_V12_TRAINING_CONTRACT_VERSION = "12"
 # Keep the recipe in one deployment-side constant: a deliberately promoted
 # training recipe then requires one reviewed line change here.  It must match
 # the exporter exactly; accepting a different marker would attach current
 # runtime semantics to weights trained under another reward/config recipe.
-EXPECTED_ACTOR_INITIALIZATION = (
-    "full_state_v9_model1499_to_v10_fixed_lr_v1"
-)
+EXPECTED_ACTOR_INITIALIZATION = "full_state_v9_model1499_to_v10_fixed_lr_v1"
 EXPECTED_RECIPE_REVISION = (
     "v10_v9_model1499_full_state_migration_fixed_lr_pico_curriculum_v1"
 )
@@ -92,6 +91,151 @@ EXPECTED_OBSERVATION_TERMS = (
 )
 EXPECTED_OBSERVATION_WIDTH = 83
 EXPECTED_ACTION_WIDTH = 18
+
+# Contract v12 deliberately retains the proven, normalized legacy velocity
+# actor instead of the bounded v10 action transform.  These identities are
+# pinned on the robot so arbitrary 83-input ONNX files cannot opt themselves
+# into the raw-action execution path by adding a version string.
+EXPECTED_V12_LEGACY_SOURCE_CHECKPOINT_SHA256 = (
+    "b0bcdadac39716be784207dd6b2b93157162a3e80650e23c05f490c400b9e141"
+)
+EXPECTED_V12_LEGACY_SOURCE_CHECKPOINT_ITERATION = 14_999
+EXPECTED_V12_LEGACY_PROBE_SHA256 = (
+    "f51378d59ff4d68fb1185a91eb2a863749e5c7be6ec4cd0ab4a0b08f1565e69d"
+)
+EXPECTED_V12_BOOTSTRAP_PROVENANCE_SCHEMA_VERSION = 1
+EXPECTED_V12_BOOTSTRAP_MAPPING_VERSION = (
+    "normalized_legacy_velocity_63_to_teleop83_reachable_fk_elbow_minus10_v4"
+)
+EXPECTED_V12_RECIPE_REVISION = (
+    "legacy_velocity_model14999_staged_mask_reachable_fk_elbow_minus10_raw_actions_v5"
+)
+EXPECTED_V12_ADAPTER_GRADIENT_SCHEDULE_REVISION = (
+    "freeze_extra_to7000_then_hmd_hand_to10000_then_all_v1"
+)
+EXPECTED_V12_ACTOR_TOPOLOGY = (83, 512, 256, 128, 18)
+EXPECTED_V12_NORMALIZER_EPS = 1.0e-2
+EXPECTED_V12_NORMALIZER_SEMANTICS = (
+    "frozen_source63_identity_hmd_flags_reachable_fk_target_scaling_v3"
+)
+EXPECTED_V12_PREVIOUS_ACTION_SEMANTICS = "raw_actor_output"
+EXPECTED_V12_ACTION_CLIP_SEMANTICS = "none"
+EXPECTED_V12_ACTION_DISTRIBUTION_SEMANTICS = "unbounded_gaussian_deterministic_mean_raw"
+EXPECTED_V12_RUNTIME_ACTION_SEMANTICS = (
+    "raw_unbounded_default_plus_scale_no_target_clip_v1"
+)
+# This guard is deliberately outside the learned-policy/recurrence contract
+# above.  V12 still observes its exact raw actor output on the next tick, while
+# the actuator-facing MotorCommand is the continuous saturation of the derived
+# absolute target to Microban's compiled physical soft limits.
+PHYSICAL_MOTOR_TARGET_GUARD_SEMANTICS = (
+    "compiled_soft_limit_continuous_clamp_preserve_policy_recurrence_v1"
+)
+EXPECTED_V12_FINAL_CHECKPOINT_ITERATION = 14_999
+EXPECTED_V12_FINAL_COMPLETED_UPDATES = 15_000
+EXPECTED_V12_STAGE_GATE = "microban_teleop_v12_stage"
+EXPECTED_V12_LOCOMOTION_GATE = "microban_teleop_v12_neutral_locomotion_9x300"
+EXPECTED_V12_ONNX_GATE = "microban_teleop_v12_checkpoint_onnx"
+EXPECTED_V12_TRACKING_PROFILE = "full_body_reachable_performance_perturbation_v2"
+EXPECTED_V12_ACTUAL_DYNAMIC_SOFT_LIMIT_OVERSHOOT_MAX_DEG = 5.0
+EXPECTED_V12_ACTUAL_DYNAMIC_SOFT_LIMIT_OVERSHOOT_MAX_RAD = math.radians(
+    EXPECTED_V12_ACTUAL_DYNAMIC_SOFT_LIMIT_OVERSHOOT_MAX_DEG
+)
+EXPECTED_V12_COMMANDED_TARGET_SOFT_LIMIT_EXCESS_MAX_RAD = 1.0e-7
+EXPECTED_V12_RAW_ACTION_ENVELOPE_SCHEMA_VERSION = 1
+EXPECTED_V12_RAW_ACTION_GUARD_FORMULA = (
+    "max(v12_absmax,source_absmax+delta_absmax)*multiplier"
+)
+EXPECTED_V12_RAW_ACTION_GUARD_MULTIPLIER = 2.0
+EXPECTED_V12_RAW_ACTION_GUARD_SEMANTICS = (
+    "finite_float32_then_per_joint_absmax_else_same_cycle_legacy_fallback_v1"
+)
+EXPECTED_V12_PARITY_SEED = 20260925
+EXPECTED_V12_PARITY_SAMPLE_COUNT = 64
+EXPECTED_V12_PARITY_ATOL = 2.0e-5
+EXPECTED_V12_OBSERVATION_JOINT_NAMES = (
+    "head",
+    "neck_roll",
+    "neck_pitch",
+    *OBSERVATION_DOF_ORDER,
+)
+EXPECTED_V12_SOURCE_TO_TARGET_COLUMNS = (
+    *((index, index) for index in range(6)),
+    *((index, index + 3) for index in range(6, 24)),
+    *((index, index + 6) for index in range(24, 42)),
+    *((index, index + 6) for index in range(42, 60)),
+    *((index, index + 6) for index in range(60, 63)),
+)
+EXPECTED_V12_EXTRA_OBSERVATION_COLUMNS = (
+    6,
+    7,
+    8,
+    27,
+    28,
+    29,
+    *range(69, 83),
+)
+# This is deliberately a complete, robot-local copy of the exporter contract.
+# Merely trusting the model's revision label would let a differently scaled or
+# differently framed hand policy opt itself into the raw-action v12 runtime.
+EXPECTED_V12_HAND_TARGET_FK = {
+    "revision": "microban_robot_xml_arm_fk_reachable_box_elbow_upper_minus10_v2",
+    "side_order": ["left", "right"],
+    "joint_order": ["shoulder_pitch", "shoulder_roll", "elbow"],
+    "joint_lower_deg": [[-25.0, 10.0, -50.0], [-25.0, -30.0, -50.0]],
+    "joint_upper_deg": [[25.0, 30.0, -10.0], [25.0, -10.0, -10.0]],
+    "home_joint_deg": [[0.0, 10.0, -20.0], [0.0, -10.0, -20.0]],
+    "bound_grid_points_per_axis": 401,
+    "offset_aabb_min_m": [
+        [-0.06120170602356862, -0.0034550417440758485, -0.0035619649312883805],
+        [-0.06120170602356864, -0.0387512193701912, -0.0035619649312883944],
+    ],
+    "offset_aabb_max_m": [
+        [0.06289464331528255, 0.0387512193701912, 0.060477220857479266],
+        [0.06289464331528258, 0.0034550417440758485, 0.060477220857479225],
+    ],
+    "normalizer_abs_bound_m": [0.063, 0.0388, 0.0605],
+    "wire_abs_bound_m": [0.08, 0.08, 0.08],
+    "runtime_validated_abs_limit_m": [0.064, 0.064, 0.064],
+    "evaluation_joint_degrees": [
+        ["F", [-25.0, 25.0, -50.0]],
+        ["B", [25.0, 20.0, -10.0]],
+        ["f", [-12.0, 18.0, -32.0]],
+        ["b", [12.0, 18.0, -32.0]],
+    ],
+    "evaluation_offsets_m": [
+        [
+            "F",
+            [
+                [0.05965182377803401, 0.02001299541823158, 0.05695429454214103],
+                [0.059651823778034005, -0.02001299541823158, 0.056954294542141],
+            ],
+        ],
+        [
+            "B",
+            [
+                [-0.05889031574552025, 0.020262900077370374, 0.00788636819595702],
+                [-0.058890315745520276, -0.020262900077370388, 0.007886368195956998],
+            ],
+        ],
+        [
+            "f",
+            [
+                [0.03317253316144149, 0.013564446512561182, 0.01946788065760361],
+                [0.0331725331614415, -0.013564446512561182, 0.019467880657603583],
+            ],
+        ],
+        [
+            "b",
+            [
+                [-0.009540835008328632, 0.013564446512561182, 0.004701156748151122],
+                [-0.009540835008328644, -0.013564446512561182, 0.0047011567481511154],
+            ],
+        ],
+    ],
+    "source": "src/mjlab_microban/robot/microban/robot.xml",
+    "sampling": "uniform_independent_joint_box_then_exact_fk_offset_from_home",
+}
 EXPECTED_ONNX_PARITY_GATE_VERSION = "1"
 EXPECTED_ONNX_PARITY_RUNTIME = "onnx.reference.ReferenceEvaluator"
 EXPECTED_ONNX_PARITY_SEED = 20260924
@@ -141,8 +285,10 @@ _CHECKPOINT_SHA256_RE = re.compile(r"[0-9a-f]{64}\Z")
 # form when checking the ONNX metadata.  Inference always uses these values,
 # never model-provided limits, so altered metadata cannot widen motor targets.
 # The PICO policy was trained with shoulder pitch at 0 degrees.  Keep this
-# deployment contract local: NEUTRAL_POSE is shared by unrelated legacy moves
-# and historically used an unmeasured +10-degree shoulder-pitch assumption.
+# deployment contract local: NEUTRAL_POSE is shared by unrelated legacy moves.
+# Its +10-degree shoulder pitch originated in main-repository commit f27a9e29;
+# the robot MJCF supplies only joint ranges, not that HOME value.  See the
+# runtime guide for the separate training-history and ONNX-metadata evidence.
 PICO_TELEOP_HOME_POSE = {
     **NEUTRAL_POSE,
     "left_shoulder_pitch": 0.0,
@@ -561,9 +707,7 @@ def _require_lowercase_sha256(metadata: Mapping[str, str], name: str) -> str:
     return value
 
 
-def _require_exact_sha256(
-    metadata: Mapping[str, str], name: str, expected: str
-) -> str:
+def _require_exact_sha256(metadata: Mapping[str, str], name: str, expected: str) -> str:
     value = _require_lowercase_sha256(metadata, name)
     if value != expected:
         raise PicoHybridPolicyContractError(
@@ -781,11 +925,7 @@ def _require_final_deployment_provenance(
         metadata.get("training_resume_source_checkpoint_iteration"),
         "training_resume_source_checkpoint_iteration",
     )
-    if not (
-        stage_start - 1
-        <= resume_source_checkpoint_iteration
-        < stage_target - 1
-    ):
+    if not (stage_start - 1 <= resume_source_checkpoint_iteration < stage_target - 1):
         raise PicoHybridPolicyContractError(
             "training resume source iteration must be inside the final stage "
             "from model_9999.pt through model_14998.pt"
@@ -1057,6 +1197,71 @@ def validate_onnxruntime_compatibility(
     return len(observations)
 
 
+def validate_v12_onnxruntime_compatibility(
+    session: Any,
+    input_name: str,
+    raw_action_absolute_maximum: Sequence[float],
+) -> int:
+    """Exercise a raw/unbounded v12 graph under its evidence-derived guard.
+
+    The legacy actor was trained with an unbounded Gaussian mean and its proven
+    closed-loop contract sends that raw value directly to the joint-position
+    action term.  This gate does not reuse v10's bounded transform or modify an
+    output.  It checks numeric type, fixed shape, float32 finiteness and the
+    final tracking evidence's gross finite-amplitude envelope.
+    """
+
+    guard = np.asarray(raw_action_absolute_maximum, dtype=np.float64)
+    if (
+        guard.shape != (EXPECTED_ACTION_WIDTH,)
+        or not np.isfinite(guard).all()
+        or bool(np.any(guard < 0.0))
+    ):
+        raise PicoHybridPolicyContractError(
+            "contract-v12 runtime raw-action guard is malformed"
+        )
+    observations = onnxruntime_compatibility_smoke_inputs()
+    for sample_index, observation in enumerate(observations):
+        try:
+            outputs = session.run(None, {input_name: observation})
+        except Exception as exc:
+            raise PicoHybridPolicyRuntimeError(
+                f"contract-v12 ONNX Runtime smoke failed at sample {sample_index}"
+            ) from exc
+        if len(outputs) != 1:
+            raise PicoHybridPolicyRuntimeError(
+                "contract-v12 ONNX Runtime smoke expected exactly one output "
+                f"at sample {sample_index}"
+            )
+        output = np.asarray(outputs[0])
+        try:
+            finite = bool(np.isfinite(output).all())
+            with np.errstate(over="ignore", invalid="ignore"):
+                float32_output = output.astype(np.float32, casting="unsafe", copy=False)
+            finite_float32 = bool(np.isfinite(float32_output).all())
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise PicoHybridPolicyRuntimeError(
+                "contract-v12 ONNX Runtime smoke returned a non-numeric output "
+                f"at sample {sample_index}"
+            ) from exc
+        if (
+            output.shape != (1, EXPECTED_ACTION_WIDTH)
+            or not finite
+            or not finite_float32
+        ):
+            raise PicoHybridPolicyRuntimeError(
+                "contract-v12 ONNX Runtime smoke returned an unsafe output "
+                f"at sample {sample_index}: shape={output.shape}, "
+                f"finite={finite and finite_float32}"
+            )
+        if bool(np.any(np.abs(float32_output[0]) > guard)):
+            raise PicoHybridPolicyRuntimeError(
+                "contract-v12 ONNX Runtime smoke output escaped the authenticated "
+                f"finite-amplitude guard at sample {sample_index}"
+            )
+    return len(observations)
+
+
 def _serialized_metadata_values(values: Sequence[float]) -> tuple[float, ...]:
     """Mirror MjLab's three-decimal ONNX metadata serialization."""
 
@@ -1192,9 +1397,27 @@ class _PolicyContract:
     safe_velocity_source_checkpoint_sha256: str
     safe_velocity_source_checkpoint_iteration: int
     safe_velocity_acceptance_receipt_sha256: str
+    training_contract_version: str = EXPECTED_TRAINING_CONTRACT_VERSION
+    runtime_action_semantics: str = "bounded_v10_effective_action"
+    v12_legacy_source_checkpoint_sha256: str | None = None
+    v12_legacy_probe_sha256: str | None = None
+    v12_stage_gate_sha256: str | None = None
+    v12_locomotion_report_sha256: str | None = None
+    v12_onnx_report_sha256: str | None = None
+    v12_tracking_report_sha256: str | None = None
+    v12_raw_action_minimum: tuple[float, ...] = ()
+    v12_raw_action_maximum: tuple[float, ...] = ()
+    v12_raw_action_absolute_maximum: tuple[float, ...] = ()
+    v12_source_raw_action_minimum: tuple[float, ...] = ()
+    v12_source_raw_action_maximum: tuple[float, ...] = ()
+    v12_source_raw_action_absolute_maximum: tuple[float, ...] = ()
+    v12_learned_source_delta_minimum: tuple[float, ...] = ()
+    v12_learned_source_delta_maximum: tuple[float, ...] = ()
+    v12_learned_source_delta_absolute_maximum: tuple[float, ...] = ()
+    v12_runtime_raw_action_guard_absolute_maximum: tuple[float, ...] = ()
 
 
-def _parse_contract(session: Any) -> _PolicyContract:
+def _parse_v10_contract(session: Any) -> _PolicyContract:
     inputs = session.get_inputs()
     outputs = session.get_outputs()
     if len(inputs) != 1 or len(outputs) != 1:
@@ -1205,7 +1428,6 @@ def _parse_contract(session: Any) -> _PolicyContract:
         raise PicoHybridPolicyContractError("policy input width must be exactly 83")
     if _fixed_width(outputs[0], "policy output") != EXPECTED_ACTION_WIDTH:
         raise PicoHybridPolicyContractError("policy output width must be exactly 18")
-
     metadata = session.get_modelmeta().custom_metadata_map
     if metadata.get("policy_type") != EXPECTED_POLICY_TYPE:
         raise PicoHybridPolicyContractError("ONNX is not a Microban PICO hybrid policy")
@@ -1581,6 +1803,815 @@ def _parse_contract(session: Any) -> _PolicyContract:
     )
 
 
+def _strict_json_metadata(metadata: Mapping[str, str], name: str) -> Any:
+    value = metadata.get(name)
+    if value is None:
+        raise PicoHybridPolicyContractError(f"missing ONNX metadata: {name}")
+
+    def reject_constant(constant: str) -> None:
+        raise ValueError(f"non-standard JSON constant {constant}")
+
+    try:
+        return json.loads(value, parse_constant=reject_constant)
+    except (TypeError, ValueError, json.JSONDecodeError) as exc:
+        raise PicoHybridPolicyContractError(f"{name} must contain strict JSON") from exc
+
+
+def _exact_json_value(actual: Any, expected: Any) -> bool:
+    """Compare JSON trees without Python's bool/int/float equality coercions."""
+
+    if type(actual) is not type(expected):
+        return False
+    if isinstance(expected, dict):
+        return actual.keys() == expected.keys() and all(
+            _exact_json_value(actual[key], value) for key, value in expected.items()
+        )
+    if isinstance(expected, list):
+        return len(actual) == len(expected) and all(
+            _exact_json_value(received, required)
+            for received, required in zip(actual, expected, strict=True)
+        )
+    return bool(actual == expected)
+
+
+def _require_exact_metadata(
+    metadata: Mapping[str, str], name: str, expected: str
+) -> str:
+    actual = metadata.get(name)
+    if actual != expected:
+        raise PicoHybridPolicyContractError(
+            f"{name} does not match the contract-v12 deployment contract"
+        )
+    return actual
+
+
+def _require_v12_bounded_metric(
+    metadata: Mapping[str, str], name: str, *, lower: float = 0.0, upper: float
+) -> float:
+    value = metadata.get(name)
+    if value is None:
+        raise PicoHybridPolicyContractError(f"missing ONNX metadata: {name}")
+    try:
+        result = float(value)
+    except (TypeError, ValueError) as exc:
+        raise PicoHybridPolicyContractError(f"{name} must be numeric") from exc
+    if not math.isfinite(result) or result < lower or result > upper:
+        raise PicoHybridPolicyContractError(
+            f"{name} is outside the authenticated contract-v12 gate tolerance"
+        )
+    return result
+
+
+def _require_v12_float32_evidence_vector(
+    metadata: Mapping[str, str], name: str
+) -> tuple[float, ...]:
+    values = _float_json_vector(metadata.get(name), name, EXPECTED_ACTION_WIDTH)
+    with np.errstate(over="ignore", invalid="ignore"):
+        float32_values = np.asarray(values, dtype=np.float32)
+    if not np.isfinite(float32_values).all():
+        raise PicoHybridPolicyContractError(
+            f"{name} contains a value outside the finite float32 action domain"
+        )
+    return values
+
+
+def _parse_v12_raw_action_envelope(
+    metadata: Mapping[str, str], action_joints: tuple[str, ...]
+) -> tuple[tuple[float, ...], ...]:
+    """Authenticate final tracking evidence and its gross-anomaly guard.
+
+    The guard is not a joint-limit clamp.  Its symmetric per-joint bounds are
+    derived only from the final, hash-bound v12/source/delta tracking extrema.
+    A runtime escape raises before any target write so the selector can execute
+    the legacy walk policy in the same control cycle.
+    """
+
+    if (
+        _canonical_nonnegative_int(
+            metadata.get("v12_raw_action_envelope_schema_version"),
+            "v12_raw_action_envelope_schema_version",
+        )
+        != EXPECTED_V12_RAW_ACTION_ENVELOPE_SCHEMA_VERSION
+    ):
+        raise PicoHybridPolicyContractError(
+            "unsupported contract-v12 raw-action envelope schema"
+        )
+    joint_names = _strict_json_metadata(metadata, "v12_raw_action_joint_names_json")
+    if joint_names != list(action_joints):
+        raise PicoHybridPolicyContractError(
+            "v12 raw-action envelope joint order drifted"
+        )
+
+    triplets: list[tuple[tuple[float, ...], tuple[float, ...], tuple[float, ...]]] = []
+    for prefix in (
+        "v12_raw_action",
+        "v12_source_raw_action",
+        "v12_learned_source_delta",
+    ):
+        minimum = _require_v12_float32_evidence_vector(metadata, f"{prefix}_min_json")
+        maximum = _require_v12_float32_evidence_vector(metadata, f"{prefix}_max_json")
+        absolute_maximum = _require_v12_float32_evidence_vector(
+            metadata, f"{prefix}_absmax_json"
+        )
+        for index, (lower, upper, absolute) in enumerate(
+            zip(minimum, maximum, absolute_maximum, strict=True)
+        ):
+            expected_absolute = max(abs(lower), abs(upper))
+            if lower > upper:
+                raise PicoHybridPolicyContractError(
+                    f"{prefix} evidence minimum exceeds maximum at action index {index}"
+                )
+            if absolute < 0.0 or absolute != expected_absolute:
+                raise PicoHybridPolicyContractError(
+                    f"{prefix} absolute maximum is inconsistent at action index {index}"
+                )
+        triplets.append((minimum, maximum, absolute_maximum))
+
+    _require_exact_metadata(
+        metadata,
+        "runtime_raw_action_guard_formula",
+        EXPECTED_V12_RAW_ACTION_GUARD_FORMULA,
+    )
+    _require_exact_finite_scalar(
+        metadata,
+        "runtime_raw_action_guard_multiplier",
+        EXPECTED_V12_RAW_ACTION_GUARD_MULTIPLIER,
+    )
+    _require_exact_metadata(
+        metadata,
+        "runtime_raw_action_guard_semantics",
+        EXPECTED_V12_RAW_ACTION_GUARD_SEMANTICS,
+    )
+    guard = _require_v12_float32_evidence_vector(
+        metadata, "runtime_raw_action_guard_absmax_json"
+    )
+    v12_absolute = triplets[0][2]
+    source_absolute = triplets[1][2]
+    delta_absolute = triplets[2][2]
+    expected_guard = tuple(
+        max(v12_value, source_value + delta_value)
+        * EXPECTED_V12_RAW_ACTION_GUARD_MULTIPLIER
+        for v12_value, source_value, delta_value in zip(
+            v12_absolute, source_absolute, delta_absolute, strict=True
+        )
+    )
+    if not all(math.isfinite(value) for value in expected_guard):
+        raise PicoHybridPolicyContractError(
+            "v12 raw-action guard derivation is non-finite"
+        )
+    with np.errstate(over="ignore", invalid="ignore"):
+        expected_guard_float32 = np.asarray(expected_guard, dtype=np.float32)
+    if not np.isfinite(expected_guard_float32).all():
+        raise PicoHybridPolicyContractError(
+            "v12 raw-action guard is outside the finite float32 domain"
+        )
+    for index, (actual, expected) in enumerate(zip(guard, expected_guard, strict=True)):
+        if actual != expected:
+            raise PicoHybridPolicyContractError(
+                "runtime raw-action guard does not match the authenticated "
+                f"formula at action index {index}"
+            )
+
+    return (
+        *triplets[0],
+        *triplets[1],
+        *triplets[2],
+        guard,
+    )
+
+
+def _parse_v12_contract(session: Any) -> _PolicyContract:
+    """Parse the raw-action v12 contract without relaxing contract v10.
+
+    V12 is a separate, hash-bound contract.  In particular, none of the v10
+    bounded-distribution metadata is interpreted as v12 authority: the source
+    legacy checkpoint and closed-loop probe identities are compiled in here,
+    and a canonical v12 boundary must carry passing locomotion and ONNX gates.
+    """
+
+    inputs = session.get_inputs()
+    outputs = session.get_outputs()
+    if len(inputs) != 1 or len(outputs) != 1:
+        raise PicoHybridPolicyContractError(
+            "policy must have exactly one input and output"
+        )
+    if _fixed_width(inputs[0], "policy input") != EXPECTED_OBSERVATION_WIDTH:
+        raise PicoHybridPolicyContractError("policy input width must be exactly 83")
+    if _fixed_width(outputs[0], "policy output") != EXPECTED_ACTION_WIDTH:
+        raise PicoHybridPolicyContractError("policy output width must be exactly 18")
+    if inputs[0].name != "obs" or outputs[0].name != "actions":
+        raise PicoHybridPolicyContractError(
+            "contract-v12 tensor names must be obs -> actions"
+        )
+    if (
+        getattr(inputs[0], "type", None) != "tensor(float)"
+        or getattr(outputs[0], "type", None) != "tensor(float)"
+    ):
+        raise PicoHybridPolicyContractError(
+            "contract-v12 tensors must use float32 elements"
+        )
+
+    metadata = session.get_modelmeta().custom_metadata_map
+    _require_exact_metadata(metadata, "policy_type", EXPECTED_POLICY_TYPE)
+    _require_exact_metadata(
+        metadata,
+        "microban_teleop_training_contract_version",
+        EXPECTED_V12_TRAINING_CONTRACT_VERSION,
+    )
+    _require_exact_metadata(
+        metadata,
+        "microban_teleop_recipe_revision",
+        EXPECTED_V12_RECIPE_REVISION,
+    )
+
+    filename = metadata.get("checkpoint_filename", "")
+    match = _CHECKPOINT_FILENAME_RE.fullmatch(filename)
+    if match is None:
+        raise PicoHybridPolicyContractError(
+            "checkpoint_filename must be canonical model_N.pt"
+        )
+    checkpoint_iteration = _canonical_nonnegative_int(
+        metadata.get("checkpoint_iteration"), "checkpoint_iteration"
+    )
+    if checkpoint_iteration != int(match.group(1)):
+        raise PicoHybridPolicyContractError(
+            "checkpoint_iteration does not match checkpoint_filename"
+        )
+    _require_exact_metadata(
+        metadata,
+        "checkpoint_iteration_semantics",
+        "zero_based_completed_update_index_from_model_filename",
+    )
+    checkpoint_completed_updates = _canonical_nonnegative_int(
+        metadata.get("checkpoint_completed_updates"),
+        "checkpoint_completed_updates",
+    )
+    if checkpoint_completed_updates != checkpoint_iteration + 1:
+        raise PicoHybridPolicyContractError(
+            "checkpoint_completed_updates must equal checkpoint_iteration + 1"
+        )
+    if (
+        checkpoint_iteration != EXPECTED_V12_FINAL_CHECKPOINT_ITERATION
+        or checkpoint_completed_updates != EXPECTED_V12_FINAL_COMPLETED_UPDATES
+    ):
+        raise PicoHybridPolicyContractError(
+            "contract-v12 hardware deployment requires final model_14999.pt "
+            "at the 15000-update boundary"
+        )
+    checkpoint_sha256 = _require_lowercase_sha256(metadata, "checkpoint_sha256")
+
+    _require_exact_metadata(metadata, "deployment_accepted", "true")
+    if (
+        _canonical_nonnegative_int(
+            metadata.get("v12_stage_gate_schema_version"),
+            "v12_stage_gate_schema_version",
+        )
+        != 2
+    ):
+        raise PicoHybridPolicyContractError("unsupported v12 stage gate schema")
+    _require_exact_metadata(metadata, "v12_stage_gate_name", EXPECTED_V12_STAGE_GATE)
+    _require_exact_metadata(metadata, "v12_stage_gate_status", "pass")
+    _require_exact_metadata(metadata, "v12_stage_gate_canonical_boundary", "true")
+    stage_gate_sha256 = _require_lowercase_sha256(metadata, "v12_stage_gate_sha256")
+    locomotion_report_sha256 = _require_lowercase_sha256(
+        metadata, "v12_locomotion_report_sha256"
+    )
+    onnx_report_sha256 = _require_lowercase_sha256(metadata, "v12_onnx_report_sha256")
+    tracking_report_sha256 = _require_lowercase_sha256(
+        metadata, "v12_tracking_report_sha256"
+    )
+    _require_exact_metadata(
+        metadata, "v12_tracking_profile", EXPECTED_V12_TRACKING_PROFILE
+    )
+    if metadata.get("v12_stage_gate_checkpoint_sha256") != checkpoint_sha256:
+        raise PicoHybridPolicyContractError(
+            "v12 stage gate checkpoint SHA-256 does not match the exported checkpoint"
+        )
+    if (
+        _canonical_nonnegative_int(
+            metadata.get("v12_stage_gate_checkpoint_iteration"),
+            "v12_stage_gate_checkpoint_iteration",
+        )
+        != checkpoint_iteration
+    ):
+        raise PicoHybridPolicyContractError(
+            "v12 stage gate iteration does not match the exported checkpoint"
+        )
+    if (
+        _canonical_nonnegative_int(
+            metadata.get("v12_stage_gate_completed_updates"),
+            "v12_stage_gate_completed_updates",
+        )
+        != checkpoint_completed_updates
+    ):
+        raise PicoHybridPolicyContractError(
+            "v12 stage gate update count does not match the exported checkpoint"
+        )
+
+    if (
+        _canonical_nonnegative_int(
+            metadata.get("v12_bootstrap_provenance_schema_version"),
+            "v12_bootstrap_provenance_schema_version",
+        )
+        != EXPECTED_V12_BOOTSTRAP_PROVENANCE_SCHEMA_VERSION
+    ):
+        raise PicoHybridPolicyContractError(
+            "unsupported v12 bootstrap provenance schema"
+        )
+    _require_exact_metadata(
+        metadata,
+        "v12_bootstrap_mapping_version",
+        EXPECTED_V12_BOOTSTRAP_MAPPING_VERSION,
+    )
+    source_checkpoint_sha256 = _require_exact_sha256(
+        metadata,
+        "v12_legacy_source_checkpoint_sha256",
+        EXPECTED_V12_LEGACY_SOURCE_CHECKPOINT_SHA256,
+    )
+    source_iteration = _canonical_nonnegative_int(
+        metadata.get("v12_legacy_source_checkpoint_iteration"),
+        "v12_legacy_source_checkpoint_iteration",
+    )
+    if source_iteration != EXPECTED_V12_LEGACY_SOURCE_CHECKPOINT_ITERATION:
+        raise PicoHybridPolicyContractError("v12 legacy source iteration drifted")
+    probe_sha256 = _require_exact_sha256(
+        metadata,
+        "v12_legacy_probe_sha256",
+        EXPECTED_V12_LEGACY_PROBE_SHA256,
+    )
+    for name, expected in (
+        ("v12_legacy_probe_scenario_count", 9),
+        ("v12_legacy_probe_steps_per_scenario", 300),
+        ("v12_legacy_probe_settle_steps", 50),
+        ("v12_legacy_probe_seed", 42),
+    ):
+        if _canonical_nonnegative_int(metadata.get(name), name) != expected:
+            raise PicoHybridPolicyContractError(f"{name} drifted")
+
+    mapping = _strict_json_metadata(metadata, "v12_source_to_target_columns_json")
+    expected_mapping = [list(pair) for pair in EXPECTED_V12_SOURCE_TO_TARGET_COLUMNS]
+    if mapping != expected_mapping:
+        raise PicoHybridPolicyContractError(
+            "v12 source-to-target observation mapping drifted"
+        )
+    extra_columns = _strict_json_metadata(
+        metadata, "v12_extra_observation_columns_json"
+    )
+    if extra_columns != list(EXPECTED_V12_EXTRA_OBSERVATION_COLUMNS):
+        raise PicoHybridPolicyContractError(
+            "v12 teleop-only observation columns drifted"
+        )
+    topology = _strict_json_metadata(metadata, "v12_actor_topology_json")
+    if topology != list(EXPECTED_V12_ACTOR_TOPOLOGY):
+        raise PicoHybridPolicyContractError("v12 actor topology drifted")
+    _require_exact_finite_scalar(
+        metadata, "v12_normalizer_eps", EXPECTED_V12_NORMALIZER_EPS
+    )
+    _require_exact_metadata(
+        metadata,
+        "v12_normalizer_semantics",
+        EXPECTED_V12_NORMALIZER_SEMANTICS,
+    )
+    _require_exact_metadata(
+        metadata,
+        "v12_trainable_actor_parameters",
+        "mlp.0.weight_extra_columns_only",
+    )
+    _require_exact_metadata(
+        metadata,
+        "adapter_gradient_schedule_revision",
+        EXPECTED_V12_ADAPTER_GRADIENT_SCHEDULE_REVISION,
+    )
+    active_columns = _strict_json_metadata(
+        metadata, "v12_active_actor_columns_at_save_json"
+    )
+    if active_columns != list(EXPECTED_V12_EXTRA_OBSERVATION_COLUMNS):
+        raise PicoHybridPolicyContractError(
+            "final v12 checkpoint did not enable all teleop adapter columns"
+        )
+    _require_exact_metadata(metadata, "v12_frozen_legacy_tensors_verified", "true")
+
+    _require_exact_metadata(
+        metadata, "v12_locomotion_gate", EXPECTED_V12_LOCOMOTION_GATE
+    )
+    _require_exact_metadata(metadata, "v12_locomotion_status", "pass")
+    _require_exact_finite_scalar(
+        metadata,
+        "v12_actual_dynamic_soft_limit_overshoot_max_deg",
+        EXPECTED_V12_ACTUAL_DYNAMIC_SOFT_LIMIT_OVERSHOOT_MAX_DEG,
+    )
+    _require_exact_finite_scalar(
+        metadata,
+        "v12_actual_dynamic_soft_limit_overshoot_max_rad",
+        EXPECTED_V12_ACTUAL_DYNAMIC_SOFT_LIMIT_OVERSHOOT_MAX_RAD,
+    )
+    _require_exact_finite_scalar(
+        metadata,
+        "v12_commanded_target_soft_limit_excess_max_rad",
+        EXPECTED_V12_COMMANDED_TARGET_SOFT_LIMIT_EXCESS_MAX_RAD,
+    )
+    for name, expected in (
+        ("v12_locomotion_seed", 42),
+        ("v12_locomotion_scenario_count", 9),
+        ("v12_locomotion_steps_per_scenario", 300),
+        ("v12_locomotion_settle_steps", 50),
+        ("v12_locomotion_fall_scenario_count", 0),
+        ("v12_locomotion_nonfinite_scenario_count", 0),
+        ("v12_locomotion_actual_soft_limit_violation_scenario_count", 0),
+        ("v12_locomotion_directionally_correct_scenario_count", 8),
+        ("v12_locomotion_directional_scenario_count", 8),
+    ):
+        if _canonical_nonnegative_int(metadata.get(name), name) != expected:
+            raise PicoHybridPolicyContractError(f"{name} does not describe a pass")
+    _require_exact_metadata(
+        metadata, "v12_locomotion_raw_action_recurrence_all_steps", "true"
+    )
+
+    _require_exact_metadata(metadata, "v12_onnx_gate", EXPECTED_V12_ONNX_GATE)
+    _require_exact_metadata(metadata, "v12_onnx_verified", "true")
+    _require_exact_metadata(
+        metadata, "v12_onnx_parity_teleop_columns", "random_finite_not_zeroed"
+    )
+    if (
+        _canonical_nonnegative_int(
+            metadata.get("v12_onnx_parity_seed"), "v12_onnx_parity_seed"
+        )
+        != EXPECTED_V12_PARITY_SEED
+    ):
+        raise PicoHybridPolicyContractError("unsupported v12 ONNX parity seed")
+    if (
+        _canonical_nonnegative_int(
+            metadata.get("v12_onnx_parity_sample_count"),
+            "v12_onnx_parity_sample_count",
+        )
+        != EXPECTED_V12_PARITY_SAMPLE_COUNT
+    ):
+        raise PicoHybridPolicyContractError("unsupported v12 ONNX parity sample count")
+    _require_exact_finite_scalar(
+        metadata, "v12_onnx_parity_atol", EXPECTED_V12_PARITY_ATOL
+    )
+    for name in (
+        "v12_onnx_reference_max_abs_error",
+        "v12_onnxruntime_cpu_max_abs_error",
+        "v12_neutral_legacy_parity_max_abs_error",
+    ):
+        _require_v12_bounded_metric(metadata, name, upper=EXPECTED_V12_PARITY_ATOL)
+    if (
+        _canonical_nonnegative_int(
+            metadata.get("v12_neutral_legacy_parity_sample_count"),
+            "v12_neutral_legacy_parity_sample_count",
+        )
+        != 10_000
+    ):
+        raise PicoHybridPolicyContractError(
+            "v12 neutral legacy parity sample count drifted"
+        )
+
+    if metadata.get("observation_schema_version") != EXPECTED_SCHEMA_VERSION:
+        raise PicoHybridPolicyContractError("unsupported observation schema version")
+    if metadata.get("observation_width") != str(EXPECTED_OBSERVATION_WIDTH):
+        raise PicoHybridPolicyContractError("observation_width metadata must be 83")
+    if metadata.get("action_width") != str(EXPECTED_ACTION_WIDTH):
+        raise PicoHybridPolicyContractError("action_width metadata must be 18")
+    observation_schema = _strict_json_metadata(metadata, "observation_schema_json")
+    if observation_schema != [
+        [name, width]
+        for name, width in zip(
+            EXPECTED_OBSERVATION_TERMS, (3, 3, 21, 21, 18, 3, 6, 8), strict=True
+        )
+    ]:
+        raise PicoHybridPolicyContractError("contract-v12 observation schema drifted")
+    if _split_csv(metadata.get("observation_names"), "observation_names") != (
+        EXPECTED_OBSERVATION_TERMS
+    ):
+        raise PicoHybridPolicyContractError("unsafe observation order")
+    observation_joints = _split_csv(
+        metadata.get("observation_joint_names"), "observation_joint_names"
+    )
+    if observation_joints != EXPECTED_V12_OBSERVATION_JOINT_NAMES:
+        raise PicoHybridPolicyContractError("unsafe observation joint order")
+    action_joints = _split_csv(metadata.get("action_joint_names"), "action_joint_names")
+    if action_joints != tuple(OBSERVATION_DOF_ORDER):
+        raise PicoHybridPolicyContractError("unsafe action joint order")
+    (
+        v12_raw_action_minimum,
+        v12_raw_action_maximum,
+        v12_raw_action_absolute_maximum,
+        v12_source_raw_action_minimum,
+        v12_source_raw_action_maximum,
+        v12_source_raw_action_absolute_maximum,
+        v12_learned_source_delta_minimum,
+        v12_learned_source_delta_maximum,
+        v12_learned_source_delta_absolute_maximum,
+        v12_runtime_raw_action_guard_absolute_maximum,
+    ) = _parse_v12_raw_action_envelope(metadata, action_joints)
+
+    if metadata.get("base_ang_vel_frame") != "robot_body_xyz":
+        raise PicoHybridPolicyContractError("base_ang_vel_frame must be robot_body_xyz")
+    if metadata.get("base_ang_vel_units") != "rad_s":
+        raise PicoHybridPolicyContractError("base_ang_vel_units must be rad_s")
+    if _split_csv(
+        metadata.get("locomotion_command_order"), "locomotion_command_order"
+    ) != (
+        "linear_velocity_x",
+        "linear_velocity_y",
+        "angular_velocity_z",
+    ):
+        raise PicoHybridPolicyContractError("unsupported locomotion command order")
+    if _split_csv(
+        metadata.get("locomotion_command_units"), "locomotion_command_units"
+    ) != ("m_s", "m_s", "rad_s"):
+        raise PicoHybridPolicyContractError("unsupported locomotion command units")
+    _require_exact_metadata(
+        metadata,
+        "locomotion_command_frame",
+        "robot_body_forward_left_yaw_up",
+    )
+    _require_exact_metadata(
+        metadata,
+        "previous_action_semantics",
+        EXPECTED_V12_PREVIOUS_ACTION_SEMANTICS,
+    )
+    _require_exact_metadata(
+        metadata,
+        "action_target_semantics",
+        "default_joint_pos_plus_raw_action_times_scale",
+    )
+    _require_exact_metadata(
+        metadata, "action_clip_semantics", EXPECTED_V12_ACTION_CLIP_SEMANTICS
+    )
+    _require_exact_metadata(
+        metadata,
+        "action_distribution_semantics",
+        EXPECTED_V12_ACTION_DISTRIBUTION_SEMANTICS,
+    )
+    _require_exact_metadata(
+        metadata,
+        "runtime_action_semantics",
+        EXPECTED_V12_RUNTIME_ACTION_SEMANTICS,
+    )
+    _require_exact_finite_scalar(metadata, "control_hz", 50.0)
+
+    observation_defaults = _float_csv(
+        metadata.get("observation_default_joint_pos"),
+        "observation_default_joint_pos",
+        len(observation_joints),
+    )
+    action_defaults = _float_csv(
+        metadata.get("default_joint_pos"), "default_joint_pos", len(action_joints)
+    )
+    action_scale = _float_csv(
+        metadata.get("action_scale"), "action_scale", len(action_joints)
+    )
+    expected_observation_defaults = tuple(
+        float(PICO_TELEOP_HOME_POSE[name]) for name in observation_joints
+    )
+    _require_fixed_metadata_vector(
+        "observation_default_joint_pos",
+        observation_defaults,
+        expected_observation_defaults,
+    )
+    _require_fixed_metadata_vector(
+        "default_joint_pos", action_defaults, EXPECTED_ACTION_DEFAULT_JOINT_POS
+    )
+    _require_fixed_metadata_vector("action_scale", action_scale, EXPECTED_ACTION_SCALE)
+
+    # The current v12 deployment exporter does not serialize soft limits because
+    # its actor semantics intentionally have no environment target clip.  Older
+    # base graphs and future exporters may nevertheless carry both vectors.  If
+    # present, authenticate them against the same compiled contract as v10;
+    # otherwise the constructor validates the compiled fallback before inference.
+    soft_limit_keys = ("soft_joint_pos_lower", "soft_joint_pos_upper")
+    soft_limit_presence = tuple(key in metadata for key in soft_limit_keys)
+    if any(soft_limit_presence) and not all(soft_limit_presence):
+        raise PicoHybridPolicyContractError(
+            "contract-v12 soft-limit metadata must provide both lower and upper"
+        )
+    if all(soft_limit_presence):
+        metadata_soft_lower = _float_csv(
+            metadata.get("soft_joint_pos_lower"),
+            "soft_joint_pos_lower",
+            len(action_joints),
+        )
+        metadata_soft_upper = _float_csv(
+            metadata.get("soft_joint_pos_upper"),
+            "soft_joint_pos_upper",
+            len(action_joints),
+        )
+        _require_fixed_metadata_vector(
+            "soft_joint_pos_lower",
+            metadata_soft_lower,
+            EXPECTED_SOFT_JOINT_POS_LOWER,
+        )
+        _require_fixed_metadata_vector(
+            "soft_joint_pos_upper",
+            metadata_soft_upper,
+            EXPECTED_SOFT_JOINT_POS_UPPER,
+        )
+
+    foot_lower = _float_csv(metadata.get("foot_target_lower"), "foot_target_lower", 6)
+    foot_upper = _float_csv(metadata.get("foot_target_upper"), "foot_target_upper", 6)
+    both_lower = _float_csv(
+        metadata.get("simultaneous_both_feet_target_lower"),
+        "simultaneous_both_feet_target_lower",
+        6,
+    )
+    both_upper = _float_csv(
+        metadata.get("simultaneous_both_feet_target_upper"),
+        "simultaneous_both_feet_target_upper",
+        6,
+    )
+    hand_lower = _float_csv(metadata.get("hand_target_lower"), "hand_target_lower", 6)
+    hand_upper = _float_csv(metadata.get("hand_target_upper"), "hand_target_upper", 6)
+    hand_target_fk = _strict_json_metadata(metadata, "hand_target_fk")
+    if not _exact_json_value(hand_target_fk, EXPECTED_V12_HAND_TARGET_FK):
+        raise PicoHybridPolicyContractError(
+            "hand_target_fk does not match the contract-v12 deployment contract"
+        )
+    _require_exact_metadata(
+        metadata, "foot_target_frame", "robot_trunk_xyz_forward_left_up"
+    )
+    _require_exact_metadata(
+        metadata, "hand_target_frame", "robot_trunk_xyz_forward_left_up"
+    )
+    _require_exact_metadata(metadata, "foot_target_units", "metres")
+    _require_exact_metadata(metadata, "hand_target_units", "metres")
+    _require_exact_metadata(
+        metadata,
+        "foot_target_semantics",
+        "left_xyz_then_right_xyz_trunk_frame_offset_from_episode_reset_"
+        "reference_metres_periodic_command_resampling_does_not_move_reference",
+    )
+    _require_exact_metadata(
+        metadata,
+        "hand_target_semantics",
+        "left_xyz_then_right_xyz_then_left_right_active_flags_"
+        "trunk_frame_offset_from_episode_reset_reference_metres_"
+        "periodic_command_resampling_does_not_move_reference",
+    )
+    _require_exact_metadata(
+        metadata,
+        "simultaneous_both_feet_target_semantics",
+        EXPECTED_SIMULTANEOUS_BOTH_FEET_TARGET_SEMANTICS,
+    )
+    _require_exact_metadata(
+        metadata, "simultaneous_both_feet_requires_zero_twist", "true"
+    )
+    for name, actual, expected in (
+        ("foot_target_lower", foot_lower, EXPECTED_FOOT_TARGET_LOWER),
+        ("foot_target_upper", foot_upper, EXPECTED_FOOT_TARGET_UPPER),
+        (
+            "simultaneous_both_feet_target_lower",
+            both_lower,
+            EXPECTED_SIMULTANEOUS_BOTH_FEET_TARGET_LOWER,
+        ),
+        (
+            "simultaneous_both_feet_target_upper",
+            both_upper,
+            EXPECTED_SIMULTANEOUS_BOTH_FEET_TARGET_UPPER,
+        ),
+        ("hand_target_lower", hand_lower, EXPECTED_HAND_TARGET_LOWER),
+        ("hand_target_upper", hand_upper, EXPECTED_HAND_TARGET_UPPER),
+    ):
+        if not np.allclose(actual, expected, rtol=0.0, atol=1e-9):
+            raise PicoHybridPolicyContractError(
+                f"{name} does not match the deployed command contract"
+            )
+
+    return _PolicyContract(
+        input_name=inputs[0].name,
+        observation_joint_names=observation_joints,
+        observation_default_joint_pos=expected_observation_defaults,
+        action_joint_names=action_joints,
+        action_default_joint_pos=EXPECTED_ACTION_DEFAULT_JOINT_POS,
+        action_scale=EXPECTED_ACTION_SCALE,
+        soft_lower=EXPECTED_SOFT_JOINT_POS_LOWER,
+        soft_upper=EXPECTED_SOFT_JOINT_POS_UPPER,
+        raw_action_soft_lower=(),
+        raw_action_soft_upper=(),
+        actor_raw_action_lower=(),
+        actor_raw_action_upper=(),
+        foot_lower=foot_lower,
+        foot_upper=foot_upper,
+        simultaneous_both_feet_lower=both_lower,
+        simultaneous_both_feet_upper=both_upper,
+        hand_lower=hand_lower,
+        hand_upper=hand_upper,
+        checkpoint_filename=filename,
+        checkpoint_iteration=checkpoint_iteration,
+        checkpoint_completed_updates=checkpoint_completed_updates,
+        checkpoint_sha256=checkpoint_sha256,
+        training_provenance_sha256=stage_gate_sha256,
+        training_source_tree_sha256="",
+        training_resume_source_checkpoint_sha256="",
+        training_resume_source_checkpoint_iteration=-1,
+        migration_source_checkpoint_sha256="",
+        migration_source_checkpoint_iteration=-1,
+        migration_source_training_provenance_sha256="",
+        migration_source_tree_sha256="",
+        migration_source_gate_sha256="",
+        migration_state_transfer="",
+        migration_source_optimizer_learning_rate=0.0,
+        training_fixed_learning_rate=0.0,
+        acceptance_receipt_sha256=locomotion_report_sha256,
+        acceptance_evaluator_source_sha256="",
+        safe_velocity_source_checkpoint_sha256=source_checkpoint_sha256,
+        safe_velocity_source_checkpoint_iteration=source_iteration,
+        safe_velocity_acceptance_receipt_sha256=probe_sha256,
+        training_contract_version=EXPECTED_V12_TRAINING_CONTRACT_VERSION,
+        runtime_action_semantics=EXPECTED_V12_RUNTIME_ACTION_SEMANTICS,
+        v12_legacy_source_checkpoint_sha256=source_checkpoint_sha256,
+        v12_legacy_probe_sha256=probe_sha256,
+        v12_stage_gate_sha256=stage_gate_sha256,
+        v12_locomotion_report_sha256=locomotion_report_sha256,
+        v12_onnx_report_sha256=onnx_report_sha256,
+        v12_tracking_report_sha256=tracking_report_sha256,
+        v12_raw_action_minimum=v12_raw_action_minimum,
+        v12_raw_action_maximum=v12_raw_action_maximum,
+        v12_raw_action_absolute_maximum=v12_raw_action_absolute_maximum,
+        v12_source_raw_action_minimum=v12_source_raw_action_minimum,
+        v12_source_raw_action_maximum=v12_source_raw_action_maximum,
+        v12_source_raw_action_absolute_maximum=(v12_source_raw_action_absolute_maximum),
+        v12_learned_source_delta_minimum=v12_learned_source_delta_minimum,
+        v12_learned_source_delta_maximum=v12_learned_source_delta_maximum,
+        v12_learned_source_delta_absolute_maximum=(
+            v12_learned_source_delta_absolute_maximum
+        ),
+        v12_runtime_raw_action_guard_absolute_maximum=(
+            v12_runtime_raw_action_guard_absolute_maximum
+        ),
+    )
+
+
+def _parse_contract(session: Any) -> _PolicyContract:
+    try:
+        metadata = session.get_modelmeta().custom_metadata_map
+    except Exception as exc:
+        raise PicoHybridPolicyContractError("failed to read ONNX metadata") from exc
+    version = metadata.get("microban_teleop_training_contract_version")
+    if version == EXPECTED_V12_TRAINING_CONTRACT_VERSION:
+        return _parse_v12_contract(session)
+    # Preserve the complete, independently reviewed v10 parser unchanged.  It
+    # remains responsible for rejecting missing and historical v1-v9 models.
+    return _parse_v10_contract(session)
+
+
+def _validate_physical_motor_target_contract(contract: _PolicyContract) -> None:
+    """Fail closed before inference if the actuator clamp is not well-defined.
+
+    Contract v10 authenticates exporter-provided soft-limit metadata.  Contract
+    v12 authenticates it when present and otherwise uses the robot-local
+    constants.  This final constructor check is deliberately common to both so
+    no live target can encounter malformed geometry after torque is active.
+    """
+
+    vectors = {
+        "action_default_joint_pos": contract.action_default_joint_pos,
+        "action_scale": contract.action_scale,
+        "soft_joint_pos_lower": contract.soft_lower,
+        "soft_joint_pos_upper": contract.soft_upper,
+    }
+    if (
+        len(contract.action_joint_names) != EXPECTED_ACTION_WIDTH
+        or len(set(contract.action_joint_names)) != EXPECTED_ACTION_WIDTH
+        or any(len(values) != EXPECTED_ACTION_WIDTH for values in vectors.values())
+    ):
+        raise PicoHybridPolicyContractError(
+            "physical motor-target guard has an invalid 18-joint geometry"
+        )
+
+    for index, name in enumerate(contract.action_joint_names):
+        try:
+            default = float(contract.action_default_joint_pos[index])
+            scale = float(contract.action_scale[index])
+            lower = float(contract.soft_lower[index])
+            upper = float(contract.soft_upper[index])
+            neutral = float(NEUTRAL_POSE[name])
+        except (KeyError, TypeError, ValueError, OverflowError) as exc:
+            raise PicoHybridPolicyContractError(
+                f"physical motor-target guard is malformed for {name}"
+            ) from exc
+        if not all(
+            math.isfinite(value)
+            for value in (default, scale, lower, upper, neutral)
+        ):
+            raise PicoHybridPolicyContractError(
+                f"physical motor-target guard is non-finite for {name}"
+            )
+        if scale <= 0.0 or lower >= upper:
+            raise PicoHybridPolicyContractError(
+                f"physical motor-target guard has invalid bounds for {name}"
+            )
+        if not lower <= default <= upper:
+            raise PicoHybridPolicyContractError(
+                f"policy default is outside physical soft limits for {name}"
+            )
+        if not lower <= neutral <= upper:
+            raise PicoHybridPolicyContractError(
+                f"global neutral is outside physical soft limits for {name}"
+            )
+
+
 def _bounded_targets(
     values: Sequence[float], lower: Sequence[float], upper: Sequence[float]
 ) -> list[float]:
@@ -1624,17 +2655,43 @@ class PicoHybridMove(Move):
         self._gyro_transform = gyro_transform
         self._session = session or ort.InferenceSession(str(policy_path))
         self._contract = _parse_contract(self._session)
-        self._compatibility_smoke_sample_count = validate_onnxruntime_compatibility(
-            self._session,
-            self._contract.input_name,
-            self._contract.actor_raw_action_lower,
-            self._contract.actor_raw_action_upper,
-            EXPECTED_DETERMINISTIC_RAW_ACTION_LOWER,
-            EXPECTED_DETERMINISTIC_RAW_ACTION_UPPER,
-        )
+        _validate_physical_motor_target_contract(self._contract)
+        if (
+            self._contract.training_contract_version
+            == EXPECTED_V12_TRAINING_CONTRACT_VERSION
+        ):
+            self._compatibility_smoke_sample_count = (
+                validate_v12_onnxruntime_compatibility(
+                    self._session,
+                    self._contract.input_name,
+                    self._contract.v12_runtime_raw_action_guard_absolute_maximum,
+                )
+            )
+        else:
+            self._compatibility_smoke_sample_count = validate_onnxruntime_compatibility(
+                self._session,
+                self._contract.input_name,
+                self._contract.actor_raw_action_lower,
+                self._contract.actor_raw_action_upper,
+                EXPECTED_DETERMINISTIC_RAW_ACTION_LOWER,
+                EXPECTED_DETERMINISTIC_RAW_ACTION_UPPER,
+            )
         self._last_action = np.zeros(EXPECTED_ACTION_WIDTH, dtype=np.float32)
         self._stop_start_time_s: float | None = None
         self._stop_start_angles: dict[str, float] = {}
+
+    def _physical_target(self, index: int, value: float) -> float:
+        """Continuously saturate one finite actuator target to compiled limits."""
+
+        numeric = float(value)
+        if not math.isfinite(numeric):
+            raise PicoHybridPolicyRuntimeError(
+                "physical motor target became non-finite before clamping"
+            )
+        return max(
+            self._contract.soft_lower[index],
+            min(self._contract.soft_upper[index], numeric),
+        )
 
     def _measured_action_positions(self, obs: Observation) -> dict[str, float]:
         """Return a complete finite measured pose before any command is written."""
@@ -1663,8 +2720,10 @@ class PicoHybridMove(Move):
         if self._controller is not None:
             ids = [MOTOR_TO_ID[name] for name in self._contract.action_joint_names]
             self._controller.sync_write_kp(ids, [KP_RL] * len(ids))
-        for name in self._contract.action_joint_names:
-            command.target_angles[name] = measured_positions[name]
+        for index, name in enumerate(self._contract.action_joint_names):
+            command.target_angles[name] = self._physical_target(
+                index, measured_positions[name]
+            )
         self._last_action.fill(0.0)
         self._stop_start_time_s = None
         self._stop_start_angles = {}
@@ -1779,20 +2838,77 @@ class PicoHybridMove(Move):
             raise PicoHybridPolicyRuntimeError("projected gravity is invalid")
         if float(gravity[2]) > -0.5:
             measured_positions = self._measured_action_positions(obs)
-            for name in self._contract.action_joint_names:
-                command.target_angles[name] = measured_positions[name]
+            for index, name in enumerate(self._contract.action_joint_names):
+                command.target_angles[name] = self._physical_target(
+                    index, measured_positions[name]
+                )
             return
 
-        policy_input = np.asarray([self.build_observation(obs)], dtype=np.float32)
+        with np.errstate(over="ignore", invalid="ignore"):
+            policy_input = np.asarray([self.build_observation(obs)], dtype=np.float32)
+        if not np.isfinite(policy_input).all():
+            raise PicoHybridPolicyRuntimeError(
+                "policy observation is not finite in float32"
+            )
         outputs = self._session.run(None, {self._contract.input_name: policy_input})
         if len(outputs) != 1:
             raise PicoHybridPolicyRuntimeError("policy returned more than one output")
-        action = np.asarray(outputs[0], dtype=np.float64)
-        if action.shape != (1, EXPECTED_ACTION_WIDTH) or not np.isfinite(action).all():
+        try:
+            action = np.asarray(outputs[0], dtype=np.float64)
+            finite = bool(np.isfinite(action).all())
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise PicoHybridPolicyRuntimeError(
+                "policy returned a non-numeric output"
+            ) from exc
+        if action.shape != (1, EXPECTED_ACTION_WIDTH) or not finite:
             raise PicoHybridPolicyRuntimeError(
                 f"unsafe policy output shape/value: {action.shape}"
             )
         raw_action = action[0]
+        if (
+            self._contract.training_contract_version
+            == EXPECTED_V12_TRAINING_CONTRACT_VERSION
+        ):
+            # Preserve the source locomotion MDP recurrence exactly: no actor
+            # transform and the same raw float32 action recurs in the next
+            # observation.  The separate actuator boundary continuously clamps
+            # finite absolute MotorCommand targets to compiled physical limits;
+            # saturation is not fed back into the actor recurrence.
+            with np.errstate(over="ignore", invalid="ignore"):
+                raw_action_float32 = raw_action.astype(np.float32)
+            if not np.isfinite(raw_action_float32).all():
+                raise PicoHybridPolicyRuntimeError(
+                    "contract-v12 raw action is not finite in float32"
+                )
+            for index, (name, raw_value, absolute_maximum) in enumerate(
+                zip(
+                    self._contract.action_joint_names,
+                    raw_action_float32,
+                    self._contract.v12_runtime_raw_action_guard_absolute_maximum,
+                    strict=True,
+                )
+            ):
+                if abs(float(raw_value)) > absolute_maximum:
+                    raise PicoHybridPolicyRuntimeError(
+                        "contract-v12 raw action escaped the authenticated "
+                        f"finite-amplitude guard for {name} at action index {index}"
+                    )
+            targets = [
+                self._contract.action_default_joint_pos[index]
+                + float(raw_action_float32[index]) * self._contract.action_scale[index]
+                for index in range(EXPECTED_ACTION_WIDTH)
+            ]
+            if not all(math.isfinite(target) for target in targets):
+                raise PicoHybridPolicyRuntimeError(
+                    "contract-v12 raw action produced a non-finite target"
+                )
+            for index, (name, target) in enumerate(
+                zip(self._contract.action_joint_names, targets, strict=True)
+            ):
+                command.target_angles[name] = self._physical_target(index, target)
+            self._last_action = raw_action_float32.copy()
+            return
+
         targets: list[float] = []
         effective_action = np.empty(EXPECTED_ACTION_WIDTH, dtype=np.float32)
         for index, name in enumerate(self._contract.action_joint_names):
@@ -1841,10 +2957,10 @@ class PicoHybridMove(Move):
             ) / self._contract.action_scale[index]
         # Validate the complete 18-joint output before writing any target so a
         # bad later joint cannot leave a partial motor command behind.
-        for name, target in zip(
-            self._contract.action_joint_names, targets, strict=True
+        for index, (name, target) in enumerate(
+            zip(self._contract.action_joint_names, targets, strict=True)
         ):
-            command.target_angles[name] = target
+            command.target_angles[name] = self._physical_target(index, target)
         self._last_action = effective_action
 
     def on_stop(self, obs: Observation, command: MotorCommand) -> None:
@@ -1859,10 +2975,16 @@ class PicoHybridMove(Move):
         duration = max(1e-6, self._neutral_return_duration_s)
         fraction = min(1.0, elapsed / duration)
         blend = fraction * fraction * (3.0 - 2.0 * fraction)
-        for name in self._contract.action_joint_names:
+        for index, name in enumerate(self._contract.action_joint_names):
             start = self._stop_start_angles[name]
-            command.target_angles[name] = (
-                start + (PICO_TELEOP_HOME_POSE[name] - start) * blend
+            target = (
+                NEUTRAL_POSE[name]
+                if fraction >= 1.0
+                else start + (NEUTRAL_POSE[name] - start) * blend
+            )
+            command.target_angles[name] = self._physical_target(
+                index,
+                target,
             )
         if fraction >= 1.0:
             if self._controller is not None:

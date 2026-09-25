@@ -1,4 +1,4 @@
-.PHONY: sync setup run teleop-run camera-stream-enable camera-stream-udp camera-view-udp camera-stream-tls-provision camera-stream-tls stop shutdown voltage imu sim teleop-sim viewer gamepad-headless-enable gamepad-headless-disable
+.PHONY: sync setup run teleop-run teleop-validate camera-stream-enable camera-stream-udp camera-view-udp camera-stream-tls-provision camera-stream-tls stop shutdown voltage imu sim teleop-sim viewer gamepad-headless-enable gamepad-headless-disable
 
 HOST ?= microban
 ID ?=
@@ -40,6 +40,14 @@ run: sync
 # External-PC VR control: robot receives the deadman-gated UDP command stream.
 teleop-run: sync
 	ssh -tt $(HOST) "bash -l -c 'cd microban && MICROBAN_INPUT=network MICROBAN_NETWORK_ALLOWED_IP=\$${SSH_CONNECTION%% *} PYTHONPATH=src .venv/bin/python src/main.py'"
+
+# Validate the final PICO policy with the exact local runtime, sync the same
+# checkout and lockfile, materialize the Pi environment, then repeat the same
+# CPU-only parser/inference smoke on the Pi. This never opens the motor bus.
+teleop-validate:
+	PYTHONPATH=src uv run --locked python tools/validate_pico_policy.py src/agents/pico_teleop.onnx
+	$(MAKE) setup HOST=$(HOST)
+	ssh $(HOST) "bash -l -c 'cd microban && PYTHONPATH=src .venv/bin/python tools/validate_pico_policy.py src/agents/pico_teleop.onnx'"
 
 teleop-sim:
 	PYTHONPATH=src uv run --group sim src/sim/sim_main.py --hz 50 --input network

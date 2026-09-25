@@ -3,12 +3,14 @@ import math
 import unittest
 import xml.etree.ElementTree as ET
 from pathlib import Path
+from unittest.mock import patch
 
 import numpy as np
 
 from constants import (
     IMU_MOUNT_QUAT,
     MOTOR_TO_ID,
+    NEUTRAL_POSE,
     OBSERVATION_DOF_ORDER,
 )
 from imu_reader import imu_quat_to_body
@@ -68,6 +70,27 @@ from moves.pico_hybrid import (
     EXPECTED_TRAINING_FIXED_LEARNING_RATE,
     EXPECTED_TRAINING_PROVENANCE_MODE,
     EXPECTED_TRAINING_PROVENANCE_SCHEMA_VERSION,
+    EXPECTED_V12_ACTION_DISTRIBUTION_SEMANTICS,
+    EXPECTED_V12_ACTUAL_DYNAMIC_SOFT_LIMIT_OVERSHOOT_MAX_DEG,
+    EXPECTED_V12_ACTUAL_DYNAMIC_SOFT_LIMIT_OVERSHOOT_MAX_RAD,
+    EXPECTED_V12_BOOTSTRAP_MAPPING_VERSION,
+    EXPECTED_V12_COMMANDED_TARGET_SOFT_LIMIT_EXCESS_MAX_RAD,
+    EXPECTED_V12_EXTRA_OBSERVATION_COLUMNS,
+    EXPECTED_V12_HAND_TARGET_FK,
+    EXPECTED_V12_LEGACY_PROBE_SHA256,
+    EXPECTED_V12_LEGACY_SOURCE_CHECKPOINT_ITERATION,
+    EXPECTED_V12_LEGACY_SOURCE_CHECKPOINT_SHA256,
+    EXPECTED_V12_NORMALIZER_SEMANTICS,
+    EXPECTED_V12_OBSERVATION_JOINT_NAMES,
+    EXPECTED_V12_RAW_ACTION_ENVELOPE_SCHEMA_VERSION,
+    EXPECTED_V12_RAW_ACTION_GUARD_FORMULA,
+    EXPECTED_V12_RAW_ACTION_GUARD_MULTIPLIER,
+    EXPECTED_V12_RAW_ACTION_GUARD_SEMANTICS,
+    EXPECTED_V12_RECIPE_REVISION,
+    EXPECTED_V12_RUNTIME_ACTION_SEMANTICS,
+    EXPECTED_V12_SOURCE_TO_TARGET_COLUMNS,
+    EXPECTED_V12_TRAINING_CONTRACT_VERSION,
+    PHYSICAL_MOTOR_TARGET_GUARD_SEMANTICS,
     PICO_TELEOP_HOME_POSE,
     PicoHybridMove,
     PicoHybridPolicyContractError,
@@ -75,6 +98,7 @@ from moves.pico_hybrid import (
     onnxruntime_compatibility_smoke_inputs,
     sensor_gyro_to_body,
     validate_onnxruntime_compatibility,
+    validate_v12_onnxruntime_compatibility,
 )
 from observer import Observation, RobotState
 
@@ -104,9 +128,10 @@ OBSERVATION_JOINTS = (
 
 
 class _Io:
-    def __init__(self, name, shape):
+    def __init__(self, name, shape, tensor_type="tensor(float)"):
         self.name = name
         self.shape = shape
+        self.type = tensor_type
 
 
 class _Metadata:
@@ -291,18 +316,186 @@ def valid_metadata():
     }
 
 
+def valid_v12_metadata():
+    """Metadata fixture shared by every contract-v12 runtime test."""
+
+    metadata = valid_metadata()
+    checkpoint_sha256 = metadata["checkpoint_sha256"]
+    v12_minimum = [-3.0] * 18
+    v12_maximum = [4.0] * 18
+    v12_absolute_maximum = [4.0] * 18
+    source_minimum = [-2.0] * 18
+    source_maximum = [2.0] * 18
+    source_absolute_maximum = [2.0] * 18
+    delta_minimum = [-1.0] * 18
+    delta_maximum = [1.0] * 18
+    delta_absolute_maximum = [1.0] * 18
+    guard_absolute_maximum = [8.0] * 18
+    source_minimum[0] = -3.0
+    source_maximum[0] = 3.0
+    source_absolute_maximum[0] = 3.0
+    delta_minimum[0] = -2.0
+    delta_maximum[0] = 2.0
+    delta_absolute_maximum[0] = 2.0
+    guard_absolute_maximum[0] = 10.0
+    metadata.update(
+        {
+            "microban_teleop_training_contract_version": (
+                EXPECTED_V12_TRAINING_CONTRACT_VERSION
+            ),
+            "microban_teleop_recipe_revision": EXPECTED_V12_RECIPE_REVISION,
+            "action_width": "18",
+            "observation_schema_json": json.dumps(
+                [
+                    ["base_ang_vel", 3],
+                    ["projected_gravity", 3],
+                    ["joint_pos", 21],
+                    ["joint_vel", 21],
+                    ["actions", 18],
+                    ["command", 3],
+                    ["foot_target", 6],
+                    ["hand_target", 8],
+                ],
+                separators=(",", ":"),
+            ),
+            "observation_joint_names": _csv(EXPECTED_V12_OBSERVATION_JOINT_NAMES),
+            "previous_action_semantics": "raw_actor_output",
+            "action_clip_semantics": "none",
+            "action_distribution_semantics": (
+                EXPECTED_V12_ACTION_DISTRIBUTION_SEMANTICS
+            ),
+            "runtime_action_semantics": EXPECTED_V12_RUNTIME_ACTION_SEMANTICS,
+            "deployment_accepted": "true",
+            "v12_stage_gate_schema_version": "2",
+            "v12_stage_gate_name": "microban_teleop_v12_stage",
+            "v12_stage_gate_status": "pass",
+            "v12_stage_gate_canonical_boundary": "true",
+            "v12_stage_gate_sha256": "a" * 64,
+            "v12_stage_gate_checkpoint_sha256": checkpoint_sha256,
+            "v12_stage_gate_checkpoint_iteration": "14999",
+            "v12_stage_gate_completed_updates": "15000",
+            "v12_locomotion_report_sha256": "b" * 64,
+            "v12_onnx_report_sha256": "c" * 64,
+            "v12_tracking_report_sha256": "d" * 64,
+            "v12_tracking_profile": "full_body_reachable_performance_perturbation_v2",
+            "v12_raw_action_envelope_schema_version": str(
+                EXPECTED_V12_RAW_ACTION_ENVELOPE_SCHEMA_VERSION
+            ),
+            "v12_raw_action_joint_names_json": json.dumps(
+                list(OBSERVATION_DOF_ORDER), separators=(",", ":")
+            ),
+            "v12_raw_action_min_json": json.dumps(v12_minimum),
+            "v12_raw_action_max_json": json.dumps(v12_maximum),
+            "v12_raw_action_absmax_json": json.dumps(v12_absolute_maximum),
+            "v12_source_raw_action_min_json": json.dumps(source_minimum),
+            "v12_source_raw_action_max_json": json.dumps(source_maximum),
+            "v12_source_raw_action_absmax_json": json.dumps(source_absolute_maximum),
+            "v12_learned_source_delta_min_json": json.dumps(delta_minimum),
+            "v12_learned_source_delta_max_json": json.dumps(delta_maximum),
+            "v12_learned_source_delta_absmax_json": json.dumps(delta_absolute_maximum),
+            "runtime_raw_action_guard_formula": (EXPECTED_V12_RAW_ACTION_GUARD_FORMULA),
+            "runtime_raw_action_guard_multiplier": str(
+                EXPECTED_V12_RAW_ACTION_GUARD_MULTIPLIER
+            ),
+            "runtime_raw_action_guard_absmax_json": json.dumps(guard_absolute_maximum),
+            "runtime_raw_action_guard_semantics": (
+                EXPECTED_V12_RAW_ACTION_GUARD_SEMANTICS
+            ),
+            "v12_bootstrap_provenance_schema_version": "1",
+            "v12_bootstrap_mapping_version": EXPECTED_V12_BOOTSTRAP_MAPPING_VERSION,
+            "v12_legacy_source_checkpoint_sha256": (
+                EXPECTED_V12_LEGACY_SOURCE_CHECKPOINT_SHA256
+            ),
+            "v12_legacy_source_checkpoint_iteration": str(
+                EXPECTED_V12_LEGACY_SOURCE_CHECKPOINT_ITERATION
+            ),
+            "v12_legacy_probe_sha256": EXPECTED_V12_LEGACY_PROBE_SHA256,
+            "v12_legacy_probe_scenario_count": "9",
+            "v12_legacy_probe_steps_per_scenario": "300",
+            "v12_legacy_probe_settle_steps": "50",
+            "v12_legacy_probe_seed": "42",
+            "v12_source_to_target_columns_json": json.dumps(
+                [list(pair) for pair in EXPECTED_V12_SOURCE_TO_TARGET_COLUMNS],
+                separators=(",", ":"),
+            ),
+            "v12_extra_observation_columns_json": json.dumps(
+                list(EXPECTED_V12_EXTRA_OBSERVATION_COLUMNS), separators=(",", ":")
+            ),
+            "v12_actor_topology_json": "[83,512,256,128,18]",
+            "v12_normalizer_eps": "0.01",
+            "v12_normalizer_semantics": EXPECTED_V12_NORMALIZER_SEMANTICS,
+            "v12_trainable_actor_parameters": "mlp.0.weight_extra_columns_only",
+            "adapter_gradient_schedule_revision": (
+                "freeze_extra_to7000_then_hmd_hand_to10000_then_all_v1"
+            ),
+            "v12_active_actor_columns_at_save_json": json.dumps(
+                list(EXPECTED_V12_EXTRA_OBSERVATION_COLUMNS), separators=(",", ":")
+            ),
+            "v12_frozen_legacy_tensors_verified": "true",
+            "v12_locomotion_gate": ("microban_teleop_v12_neutral_locomotion_9x300"),
+            "v12_locomotion_status": "pass",
+            "v12_locomotion_seed": "42",
+            "v12_locomotion_scenario_count": "9",
+            "v12_locomotion_steps_per_scenario": "300",
+            "v12_locomotion_settle_steps": "50",
+            "v12_locomotion_fall_scenario_count": "0",
+            "v12_locomotion_nonfinite_scenario_count": "0",
+            "v12_actual_dynamic_soft_limit_overshoot_max_deg": str(
+                EXPECTED_V12_ACTUAL_DYNAMIC_SOFT_LIMIT_OVERSHOOT_MAX_DEG
+            ),
+            "v12_actual_dynamic_soft_limit_overshoot_max_rad": str(
+                EXPECTED_V12_ACTUAL_DYNAMIC_SOFT_LIMIT_OVERSHOOT_MAX_RAD
+            ),
+            "v12_commanded_target_soft_limit_excess_max_rad": str(
+                EXPECTED_V12_COMMANDED_TARGET_SOFT_LIMIT_EXCESS_MAX_RAD
+            ),
+            "v12_locomotion_actual_soft_limit_violation_scenario_count": "0",
+            "v12_locomotion_directionally_correct_scenario_count": "8",
+            "v12_locomotion_directional_scenario_count": "8",
+            "v12_locomotion_raw_action_recurrence_all_steps": "true",
+            "v12_onnx_gate": "microban_teleop_v12_checkpoint_onnx",
+            "v12_onnx_verified": "true",
+            "v12_onnx_parity_teleop_columns": "random_finite_not_zeroed",
+            "v12_onnx_parity_seed": "20260925",
+            "v12_onnx_parity_sample_count": "64",
+            "v12_onnx_parity_atol": "2e-05",
+            "v12_onnx_reference_max_abs_error": "3e-06",
+            "v12_onnxruntime_cpu_max_abs_error": "4e-06",
+            "v12_neutral_legacy_parity_max_abs_error": "9e-06",
+            "v12_neutral_legacy_parity_sample_count": "10000",
+            "hand_target_fk": json.dumps(
+                EXPECTED_V12_HAND_TARGET_FK, separators=(",", ":")
+            ),
+        }
+    )
+    return metadata
+
+
 class FakeSession:
-    def __init__(self, metadata=None, output=None):
+    def __init__(
+        self,
+        metadata=None,
+        output=None,
+        *,
+        input_name="obs",
+        output_name="actions",
+        input_type="tensor(float)",
+        output_type="tensor(float)",
+    ):
         self.metadata = valid_metadata() if metadata is None else metadata
         self.output = np.zeros((1, 18), dtype=np.float32) if output is None else output
+        self.input_name = input_name
+        self.output_name = output_name
+        self.input_type = input_type
+        self.output_type = output_type
         self.last_feed = None
         self.run_count = 0
 
     def get_inputs(self):
-        return [_Io("obs", [1, 83])]
+        return [_Io(self.input_name, [1, 83], self.input_type)]
 
     def get_outputs(self):
-        return [_Io("actions", [1, 18])]
+        return [_Io(self.output_name, [1, 18], self.output_type)]
 
     def get_modelmeta(self):
         return _Metadata(self.metadata)
@@ -345,6 +538,394 @@ def observation(time_s=0.0):
 
 
 class PicoHybridMoveTest(unittest.TestCase):
+    def test_v12_contract_accepts_only_final_hash_bound_raw_policy(self):
+        session = FakeSession(metadata=valid_v12_metadata())
+        move = PicoHybridMove(session=session)
+
+        self.assertEqual(move._contract.training_contract_version, "12")
+        self.assertEqual(
+            move._contract.runtime_action_semantics,
+            EXPECTED_V12_RUNTIME_ACTION_SEMANTICS,
+        )
+        self.assertEqual(move._contract.actor_raw_action_lower, ())
+        self.assertEqual(move._contract.actor_raw_action_upper, ())
+        self.assertEqual(
+            move._contract.v12_legacy_source_checkpoint_sha256,
+            EXPECTED_V12_LEGACY_SOURCE_CHECKPOINT_SHA256,
+        )
+        self.assertEqual(
+            move._contract.v12_legacy_probe_sha256,
+            EXPECTED_V12_LEGACY_PROBE_SHA256,
+        )
+        self.assertEqual(
+            move._contract.v12_runtime_raw_action_guard_absolute_maximum,
+            (10.0, *((8.0,) * 17)),
+        )
+        self.assertEqual(move._compatibility_smoke_sample_count, 16)
+        self.assertEqual(session.run_count, 16)
+        self.assertEqual(
+            PHYSICAL_MOTOR_TARGET_GUARD_SEMANTICS,
+            "compiled_soft_limit_continuous_clamp_preserve_policy_recurrence_v1",
+        )
+
+    def test_v12_soft_limits_match_metadata_or_compiled_fallback(self):
+        metadata = valid_v12_metadata()
+        move = PicoHybridMove(session=FakeSession(metadata=metadata))
+        self.assertEqual(move._contract.soft_lower, EXPECTED_SOFT_JOINT_POS_LOWER)
+        self.assertEqual(move._contract.soft_upper, EXPECTED_SOFT_JOINT_POS_UPPER)
+
+        without_exported_limits = valid_v12_metadata()
+        without_exported_limits.pop("soft_joint_pos_lower")
+        without_exported_limits.pop("soft_joint_pos_upper")
+        fallback = PicoHybridMove(
+            session=FakeSession(metadata=without_exported_limits)
+        )
+        self.assertEqual(fallback._contract.soft_lower, EXPECTED_SOFT_JOINT_POS_LOWER)
+        self.assertEqual(fallback._contract.soft_upper, EXPECTED_SOFT_JOINT_POS_UPPER)
+
+        for case, mutate in (
+            (
+                "mismatch",
+                lambda values: values.__setitem__(
+                    "soft_joint_pos_upper",
+                    _metadata_csv((*EXPECTED_SOFT_JOINT_POS_UPPER[:-1], 99.0)),
+                ),
+            ),
+            (
+                "incomplete",
+                lambda values: values.pop("soft_joint_pos_upper"),
+            ),
+        ):
+            rejected = valid_v12_metadata()
+            mutate(rejected)
+            with (
+                self.subTest(case=case),
+                self.assertRaises(PicoHybridPolicyContractError),
+            ):
+                PicoHybridMove(session=FakeSession(metadata=rejected))
+
+    def test_compiled_soft_limit_fallback_fails_before_onnx_smoke_if_malformed(self):
+        metadata = valid_v12_metadata()
+        metadata.pop("soft_joint_pos_lower")
+        metadata.pop("soft_joint_pos_upper")
+        malformed = list(EXPECTED_SOFT_JOINT_POS_LOWER)
+        malformed[0] = math.nan
+        session = FakeSession(metadata=metadata)
+
+        with (
+            patch(
+                "moves.pico_hybrid.EXPECTED_SOFT_JOINT_POS_LOWER",
+                tuple(malformed),
+            ),
+            self.assertRaisesRegex(
+                PicoHybridPolicyContractError,
+                "physical motor-target guard is non-finite",
+            ),
+        ):
+            PicoHybridMove(session=session)
+
+        self.assertEqual(session.run_count, 0)
+
+    def test_v12_contract_rejects_intermediate_or_mutated_provenance(self):
+        wrong_fk_type = json.loads(
+            json.dumps(EXPECTED_V12_HAND_TARGET_FK, separators=(",", ":"))
+        )
+        wrong_fk_type["home_joint_deg"][0][0] = False
+        cases = {
+            "intermediate": ("checkpoint_iteration", "2999"),
+            "source": ("v12_legacy_source_checkpoint_sha256", "0" * 64),
+            "probe": ("v12_legacy_probe_sha256", "0" * 64),
+            "retired_v1_recipe": (
+                "microban_teleop_recipe_revision",
+                "legacy_velocity_model14999_masked_extra20_raw_actions_v1",
+            ),
+            "gradient_schedule": ("adapter_gradient_schedule_revision", "other"),
+            "inactive_final_columns": (
+                "v12_active_actor_columns_at_save_json",
+                "[]",
+            ),
+            "mapping": ("v12_source_to_target_columns_json", "[]"),
+            "raw_recurrence": (
+                "v12_locomotion_raw_action_recurrence_all_steps",
+                "false",
+            ),
+            "teleop_parity": ("v12_onnx_parity_teleop_columns", "zero"),
+            "tracking_profile": ("v12_tracking_profile", "locomotion_only"),
+            "normalizer_semantics": ("v12_normalizer_semantics", "identity"),
+            "hand_fk": ("hand_target_fk", "{}"),
+            "hand_fk_json_type": (
+                "hand_target_fk",
+                json.dumps(wrong_fk_type, separators=(",", ":")),
+            ),
+            "parity_error": ("v12_onnxruntime_cpu_max_abs_error", "0.001"),
+            "action_clip": ("action_clip_semantics", "soft_limits"),
+            "raw_envelope_joint_order": (
+                "v12_raw_action_joint_names_json",
+                json.dumps(list(reversed(OBSERVATION_DOF_ORDER))),
+            ),
+            "raw_envelope_absmax": (
+                "v12_raw_action_absmax_json",
+                json.dumps([3.0] * 18),
+            ),
+            "raw_guard_formula": (
+                "runtime_raw_action_guard_formula",
+                "max(v12_absmax,source_absmax+delta_absmax)",
+            ),
+            "raw_guard_multiplier": (
+                "runtime_raw_action_guard_multiplier",
+                "1.999",
+            ),
+            "raw_guard_value": (
+                "runtime_raw_action_guard_absmax_json",
+                json.dumps([7.999] * 18),
+            ),
+            "raw_guard_semantics": (
+                "runtime_raw_action_guard_semantics",
+                "clamp",
+            ),
+            "measured_limit_tolerance": (
+                "v12_actual_dynamic_soft_limit_overshoot_max_deg",
+                "5.0001",
+            ),
+            "command_limit_tolerance": (
+                "v12_commanded_target_soft_limit_excess_max_rad",
+                str(math.radians(5.0)),
+            ),
+        }
+        for case, (name, value) in cases.items():
+            metadata = valid_v12_metadata()
+            metadata[name] = value
+            if case == "intermediate":
+                metadata["checkpoint_filename"] = "model_2999.pt"
+                metadata["checkpoint_completed_updates"] = "3000"
+                metadata["v12_stage_gate_checkpoint_iteration"] = "2999"
+                metadata["v12_stage_gate_completed_updates"] = "3000"
+            with (
+                self.subTest(case=case),
+                self.assertRaises(PicoHybridPolicyContractError),
+            ):
+                PicoHybridMove(session=FakeSession(metadata=metadata))
+
+        for case, session in (
+            (
+                "input_name",
+                FakeSession(metadata=valid_v12_metadata(), input_name="input"),
+            ),
+            (
+                "output_name",
+                FakeSession(metadata=valid_v12_metadata(), output_name="output"),
+            ),
+        ):
+            with (
+                self.subTest(case=case),
+                self.assertRaisesRegex(PicoHybridPolicyContractError, "tensor names"),
+            ):
+                PicoHybridMove(session=session)
+
+        for case, session in (
+            (
+                "input_type",
+                FakeSession(metadata=valid_v12_metadata(), input_type="tensor(double)"),
+            ),
+            (
+                "output_type",
+                FakeSession(metadata=valid_v12_metadata(), output_type="tensor(int64)"),
+            ),
+        ):
+            with (
+                self.subTest(case=case),
+                self.assertRaisesRegex(PicoHybridPolicyContractError, "float32"),
+            ):
+                PicoHybridMove(session=session)
+
+    def test_v12_contract_rejects_missing_or_malformed_envelope_evidence(self):
+        cases = {
+            "missing": ("v12_source_raw_action_absmax_json", None),
+            "wrong_width": ("v12_raw_action_min_json", "[]"),
+            "boolean": (
+                "v12_learned_source_delta_max_json",
+                json.dumps([True] * 18),
+            ),
+            "nonfinite": (
+                "v12_source_raw_action_min_json",
+                "[NaN," + ",".join("0" for _ in range(17)) + "]",
+            ),
+            "float32_overflow": (
+                "v12_source_raw_action_max_json",
+                json.dumps([1.0e100] * 18),
+            ),
+            "reversed_range": (
+                "v12_learned_source_delta_min_json",
+                json.dumps([2.0] * 18),
+            ),
+        }
+        for case, (name, value) in cases.items():
+            metadata = valid_v12_metadata()
+            if value is None:
+                metadata.pop(name)
+            else:
+                metadata[name] = value
+            with (
+                self.subTest(case=case),
+                self.assertRaises(PicoHybridPolicyContractError),
+            ):
+                PicoHybridMove(session=FakeSession(metadata=metadata))
+
+    def test_v12_compatibility_smoke_requires_finite_float32_output(self):
+        for case, output in (
+            ("shape", np.zeros(18, dtype=np.float32)),
+            ("nan", np.full((1, 18), np.nan, dtype=np.float32)),
+            ("float32_overflow", np.full((1, 18), 1.0e100, dtype=np.float64)),
+            ("nonnumeric", np.full((1, 18), "bad", dtype=object)),
+            ("finite_amplitude", np.full((1, 18), 8.01, dtype=np.float32)),
+        ):
+            with (
+                self.subTest(case=case),
+                self.assertRaises(PicoHybridPolicyRuntimeError),
+            ):
+                validate_v12_onnxruntime_compatibility(
+                    FakeSession(metadata=valid_v12_metadata(), output=output),
+                    "obs",
+                    (8.0,) * 18,
+                )
+
+    def test_v12_step_clamps_motor_target_but_preserves_raw_recurrence(self):
+        raw = np.linspace(-3.5, 3.5, 18, dtype=np.float32).reshape(1, 18)
+        session = FakeSession(metadata=valid_v12_metadata(), output=raw)
+        move = PicoHybridMove(session=session)
+        obs = observation()
+        command = MotorCommand()
+        move.on_start(obs, command)
+        move.step(obs, command)
+
+        expected_targets = {
+            name: max(
+                EXPECTED_SOFT_JOINT_POS_LOWER[index],
+                min(
+                    EXPECTED_SOFT_JOINT_POS_UPPER[index],
+                    EXPECTED_ACTION_DEFAULT_JOINT_POS[index]
+                    + float(raw[0, index]),
+                ),
+            )
+            for index, name in enumerate(OBSERVATION_DOF_ORDER)
+        }
+        for name, expected in expected_targets.items():
+            self.assertEqual(command.target_angles[name], expected)
+        self.assertEqual(
+            command.target_angles["left_ankle_roll"],
+            EXPECTED_SOFT_JOINT_POS_UPPER[-1],
+        )
+        next_observation = move.build_observation(obs)
+        np.testing.assert_array_equal(
+            np.asarray(next_observation[48:66], dtype=np.float32), raw[0]
+        )
+
+    def test_v12_step_accepts_guard_boundary_and_clamps_without_exception(self):
+        raw = np.full((1, 18), 8.0, dtype=np.float32)
+        move = PicoHybridMove(
+            session=FakeSession(metadata=valid_v12_metadata(), output=raw)
+        )
+        obs = observation()
+        command = MotorCommand()
+        move.on_start(obs, command)
+        move.step(obs, command)
+
+        np.testing.assert_array_equal(move._last_action, raw[0])
+        self.assertEqual(
+            command.target_angles[OBSERVATION_DOF_ORDER[0]],
+            EXPECTED_SOFT_JOINT_POS_UPPER[0],
+        )
+
+    def test_v12_extreme_targets_never_add_five_degree_command_margin(self):
+        # Five degrees is reserved for measured-angle acceptance adjudication.
+        # It must never widen an actuator command beyond the compiled soft limit.
+        raw = np.asarray(
+            [[10.0, *(-8.0 if index % 2 else 8.0 for index in range(1, 18))]],
+            dtype=np.float32,
+        )
+        move = PicoHybridMove(
+            session=FakeSession(metadata=valid_v12_metadata(), output=raw)
+        )
+        obs = observation()
+        command = MotorCommand()
+        move.on_start(obs, command)
+
+        move.step(obs, command)
+
+        self.assertEqual(move.state, MoveState.ACTIVE)
+        for index, name in enumerate(OBSERVATION_DOF_ORDER):
+            lower = EXPECTED_SOFT_JOINT_POS_LOWER[index]
+            upper = EXPECTED_SOFT_JOINT_POS_UPPER[index]
+            target = command.target_angles[name]
+            self.assertLessEqual(lower, target)
+            self.assertLessEqual(target, upper)
+            expected = upper if raw[0, index] > 0.0 else lower
+            self.assertEqual(target, expected)
+            widened = expected + math.copysign(
+                math.radians(5.0), float(raw[0, index])
+            )
+            self.assertNotEqual(target, widened)
+        np.testing.assert_array_equal(move._last_action, raw[0])
+
+    def test_v12_step_rejects_guard_escape_before_any_target_write(self):
+        outside = np.nextafter(np.float32(8.0), np.float32(math.inf))
+        for sign in (-1.0, 1.0):
+            raw = np.zeros((1, 18), dtype=np.float32)
+            raw[0, 7] = sign * outside
+            session = FakeSession(metadata=valid_v12_metadata())
+            move = PicoHybridMove(session=session)
+            obs = observation()
+            command = MotorCommand()
+            move.on_start(obs, command)
+            held = dict(command.target_angles)
+            session.output = raw
+
+            with (
+                self.subTest(sign=sign),
+                self.assertRaisesRegex(
+                    PicoHybridPolicyRuntimeError, "finite-amplitude guard"
+                ),
+            ):
+                move.step(obs, command)
+
+            self.assertEqual(command.target_angles, held)
+            np.testing.assert_array_equal(
+                move._last_action, np.zeros(18, dtype=np.float32)
+            )
+
+    def test_v12_step_rejects_late_float32_overflow_before_any_target_write(self):
+        session = FakeSession(metadata=valid_v12_metadata())
+        move = PicoHybridMove(session=session)
+        obs = observation()
+        command = MotorCommand()
+        move.on_start(obs, command)
+        held = dict(command.target_angles)
+        session.output = np.full((1, 18), 1.0e100, dtype=np.float64)
+
+        with self.assertRaisesRegex(PicoHybridPolicyRuntimeError, "float32"):
+            move.step(obs, command)
+
+        self.assertEqual(command.target_angles, held)
+        np.testing.assert_array_equal(move._last_action, np.zeros(18, dtype=np.float32))
+
+    def test_v12_step_rejects_observation_float32_overflow_before_inference(self):
+        session = FakeSession(metadata=valid_v12_metadata())
+        move = PicoHybridMove(session=session)
+        obs = observation()
+        command = MotorCommand()
+        move.on_start(obs, command)
+        held = dict(command.target_angles)
+        calls_before_step = session.run_count
+        obs.robot_state.motor_positions[OBSERVATION_DOF_ORDER[0]] = 1.0e100
+
+        with self.assertRaisesRegex(
+            PicoHybridPolicyRuntimeError, "observation.*float32"
+        ):
+            move.step(obs, command)
+
+        self.assertEqual(session.run_count, calls_before_step)
+        self.assertEqual(command.target_angles, held)
+
     def test_onnxruntime_compatibility_smoke_uses_fixed_finite_corpus(self):
         corpus = onnxruntime_compatibility_smoke_inputs()
         self.assertEqual(corpus.shape, (16, 1, 83))
@@ -637,8 +1218,10 @@ class PicoHybridMoveTest(unittest.TestCase):
             "missing_recipe_revision": ("microban_teleop_recipe_revision", None),
             "different_recipe_revision": (
                 "microban_teleop_recipe_revision",
-                "v9_accepted_safe_velocity_bootstrap_no_walk004_prior_"
-                "full_pico_curriculum_v3",
+                (
+                    "v9_accepted_safe_velocity_bootstrap_no_walk004_prior_"
+                    "full_pico_curriculum_v3"
+                ),
             ),
         }
         for case, (field, value) in mutations.items():
@@ -708,8 +1291,10 @@ class PicoHybridMoveTest(unittest.TestCase):
             "short_source_digest": ("training_source_tree_sha256", "a" * 63),
             "wrong_training_recipe": (
                 "training_recipe_revision",
-                "v9_accepted_safe_velocity_bootstrap_no_walk004_prior_"
-                "full_pico_curriculum_v3",
+                (
+                    "v9_accepted_safe_velocity_bootstrap_no_walk004_prior_"
+                    "full_pico_curriculum_v3"
+                ),
             ),
             "wrong_training_initialization": (
                 "training_actor_initialization",
@@ -777,8 +1362,10 @@ class PicoHybridMoveTest(unittest.TestCase):
             ),
             "wrong_accepted_recipe": (
                 "acceptance_recipe_revision",
-                "v9_accepted_safe_velocity_bootstrap_no_walk004_prior_"
-                "full_pico_curriculum_v3",
+                (
+                    "v9_accepted_safe_velocity_bootstrap_no_walk004_prior_"
+                    "full_pico_curriculum_v3"
+                ),
             ),
             "wrong_nominal_count": ("acceptance_nominal_report_count", "2"),
             "wrong_moving_hmd_count": (
@@ -1209,7 +1796,7 @@ class PicoHybridMoveTest(unittest.TestCase):
         with self.assertRaises(PicoHybridPolicyRuntimeError):
             move.step(obs, MotorCommand())
 
-    def test_release_returns_to_neutral_and_getup_cancels(self):
+    def test_release_ends_at_next_inactive_motor_command_without_discontinuity(self):
         move = PicoHybridMove(session=FakeSession(), gyro_transform=lambda value: value)
         obs = observation(10.0)
         move.on_start(obs, MotorCommand())
@@ -1219,19 +1806,33 @@ class PicoHybridMoveTest(unittest.TestCase):
         }
         first = MotorCommand()
         move.on_stop(obs, first)
-        for name in OBSERVATION_DOF_ORDER:
-            self.assertAlmostEqual(
-                first.target_angles[name], PICO_TELEOP_HOME_POSE[name] + 0.2
+        for index, name in enumerate(OBSERVATION_DOF_ORDER):
+            measured = PICO_TELEOP_HOME_POSE[name] + 0.2
+            expected = max(
+                EXPECTED_SOFT_JOINT_POS_LOWER[index],
+                min(EXPECTED_SOFT_JOINT_POS_UPPER[index], measured),
             )
+            self.assertEqual(first.target_angles[name], expected)
 
         obs.robot_state.time_s = 10.8
         final = MotorCommand()
         move.on_stop(obs, final)
         self.assertEqual(move.state, MoveState.INACTIVE)
         for name in OBSERVATION_DOF_ORDER:
-            self.assertAlmostEqual(
-                final.target_angles[name], PICO_TELEOP_HOME_POSE[name]
-            )
+            self.assertEqual(final.target_angles[name], NEUTRAL_POSE[name])
+        next_inactive_tick = MotorCommand()
+        self.assertEqual(final.target_angles, next_inactive_tick.target_angles)
+        self.assertEqual(
+            final.target_angles["left_shoulder_pitch"], math.radians(10.0)
+        )
+        self.assertEqual(
+            final.target_angles["right_shoulder_pitch"], math.radians(10.0)
+        )
+
+    def test_getup_cancels_release_interpolation(self):
+        move = PicoHybridMove(session=FakeSession(), gyro_transform=lambda value: value)
+        obs = observation(10.0)
+        move.on_start(obs, MotorCommand())
 
         move.state = MoveState.STOPPING
         obs.user_input.active_moves.add("getup")

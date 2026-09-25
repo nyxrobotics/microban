@@ -1,25 +1,22 @@
-# PICO 4 Ultra hybrid-policy runtime
+# Legacy contract-v10 PICO hybrid-policy runtime
 
-The robot runtime keeps the existing walking policy as the startup mode. With
-network control active, the **current state of the left-controller X button**
-selects the policy momentarily:
+> This file is retained as the contract-v10 metadata reference. New deployments
+> must use [the contract-v12 runtime and deployment procedure](pico_teleop_v12_runtime.md).
+> Do not use the v10 export commands below for the current Microban policy.
 
-- X released: `walk`, the existing velocity walking policy;
-- X held: `pico_teleop`, the independently trained
-  83-observation/18-action policy.
-
-This is a controller state, not an environment-variable switch. The bridge
-places `locomotion_policy` in every complete UDP snapshot. Changing X state while
-the left trigger is held changes the policy without dropping the trigger or stick
-command. The selector hands ownership to only one 18-joint child at a time and
-starts/steps the new child in that same scheduler cycle.
+The current PICO bridge always requests `pico_teleop`; the left-controller X
+(WebXR `primary_button`) is parsed for protocol compatibility but is ignored by
+both bridge mappers. The **left trigger is the only momentary locomotion and
+tracking enable**: released sends no `walk`/`hmd_head` activation, and held sends
+both with `locomotion_policy=pico_teleop`. There is no controller policy toggle
+and no environment-variable switch. The receiver may internally downgrade a
+learned request to the pinned `walk` actor after a tracker/policy fault.
 
 The learned policy is optional. A missing/rejected ONNX, load/start/inference
 exception, non-finite output, or invalid body-target snapshot immediately uses the
 pinned `walk.onnx` actor with the current joystick command. A tracker/policy fault
 latches `walk` for the rest of that left-trigger activation; recovery is considered
 only after release and the next press, so it cannot surprise-switch mid-stride.
-Ordinary X press/release remains momentary and can switch policies while held.
 
 The other controls are unchanged:
 
@@ -27,11 +24,11 @@ The other controls are unchanged:
 |---|---|
 | left stick | forward/backward and lateral velocity |
 | right stick X | body yaw rate |
-| left trigger (held) | enable the selected locomotion policy |
+| left trigger (held) | enable PICO locomotion, HMD and available body/hand tracking |
 | right trigger (held) | slew camera-head yaw to trunk-forward |
 | HMD orientation | camera-head yaw/roll/pitch |
 | left grip (held) | show calibrated robot stereo view; otherwise passthrough |
-| left X (held) | select `pico_teleop`; releasing X selects `walk` |
+| left X | no locomotion-policy function |
 
 ## Install and validate a trained policy
 
@@ -188,8 +185,9 @@ needed:
 make teleop-run HOST=microban
 ```
 
-If `pico_teleop.onnx` is absent or rejected, pressing X continues with normal
-walking and records the fallback reason in `PolicySelectableWalkMove.fallback_reason`.
+If `pico_teleop.onnx` is absent or rejected, holding the left trigger continues
+with normal walking and records the fallback reason in
+`PolicySelectableWalkMove.fallback_reason`.
 An atomically replaced file is parsed in a background thread and becomes eligible
 on a later trigger activation; the process does not need to restart. Construction
 is behind the injected `LearnedMoveFactory`, so a future policy-contract parser can
@@ -247,8 +245,8 @@ Do not use the learned policy free-standing immediately. In this order:
    conversion and gyro conversion share this convention and a contract test.
 4. With the harness fitted, enable the policy with zero velocity and zero body
    targets. Verify every encoder/action name and direction at low gain/current.
-5. Test one axis and small target at a time, then trigger-release return to home,
-   tracking timeout and X-mode switch. If a get-up move is installed locally,
+5. Test one axis and small target at a time, then trigger-release return to home
+   and tracking timeout fallback. If a get-up move is installed locally,
    also verify its scheduler ownership transition.
 6. Only after those pass, test feet on the floor at reduced command ranges.
 

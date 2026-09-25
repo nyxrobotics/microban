@@ -318,9 +318,11 @@ class PolicySelectableWalkMove(Move):
                 # baseline so tracking recovery cannot switch policies mid-stride.
                 self._record_fallback("body tracking degraded")
             else:
-                # The momentary policy button was released. Apply that choice now,
-                # without stopping locomotion or treating it as a policy fault.
-                self._fallback_reason = "learned policy deselected by controller"
+                # Preserve support for an explicit wire-policy change from a
+                # legacy/custom client.  The current PICO bridge never takes
+                # this branch: it always requests pico_teleop and uses only the
+                # left-trigger active_moves state as its momentary enable.
+                self._fallback_reason = "learned policy deselected on the wire"
                 self._fallback_latched = False
             self._start_legacy(obs, command, step_now=True)
             return
@@ -337,8 +339,8 @@ class PolicySelectableWalkMove(Move):
 
         if self._selected_name == "walk":
             if obs.user_input.learned_policy_degraded and not self._fallback_latched:
-                # The activation may already be on legacy when X first requests a
-                # learned policy with invalid trackers. Latch just as strictly as a
+                # The activation may already be on legacy when a learned-policy
+                # packet arrives with invalid trackers. Latch just as strictly as
                 # degradation that occurred after learned ownership began.
                 self._record_fallback("body tracking degraded")
             if requested == "pico_teleop" and not self._fallback_latched:

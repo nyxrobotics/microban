@@ -10,7 +10,7 @@ enhancements. The robot runtime must not turn an enhancement fault into a stop.
 | Body target missing, malformed, stale, out of envelope | Keep left trigger and all three stick axes; clear targets and use `walk` | Legacy remains latched until trigger release; next press may retry learned policy |
 | Learned ONNX absent or contract/load rejected | Start `walk` with the same observation | Atomically replace the file; background validation makes it eligible on a later activation |
 | Learned start/inference exception or non-finite/unsafe output | Discard the learned tick, then call legacy `on_start` and `step` in that control cycle | Reason remains in `fallback_reason`; reload is attempted without process restart and adoption waits for a later activation |
-| X policy button changes while trigger is held | Hand off directly between valid policies without zeroing velocity | Momentary state continues to drive selection |
+| Left X / primary button changes | No locomotion effect; bridge keeps requesting `pico_teleop` | Left trigger remains the only momentary enable |
 | Controller/network packets stop | Watchdog returns neutral/HOME and disarms | After reconnect, release the left trigger once, then press to move |
 | Robot-side IMU/fall/current safety interlock | Existing robot safety behavior remains authoritative | Follow that interlock's explicit recovery procedure |
 
@@ -27,4 +27,5 @@ PYTHONPATH=src uv run --with pytest python -m pytest -q \
 
 These tests never open the motor bus or launch the physical gateway. They cover
 same-cycle inference fallback, command preservation, tracker degradation latching,
-momentary policy selection, atomic-file reload and network reconnect deadman rules.
+trigger-only packet-to-selector activation, atomic-file reload and network
+reconnect deadman rules.

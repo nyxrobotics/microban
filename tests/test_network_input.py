@@ -169,14 +169,15 @@ class NetworkInputTest(unittest.TestCase):
         source._apply(packet(5, ["walk"], {"vx": 1.0}))
         self.assertIn("walk", source.read().active_moves)
 
-    def test_policy_button_change_never_drops_held_deadman_or_joystick(self):
+    def test_wire_policy_change_never_drops_held_deadman_or_joystick(self):
         source = NetworkInputSource(stale_after_s=0.5)
         source._apply(packet(0))
         source._apply(packet(1, ["walk"], {"vx": 0.5}))
         self.assertIn("walk", source.read().active_moves)
 
-        # The receiver carries the requested button state, while the policy selector
-        # keeps the current child for this activation. It must not manufacture a stop.
+        # The receiver carries a generic wire-policy field for legacy/custom
+        # clients. The current PICO bridge always sends pico_teleop and has no
+        # policy button. A wire change must still not manufacture a stop.
         source._apply(pico_walk_packet(2, {"vx": 0.5}))
         state = source.read()
         self.assertIn("walk", state.active_moves)

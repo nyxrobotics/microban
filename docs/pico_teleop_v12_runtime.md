@@ -1,0 +1,224 @@
+# Contract-v12 PICO policy runtime
+
+The robot accepts contract-v12 only as an optional learned locomotion policy.
+The pinned `walk.onnx` policy remains the availability baseline. A missing
+artifact, rejected metadata, ONNX load error, malformed observation, non-finite
+inference result, or non-finite target makes `PolicySelectableWalkMove` start
+and step `walk` in the same control cycle. The fallback remains latched until
+the left-trigger locomotion activation is released, so a repaired tracker or
+hot-reloaded file cannot switch the gait mid-stride.
+
+## Physical action semantics
+
+Contract v12 is intentionally different from contract v10:
+
+- the actor input is the exact 83-value teleop schema;
+- ONNX emits the deterministic mean of the normalized, unbounded legacy
+  Gaussian actor;
+- each of the 18 outputs is used as the raw joint-position action:
+  `target = Microban training default + raw * training scale`;
+- no bounded-distribution transform, raw-action clamp, or effective-action
+  reconstruction is applied to the policy state;
+- the exact float32 raw output becomes observation columns `48:66` on the next
+  tick, even if its derived physical target saturates;
+- separately, the actuator-facing `MotorCommand` is the continuous clamp of the
+  finite derived absolute target to the compiled Microban soft limits.
+
+The runtime validates all 18 values and derived targets for finiteness before
+writing any target. It also applies the final-evaluation finite-amplitude guard
+described below. A finite target outside a soft limit is not an exception or a
+stop: that joint commands the nearest limit while all joints and the raw actor
+recurrence continue in the same tick. A numerical failure or an escape from the
+separate authenticated gross-amplitude guard remains an availability event
+handled by the legacy walk fallback.
+
+The v10 exporter supplies soft-limit metadata and the existing parser requires
+it to match the robot constants. The current v12 exporter does not supply those
+fields because its learned action contract is `action_clip_semantics=none`. If a
+v12 artifact does contain both soft-limit vectors, the parser requires the same
+exact match; if neither is present, the robot uses its compiled vectors. In both
+cases construction fails before ONNX inference unless every bound/default/scale
+and the global inactive neutral form a finite, ordered 18-joint clamp contract.
+
+The allowed **5-degree physical acceptance tolerance** applies only when judging
+a measured encoder angle after motion. It never expands either commanded soft
+limit: no command may be `soft_limit +/- 5 degrees`.
+
+## Trigger-only selection
+
+Both current bridge paths always serialize
+`locomotion_policy="pico_teleop"`. The left X/WebXR primary state is ignored;
+only holding the left trigger puts `walk` and `hmd_head` in `active_moves` and
+exposes tracking targets. Releasing the trigger removes those activations and
+starts the return to inactive neutral. `tests/test_policy_selector.py` exercises
+that exact packet through `NetworkInputSource` and `PolicySelectableWalkMove`.
+
+## Training HOME versus inactive neutral
+
+These are intentionally distinct software conventions:
+
+- `NEUTRAL_POSE` in the physical runtime has shoulder pitch `+10 degrees`. Git
+  blame traces it to Microban commit `f27a9e29` (2026-05-22, *Neutral pose and
+  motor signs*). That commit records no measurement provenance. The robot MJCF
+  contains only the shoulder-pitch joint range (`-pi..+pi`) and no HOME/keyframe
+  value, so XML is not authority for `+10 degrees`.
+- MjLab commit `0119357e` changed both training shoulder pitches from
+  `+10 degrees` to `0 degrees`; current `HOME_FRAME`, PICO contract defaults and
+  the pinned `walk.onnx` `default_joint_pos` metadata all use `0 degrees`.
+
+The PICO actor therefore continues to use its local 0-degree training HOME.
+Trigger release now interpolates all 18 policy joints to the unchanged global
+`NEUTRAL_POSE`, including shoulder pitch `+10 degrees`, before declaring the
+move inactive. The following scheduler tick constructs `MotorCommand` from that
+same global pose, so there is no former one-tick `0 -> +10 degree` target jump.
+
+## Deployment admission
+
+Intermediate 3,000, 7,000 and 10,000-update checkpoints are simulator-only.
+The physical parser accepts only `model_14999.pt` at 15,000 completed updates,
+with `deployment_accepted=true` and a passing canonical stage gate.
+
+The ONNX metadata must bind the final checkpoint to all of the following:
+
+- the pinned legacy velocity checkpoint SHA-256 and iteration;
+- the pinned raw-action 9-by-300 probe SHA-256;
+- the exact 63-to-83 semantic column map, 20 teleop-only columns, actor
+  topology, frozen normalizer and frozen legacy-tensor contract;
+- recipe
+  `legacy_velocity_model14999_staged_mask_reachable_fk_elbow_minus10_raw_actions_v5`
+  and gradient
+  schedule `freeze_extra_to7000_then_hmd_hand_to10000_then_all_v1`; the retired
+  pre-FK recipes are never accepted by the robot;
+- bootstrap mapping
+  `normalized_legacy_velocity_63_to_teleop83_reachable_fk_elbow_minus10_v4`,
+  physical target-position normalization, and the complete `hand_target_fk`
+  JSON contract (joint box, HOME, reachable AABB, scale, wire/runtime limits and
+  named evaluator points);
+- the final nine-scenario locomotion report, mandatory
+  `full_body_reachable_performance_perturbation_v2` tracking report, and schema-v2
+  stage-gate identities;
+- the tracking report's exact 18-joint v12, pinned-source and learned-minus-
+  source raw-action extrema, plus the versioned runtime guard derived from
+  those hash-bound values;
+- a 64-sample full-83-column PyTorch/ONNX parity check (the 20 new columns must
+  not be zeroed), plus the independent 10,000-sample zero-extra legacy parity;
+- the exact observation term order, 21 observation joints, 18 action joints,
+  defaults, scale, frames, units, body-target limits, raw previous-action and
+  no-clip semantics.
+
+`tools/validate_pico_policy.py` performs this parser check and a fixed 16-input
+ONNX Runtime CPU smoke without opening motor or network interfaces:
+
+```bash
+PYTHONPATH=src .venv/bin/python tools/validate_pico_policy.py \
+  /path/to/final-pico-teleop-v12.onnx
+```
+
+For v12, the load smoke checks the fixed output shape, float32 finiteness and
+the authenticated finite-amplitude guard on every fixed sample. The validator
+also reports that guard.
+Contract-v10 validation remains a separate branch with its existing bounded-
+action and effective-action checks unchanged.
+
+### Finite-amplitude fallback guard
+
+Finiteness alone cannot classify an abnormally large finite actor result. A
+soft-limit or MJCF hard-limit **reject** is not compatible with the source policy:
+its accepted 9-by-300 probe contains hypothetical raw targets as much as
+2.327371 rad beyond a soft limit while the simulated measured joints remain
+within every soft limit. The actuator-facing continuous clamp handles those
+finite soft-limit excursions without rejecting the tick; the evidence-derived
+guard below remains only a gross numeric-anomaly detector.
+
+The final tracking report therefore records, over every acceptance scenario and
+step, per-joint minima, maxima and absolute maxima for the v12 raw action, the
+pinned source actor on the same shared 63 observations, and their delta. The
+deployment packager copies those values and their report SHA-256 into ONNX
+metadata. For each joint it must calculate exactly:
+
+```text
+guard_absmax = max(v12_absmax, source_absmax + delta_absmax) * 2.0
+```
+
+The factor `2.0` is a versioned deadline engineering margin for a gross finite-
+anomaly detector, not a learned-action clamp or a claim about a joint's safe
+physical range. The runtime recomputes the formula from the metadata evidence,
+requires exact agreement and accepts equality at the boundary. If
+`abs(raw_action)` exceeds its joint's guard, it raises before writing any of the
+18 targets or updating the previous-action recurrence. `PolicySelectableWalkMove`
+then starts and steps the pinned legacy walk policy in that same control cycle
+and latches the fallback until trigger release.
+
+The deployment ONNX uses these exact metadata keys for that contract:
+
+```text
+v12_raw_action_envelope_schema_version=1
+v12_raw_action_joint_names_json
+v12_raw_action_{min,max,absmax}_json
+v12_source_raw_action_{min,max,absmax}_json
+v12_learned_source_delta_{min,max,absmax}_json
+runtime_raw_action_guard_formula=max(v12_absmax,source_absmax+delta_absmax)*multiplier
+runtime_raw_action_guard_multiplier=2.0
+runtime_raw_action_guard_absmax_json
+runtime_raw_action_guard_semantics=finite_float32_then_per_joint_absmax_else_same_cycle_legacy_fallback_v1
+```
+
+`v12_tracking_report_sha256` binds the evidence source, and
+`v12_raw_action_joint_names_json` must exactly equal the 18-action policy order.
+
+The final gate must review the resulting 18 numeric bounds before packaging.
+Missing/malformed evidence, a changed joint order, inconsistent extrema,
+float32 overflow, a formula/factor/semantics mismatch, or a recomputed-bound
+mismatch rejects the ONNX at load time.
+
+Metadata attachment should happen in a final deployment-packaging step after
+the sidecar stage gate exists. Attaching metadata changes the ONNX file digest,
+so the packager must then rerun ONNX checker, the full-83-column parity check,
+and the deployment runtime validator on the final file before atomic install.
+
+The adjacent `mjlab_microban_v8j` repository now provides that exact final-only
+path. After the run has reached 15,000 completed updates and its current stage
+gate passes, use:
+
+```bash
+cd ../mjlab_microban_v8j
+scripts/evaluate_microban_teleop_v12_stage.sh <run-name> 14999
+scripts/export_microban_teleop_v12_deployment.sh \
+  <run-name> ../microban/src/agents/pico_teleop.onnx --force
+```
+
+The publisher accepts no intermediate or diagnostic mode. It runs this
+repository's `tools/validate_pico_policy.py` with `CPUExecutionProvider` against
+the complete temporary artifact and atomically replaces `pico_teleop.onnx` only
+after that real parser/runtime smoke passes. A failed export or validator keeps
+the previously installed policy unchanged.
+
+## Workstation and Raspberry Pi preflight
+
+The repository tracks `uv.lock`; do not regenerate it implicitly on the Pi.
+After the final exporter above installs `src/agents/pico_teleop.onnx`, run the
+same parser and fixed 16-input ONNX Runtime CPU smoke on the workstation and on
+the Pi before opening the motor bus:
+
+```bash
+cd ../microban
+make teleop-validate HOST=microban
+```
+
+`teleop-validate` performs these fail-fast steps in order:
+
+1. validate the installed ONNX with the workstation checkout;
+2. rsync the checkout, including the pinned `uv.lock`, to `microban`;
+3. run `uv sync --frozen` on the Pi;
+4. validate the same installed path with the Pi's CPU runtime.
+
+The target does not start `src/main.py` and does not access the motor bus. Only
+after it passes should the control loop be launched:
+
+```bash
+make teleop-run HOST=microban
+```
+
+If either validator fails, do not bypass it. The learned policy remains
+optional: removing or withholding `src/agents/pico_teleop.onnx` leaves the
+pinned `walk.onnx` fallback available under the same left-trigger control.
