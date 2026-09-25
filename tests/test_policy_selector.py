@@ -1,11 +1,14 @@
+import math
 import tempfile
 import unittest
 from pathlib import Path
 
+from constants import NEUTRAL_POSE, OBSERVATION_DOF_ORDER
 from input.input_source import UserInput
 from input.network_input import NetworkInputSource
 from moves.move import MotorCommand, Move, MoveState
 from moves.policy_selector import PolicySelectableWalkMove
+from moves.walk import WalkMove
 from observer import Observation, RobotState
 
 
@@ -202,6 +205,51 @@ class PolicySelectorTest(unittest.TestCase):
         self.assertEqual(walk.last_velocity["vx"], 0.55)
         self.assertEqual(command.target_angles["probe"], 10.55)
         self.assertIn("non-finite output", selector.fallback_reason)
+
+    def test_inference_failure_runs_real_walk_actor_in_same_cycle(self):
+        walk = WalkMove(controller=None)
+        pico = FakeMove(step_error=RuntimeError("intentional learned failure"))
+        with tempfile.TemporaryDirectory() as temp_dir:
+            selector = PolicySelectableWalkMove(
+                pico_policy_path=Path(temp_dir) / "absent.onnx",
+                legacy_move=walk,
+                pico_move=pico,
+            )
+            robot_state = RobotState(
+                time_s=0.0,
+                gyro=[0.0, 0.0, 0.0],
+                projected_gravity=[0.0, 0.0, -1.0],
+                motor_positions={
+                    name: float(value) for name, value in NEUTRAL_POSE.items()
+                },
+                motor_velocities={name: 0.0 for name in NEUTRAL_POSE},
+            )
+            obs = Observation(
+                robot_state=robot_state,
+                user_input=UserInput(
+                    active_moves={"walk"},
+                    locomotion_policy="pico_teleop",
+                    velocity={"vx": 0.1, "vy": 0.0, "vtheta": 0.0},
+                ),
+            )
+            selector.on_start(obs, MotorCommand())
+            command = MotorCommand()
+
+            selector.step(obs, command)
+
+        targets = [
+            float(command.target_angles[name]) for name in OBSERVATION_DOF_ORDER
+        ]
+        self.assertEqual(selector.state, MoveState.ACTIVE)
+        self.assertEqual(selector.effective_policy, "walk")
+        self.assertTrue(selector.fallback_latched)
+        self.assertEqual(pico.step_count, 1)
+        self.assertTrue(all(math.isfinite(value) for value in targets))
+        self.assertTrue(any(abs(float(value)) > 0.0 for value in walk._last_action))
+        for index, name in enumerate(OBSERVATION_DOF_ORDER):
+            expected = walk._default_pose[name] + float(walk._last_action[index])
+            self.assertAlmostEqual(command.target_angles[name], expected, places=7)
+        self.assertIn("intentional learned failure", selector.fallback_reason)
 
     def test_tracker_degradation_falls_back_then_latches_until_release(self):
         walk = FakeMove(marker=10.0)

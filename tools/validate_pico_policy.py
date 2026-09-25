@@ -1,12 +1,14 @@
 #!/usr/bin/env python3
-"""Validate a PICO hybrid ONNX without opening the motor or network interfaces."""
+"""Validate the PICO ONNX and pinned walk fallback without opening interfaces."""
 
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 from pathlib import Path
 
+import numpy as np
 import onnxruntime as ort
 
 from moves.pico_hybrid import (
@@ -18,6 +20,133 @@ from moves.pico_hybrid import (
     PHYSICAL_MOTOR_TARGET_GUARD_SEMANTICS,
     PicoHybridMove,
 )
+
+REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
+WALK_FALLBACK_POLICY = REPOSITORY_ROOT / "src" / "agents" / "walk.onnx"
+EXPECTED_WALK_FALLBACK_SHA256 = (
+    "10c58a63c66337669c3d4c588732d541a6a07eea3291c0401f79893c7f60f15d"
+)
+WALK_FALLBACK_SMOKE_SAMPLE_COUNT = 16
+
+
+def _sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _walk_fallback_smoke_inputs() -> np.ndarray:
+    """Return a deterministic, exactly representable finite 63-column corpus."""
+
+    integers = np.arange(
+        WALK_FALLBACK_SMOKE_SAMPLE_COUNT * 63,
+        dtype=np.int32,
+    ).reshape(WALK_FALLBACK_SMOKE_SAMPLE_COUNT, 63)
+    observations = ((integers % 29) - 14).astype(np.float32) / np.float32(16.0)
+    observations[0].fill(0.0)
+    if observations.shape != (WALK_FALLBACK_SMOKE_SAMPLE_COUNT, 63) or not bool(
+        np.isfinite(observations).all()
+    ):
+        raise AssertionError("walk fallback smoke corpus is invalid")
+    return observations
+
+
+def validate_walk_fallback(
+    policy_path: Path = WALK_FALLBACK_POLICY,
+) -> dict[str, object]:
+    """Authenticate and CPU-smoke the exact fallback used by ``WalkMove``."""
+
+    policy_path = policy_path.expanduser().resolve()
+    if not policy_path.is_file():
+        raise FileNotFoundError(f"walk fallback policy not found: {policy_path}")
+    digest = _sha256(policy_path)
+    if digest != EXPECTED_WALK_FALLBACK_SHA256:
+        raise RuntimeError(
+            "walk fallback SHA-256 mismatch: "
+            f"expected {EXPECTED_WALK_FALLBACK_SHA256}, got {digest}"
+        )
+
+    session = ort.InferenceSession(
+        str(policy_path),
+        providers=["CPUExecutionProvider"],
+    )
+    providers = session.get_providers()
+    if providers != ["CPUExecutionProvider"]:
+        raise RuntimeError("walk fallback validation requires CPUExecutionProvider only")
+    inputs = session.get_inputs()
+    outputs = session.get_outputs()
+    if len(inputs) != 1 or len(outputs) != 1:
+        raise RuntimeError("walk fallback must have exactly one input and one output")
+    input_value = inputs[0]
+    output_value = outputs[0]
+    if (
+        input_value.name != "obs"
+        or input_value.shape != [1, 63]
+        or input_value.type != "tensor(float)"
+    ):
+        raise RuntimeError(
+            "walk fallback input must be float32 obs[1,63], got "
+            f"{input_value.name!r} {input_value.shape!r} {input_value.type!r}"
+        )
+    if (
+        output_value.name != "actions"
+        or output_value.shape != [1, 18]
+        or output_value.type != "tensor(float)"
+    ):
+        raise RuntimeError(
+            "walk fallback output must be float32 actions[1,18], got "
+            f"{output_value.name!r} {output_value.shape!r} {output_value.type!r}"
+        )
+
+    maximum_absolute_output = 0.0
+    observations = _walk_fallback_smoke_inputs()
+    for observation in observations:
+        inference_outputs = session.run(
+            None,
+            {input_value.name: observation.reshape(1, 63)},
+        )
+        if len(inference_outputs) != 1:
+            raise RuntimeError("walk fallback inference returned multiple outputs")
+        action = np.asarray(inference_outputs[0])
+        if (
+            action.shape != (1, 18)
+            or action.dtype != np.float32
+            or not bool(np.isfinite(action).all())
+        ):
+            raise RuntimeError(
+                "walk fallback smoke returned an unsafe output: "
+                f"shape={action.shape}, dtype={action.dtype}"
+            )
+        maximum_absolute_output = max(
+            maximum_absolute_output,
+            float(np.max(np.abs(action))),
+        )
+
+    return {
+        "status": "pass",
+        "policy": str(policy_path),
+        "sha256": digest,
+        "providers": providers,
+        "input": {
+            "name": input_value.name,
+            "shape": input_value.shape,
+            "type": input_value.type,
+        },
+        "output": {
+            "name": output_value.name,
+            "shape": output_value.shape,
+            "type": output_value.type,
+        },
+        "smoke": {
+            "status": "pass",
+            "sample_count": len(observations),
+            "corpus": "deterministic_exact_float32_mod29_v1",
+            "all_outputs_finite": True,
+            "maximum_absolute_output": maximum_absolute_output,
+        },
+    }
 
 
 def main() -> None:
@@ -53,6 +182,7 @@ def main() -> None:
     is_v12 = (
         contract.training_contract_version == EXPECTED_V12_TRAINING_CONTRACT_VERSION
     )
+    walk_fallback = validate_walk_fallback()
     print(
         json.dumps(
             {
@@ -113,6 +243,7 @@ def main() -> None:
                     if is_v12
                     else None
                 ),
+                "walk_fallback": walk_fallback,
             },
             indent=2,
         )

@@ -132,16 +132,21 @@ The ONNX metadata must bind the final checkpoint to all of the following:
   no-clip semantics.
 
 `tools/validate_pico_policy.py` performs this parser check and a fixed 16-input
-ONNX Runtime CPU smoke without opening motor or network interfaces:
+ONNX Runtime CPU smoke without opening motor or network interfaces. The same
+command also authenticates the installed fallback as SHA-256
+`10c58a63c66337669c3d4c588732d541a6a07eea3291c0401f79893c7f60f15d`,
+requires its graph to be float32 `obs[1,63] -> actions[1,18]`, and runs a
+separate fixed 16-input smoke with `CPUExecutionProvider` only:
 
 ```bash
 PYTHONPATH=src uv run --locked python tools/validate_pico_policy.py \
   /path/to/final-pico-teleop-v12.onnx
 ```
 
-For v12, the load smoke checks the fixed output shape, float32 finiteness and
-the authenticated finite-amplitude guard on every fixed sample. The validator
-also reports that guard.
+For v12, the learned-policy load smoke checks the fixed output shape, float32
+finiteness and the authenticated finite-amplitude guard on every fixed sample.
+The validator reports that guard and an explicit `walk_fallback` record containing
+the fallback path, digest, tensor contract, providers and smoke result.
 Contract-v10 validation remains a separate branch with its existing bounded-
 action and effective-action checks unchanged.
 
@@ -199,7 +204,7 @@ mismatch rejects the ONNX at load time.
 After packaging, produce a concrete human-review record from the same robot
 validator. This command fails unless names and bounds both have exactly 18
 entries, prints one named bound per line, and records the validator JSON, the
-reviewed table, and all three file digests. Reviewing this table is a release
+reviewed table, and all four file digests. Reviewing this table is a release
 action; these local files do not replace the hash-bound canonical stage-gate
 receipt.
 
@@ -222,6 +227,7 @@ for index, (name, bound) in enumerate(zip(names, bounds, strict=True)):
     print(f"{index:02d}\t{name}\t{float(bound):.9g}")
 PY
 sha256sum src/agents/pico_teleop.onnx \
+  src/agents/walk.onnx \
   "$review_dir/validator.json" \
   "$review_dir/runtime_raw_action_guard.tsv" \
   | tee "$review_dir/SHA256SUMS"
@@ -245,9 +251,10 @@ scripts/export_microban_teleop_v12_deployment.sh \
 
 The publisher accepts no intermediate or diagnostic mode. It runs this
 repository's `tools/validate_pico_policy.py` with `CPUExecutionProvider` against
-the complete temporary artifact and atomically replaces `pico_teleop.onnx` only
-after that real parser/runtime smoke passes. A failed export or validator keeps
-the previously installed policy unchanged.
+the complete temporary artifact and the pinned repository fallback, then
+atomically replaces `pico_teleop.onnx` only after both parser/runtime smokes
+pass. A failed export or validator keeps the previously installed policy
+unchanged.
 
 ## Workstation and Raspberry Pi preflight
 
@@ -261,8 +268,8 @@ git status --porcelain=v1 --untracked-files=all
 ```
 
 After the final exporter above installs `src/agents/pico_teleop.onnx`, run the
-same parser and fixed 16-input ONNX Runtime CPU smoke on the workstation and on
-the Pi before opening the motor bus:
+same learned-policy parser and both fixed 16-input ONNX Runtime CPU smokes on the
+workstation and on the Pi before opening the motor bus:
 
 ```bash
 cd ../microban
@@ -271,10 +278,11 @@ make teleop-validate HOST=microban
 
 `teleop-validate` performs these fail-fast steps in order:
 
-1. validate the installed ONNX with the workstation checkout;
+1. validate the installed learned ONNX and pinned `walk.onnx` with the
+   workstation checkout;
 2. rsync the checkout, including the pinned `uv.lock`, to `microban`;
 3. run `uv sync --frozen` on the Pi;
-4. validate the same installed path with the Pi's CPU runtime.
+4. validate both installed paths with the Pi's CPU runtime.
 
 The target does not start `src/main.py` and does not access the motor bus. Only
 after it passes should the control loop be launched:
@@ -283,13 +291,14 @@ after it passes should the control loop be launched:
 make teleop-run HOST=microban
 ```
 
-This preflight's scope is artifact admission, CPU load, and 16 fixed inference
-samples. It does not test UDP freshness/session re-arm, live PICO calibration,
-tracker loss, selector transition timing, MuJoCo dynamics, motor commands, or a
-physical fall. In particular it does not deliberately fault the final ONNX to
-prove end-to-end same-cycle fallback: that evidence currently comes from
-isolated `PolicySelectableWalkMove` tests with an injected failing learned
-child, not a hardware integration test.
+This preflight's scope is artifact admission, CPU load, and two sets of 16 fixed
+inference samples. It does not test UDP freshness/session re-arm, live PICO
+calibration, tracker loss, MuJoCo dynamics, physical motor commands, or a fall.
+It also does not deliberately fault the final ONNX on the Pi. The offline
+selector regression injects a learned-policy inference failure while using the
+real `WalkMove` and pinned `walk.onnx`; it proves that the faulting cycle starts
+and runs the fallback and produces 18 finite targets without opening the motor
+bus. This remains an offline regression, not a hardware integration test.
 
 Likewise, `make teleop-sim` by itself only starts the robot repository's MuJoCo
 process with a network input socket. It neither generates calibrated v12 body
@@ -301,4 +310,5 @@ integration observation.
 
 If either validator fails, do not bypass it. The learned policy remains
 optional: removing or withholding `src/agents/pico_teleop.onnx` leaves the
-pinned `walk.onnx` fallback available under the same left-trigger control.
+pinned `walk.onnx` fallback available under the same left-trigger control, but
+an absent or altered fallback is now a failed deployment preflight.
