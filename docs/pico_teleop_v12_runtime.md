@@ -226,10 +226,10 @@ deployment packager copies those values and their report SHA-256 into ONNX
 metadata. For each joint it must calculate exactly:
 
 ```text
-guard_absmax = max(v12_absmax, source_absmax + delta_absmax) * 2.0
+guard_absmax = max(v12_absmax, source_absmax + delta_absmax) * 6.0
 ```
 
-The factor `2.0` is a versioned deadline engineering margin for a gross finite-
+The factor `6.0` is the deployed versioned deadline engineering margin for a gross finite-
 anomaly detector, not a learned-action clamp or a claim about a joint's safe
 physical range. The runtime recomputes the formula from the metadata evidence,
 requires exact agreement and accepts equality at the boundary. If
