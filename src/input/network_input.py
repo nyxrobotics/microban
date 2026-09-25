@@ -34,6 +34,19 @@ twist command.
 Any mismatch clears both target pairs and downgrades that snapshot to the proven
 ``walk`` policy without discarding its trigger or joystick command. The optional
 tracking channel can therefore degrade without disabling basic locomotion.
+
+A second, unrelated packet shape is a stateless bridge-side latency probe,
+handled before session/sequence validation and never touching UserInput:
+    {"type": "clock_ping", "nonce": "<opaque string, at most 64 chars>"}
+which is echoed back verbatim as ``{"type": "clock_pong", "nonce": ...}`` to
+the sender's address. The bridge times its own round trip; the robot reports
+no timestamp of its own and needs no synchronized clock. When the scheduler
+has supplied recent head/neck telemetry (see ``set_head_telemetry``), the
+reply also carries it so the bridge can measure real camera-reprojection lag
+instead of simulating it:
+    {"type": "clock_pong", "nonce": ..., "head": 0.1, "neck_roll": 0.0,
+     "neck_pitch": -0.05, "trunk_roll": 0.0, "trunk_pitch": 0.01}
+Telemetry fields are omitted entirely if none has been supplied yet.
 """
 
 import json
@@ -202,6 +215,7 @@ class NetworkInputSource(InputSource):
         self._state = UserInput()
         self._last_recv_s = 0.0
         self._lock = threading.Lock()
+        self._head_telemetry: dict[str, float] | None = None
 
         self._sock: socket.socket | None = None
         self._thread: threading.Thread | None = None
@@ -278,6 +292,35 @@ class NetworkInputSource(InputSource):
             self._state.active_moves.discard("walk")
             self._state.velocity = {"vx": 0.0, "vy": 0.0, "vtheta": 0.0}
 
+    def set_head_telemetry(
+        self,
+        *,
+        head: float,
+        neck_roll: float,
+        neck_pitch: float,
+        trunk_roll: float,
+        trunk_pitch: float,
+    ) -> None:
+        """Latest measured head/neck joint angles and trunk tilt.
+
+        Read-only cache for the next clock_pong reply (see module docstring);
+        never touches UserInput or control state. Silently ignored if any
+        value is non-finite so a transient IMU/read glitch cannot poison the
+        bridge's camera-reprojection lag estimate with a bogus telemetry
+        sample.
+        """
+        values = {
+            "head": float(head),
+            "neck_roll": float(neck_roll),
+            "neck_pitch": float(neck_pitch),
+            "trunk_roll": float(trunk_roll),
+            "trunk_pitch": float(trunk_pitch),
+        }
+        if not all(math.isfinite(value) for value in values.values()):
+            return
+        with self._lock:
+            self._head_telemetry = values
+
     # ------------------------------------------------------------------
     # Internal
 
@@ -295,12 +338,43 @@ class NetworkInputSource(InputSource):
                 packet = json.loads(data)
             except (json.JSONDecodeError, UnicodeDecodeError):
                 continue
+            if isinstance(packet, dict) and packet.get("type") == "clock_ping":
+                self._reply_clock_ping(packet, addr)
+                continue
             try:
                 self._apply(packet)
             except (KeyError, IndexError, TypeError, ValueError, OverflowError):
                 # A malformed datagram must never kill the receiver thread and leave
                 # the scheduler unknowingly running on its previous command.
                 continue
+
+    def _reply_clock_ping(self, packet: dict, addr: tuple[str, int]) -> None:
+        """Echo a bridge-side latency probe. Stateless: never touches UserInput.
+
+        The bridge measures its own round-trip time from this echo alone (send
+        T1, receive reply at T3, RTT = T3-T1); the robot does not need a
+        synchronized clock and reports none. ``nonce`` is capped and
+        type-checked so a malformed probe cannot wedge the receive thread or
+        grow without bound.
+        """
+        nonce = packet.get("nonce")
+        if not isinstance(nonce, str) or len(nonce) > 64:
+            return
+        reply_obj = {"type": "clock_pong", "nonce": nonce}
+        with self._lock:
+            telemetry = self._head_telemetry
+        if telemetry is not None:
+            reply_obj.update(telemetry)
+        reply = json.dumps(
+            reply_obj,
+            allow_nan=False,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        try:
+            assert self._sock is not None
+            self._sock.sendto(reply, addr)
+        except OSError:
+            pass
 
     def _apply(self, packet: dict) -> None:
         if not isinstance(packet, dict):

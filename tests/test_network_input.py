@@ -1,3 +1,5 @@
+import json
+import socket
 import unittest
 
 from input.network_input import NetworkInputSource
@@ -613,6 +615,96 @@ class NetworkInputTest(unittest.TestCase):
         for timeout in (float("nan"), float("inf"), 0.0, 1.0):
             with self.subTest(timeout=timeout), self.assertRaises(ValueError):
                 NetworkInputSource(stale_after_s=timeout)
+
+
+def _free_udp_port() -> int:
+    probe = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        probe.bind(("127.0.0.1", 0))
+        return probe.getsockname()[1]
+    finally:
+        probe.close()
+
+
+class ClockPingTest(unittest.TestCase):
+    def setUp(self):
+        self.robot_port = _free_udp_port()
+        self.source = NetworkInputSource(port=self.robot_port, stale_after_s=0.5)
+        self.source.start()
+        self.probe = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        self.probe.settimeout(1.0)
+        self.addCleanup(self.probe.close)
+        self.addCleanup(self.source.stop)
+
+    def _send(self, payload: dict) -> None:
+        self.probe.sendto(
+            json.dumps(payload).encode("utf-8"),
+            ("127.0.0.1", self.robot_port),
+        )
+
+    def test_ping_is_echoed_as_pong_with_the_same_nonce(self):
+        self._send({"type": "clock_ping", "nonce": "abc-123"})
+        data, _ = self.probe.recvfrom(4096)
+        self.assertEqual(json.loads(data), {"type": "clock_pong", "nonce": "abc-123"})
+
+    def test_ping_never_touches_user_input_state(self):
+        self.source._apply(packet(0))  # release walk so a later hold could arm it
+        before = self.source.read()
+        self._send({"type": "clock_ping", "nonce": "n"})
+        self.probe.recvfrom(4096)
+        after = self.source.read()
+        self.assertEqual(before.active_moves, after.active_moves)
+        self.assertEqual(before.velocity, after.velocity)
+
+    def test_malformed_ping_is_silently_ignored(self):
+        for bad in (
+            {"type": "clock_ping"},
+            {"type": "clock_ping", "nonce": 1},
+            {"type": "clock_ping", "nonce": "x" * 65},
+        ):
+            with self.subTest(bad=bad):
+                self._send(bad)
+                with self.assertRaises((TimeoutError, socket.timeout)):
+                    self.probe.settimeout(0.2)
+                    self.probe.recvfrom(4096)
+                self.probe.settimeout(1.0)
+
+    def test_pong_carries_the_latest_head_telemetry_once_set(self):
+        self.source.set_head_telemetry(
+            head=0.1,
+            neck_roll=-0.2,
+            neck_pitch=0.3,
+            trunk_roll=0.01,
+            trunk_pitch=-0.02,
+        )
+        self._send({"type": "clock_ping", "nonce": "with-telemetry"})
+        data, _ = self.probe.recvfrom(4096)
+        self.assertEqual(
+            json.loads(data),
+            {
+                "type": "clock_pong",
+                "nonce": "with-telemetry",
+                "head": 0.1,
+                "neck_roll": -0.2,
+                "neck_pitch": 0.3,
+                "trunk_roll": 0.01,
+                "trunk_pitch": -0.02,
+            },
+        )
+
+    def test_non_finite_telemetry_is_ignored_and_pong_stays_bare(self):
+        self.source.set_head_telemetry(
+            head=float("nan"),
+            neck_roll=0.0,
+            neck_pitch=0.0,
+            trunk_roll=0.0,
+            trunk_pitch=0.0,
+        )
+        self._send({"type": "clock_ping", "nonce": "nan-rejected"})
+        data, _ = self.probe.recvfrom(4096)
+        self.assertEqual(
+            json.loads(data), {"type": "clock_pong", "nonce": "nan-rejected"}
+        )
 
 
 if __name__ == "__main__":
