@@ -1,0 +1,164 @@
+{
+  "provenance": {
+    "schema": "microban_stereo_calibration_provenance_v1",
+    "calibration_tool_version": "calibrate_camera_fov_v2",
+    "opencv_version": "5.0.0",
+    "distortion_model": "opencv_brown_conrady_k1_k2_p1_p2_k3_fixed_zero_v1",
+    "checkerboard_inner_columns": 9,
+    "checkerboard_inner_rows": 6,
+    "checkerboard_square_mm": 24.9,
+    "source_image_count": 65,
+    "source_images_sha256": "619d527b973ffcf285fcbe197bead2961594efd9defcc8c1cc3687e23a6150fe",
+    "capture_manifest_sha256": "936d9eb524479fc226023b154d1dd5ba7167b4b860d8ceefb5d9e70d4c61acef",
+    "capture_schema": "microban_stereo_checkerboard_capture_v2"
+  },
+  "left": {
+    "views": 65,
+    "rms_px": 0.23393569417156615,
+    "width": 640,
+    "height": 480,
+    "fx_px": 233.8976224959923,
+    "fy_px": 234.6559188857388,
+    "cx_px": 316.79590670426415,
+    "cy_px": 254.55417626168372,
+    "horizontal_fov_deg": 107.66804794218132,
+    "vertical_fov_deg": 91.18241322108157,
+    "tan_bounds": [
+      1.354421234913118,
+      1.3818186343526162,
+      1.084797594155867,
+      0.9607506378225763
+    ],
+    "distortion_model": "opencv_brown_conrady_k1_k2_p1_p2_k3_fixed_zero_v1",
+    "distortion": [
+      -0.0016931504938253834,
+      -0.013286702289484188,
+      0.0009024352515083667,
+      -0.00027212920306786387,
+      0.0
+    ],
+    "max_distortion_px": 55.88946041458555
+  },
+  "right": {
+    "views": 65,
+    "rms_px": 0.22436418537147507,
+    "width": 640,
+    "height": 480,
+    "fx_px": 231.68773996841958,
+    "fy_px": 232.52850798518497,
+    "cx_px": 314.7836608800725,
+    "cy_px": 253.20366731746037,
+    "horizontal_fov_deg": 108.17961462793137,
+    "vertical_fov_deg": 91.72233055981195,
+    "tan_bounds": [
+      1.3586548037586252,
+      1.4036838512225829,
+      1.0889145142306278,
+      0.9753485052120553
+    ],
+    "distortion_model": "opencv_brown_conrady_k1_k2_p1_p2_k3_fixed_zero_v1",
+    "distortion": [
+      -0.004173482797790922,
+      -0.01317051106481577,
+      0.0002619074071538792,
+      -0.0010966356671282226,
+      0.0
+    ],
+    "max_distortion_px": 61.755389745751486
+  },
+  "stereo_quality": {
+    "paired_views": 65,
+    "raw_paired_views": 65,
+    "raw_vertical_disparity_rms_px": 1.2912647427364556,
+    "vertical_disparity_rms_px": 0.2879839049888752,
+    "vertical_disparity_p95_px": 0.5997524261474609,
+    "vertical_disparity_max_px": 2.122894287109375,
+    "left_map_valid_fraction": 0.9999739583333334,
+    "right_map_valid_fraction": 1.0,
+    "left_map_min_jacobian_determinant": 0.40535879135131836,
+    "right_map_min_jacobian_determinant": 0.3910762071609497,
+    "leave_one_out_stability": {
+      "evaluated_models": 65,
+      "failed_models": 0,
+      "max_mono_rms_px": 0.23540487985912747,
+      "max_stereo_rms_px": 0.29276050458603636,
+      "max_baseline_deviation_mm": 0.09513150752569999,
+      "max_baseline_offaxis_ratio": 0.02008124579089159,
+      "all_left_right_order_valid": true,
+      "max_horizontal_fov_deviation_deg": 2.702430778198007,
+      "max_vertical_fov_deviation_deg": 2.946399309636618,
+      "max_vertical_disparity_rms_px": 0.3454462600567823,
+      "max_vertical_disparity_p95_px": 0.7269058227539062,
+      "max_vertical_disparity_max_px": 2.6709136962890625,
+      "min_map_valid_fraction": 0.9997884114583333,
+      "min_map_jacobian_determinant": 0.3527734577655792,
+      "passed": true
+    },
+    "extrinsics": {
+      "paired_views": 65,
+      "rms_px": 0.26852858752581604,
+      "relative_rotation_deg": 1.393983688893696,
+      "rotation_matrix": [
+        [
+          0.9997042100181595,
+          -0.0009711351498988686,
+          0.02430122154313375
+        ],
+        [
+          0.00098489407320148,
+          0.9999993614117548,
+          -0.0005542199446299913
+        ],
+        [
+          -0.024300667802190326,
+          0.0005779901409920199,
+          0.9997045280840557
+        ]
+      ],
+      "translation_mm": [
+        -59.29620331964936,
+        0.08596198659067658,
+        0.3252621110603394
+      ],
+      "baseline_mm": 59.29715771459224,
+      "baseline_offaxis_ratio": 0.00567362172129395,
+      "left_right_order_valid": true
+    },
+    "thresholds": {
+      "max_rms_px": 0.75,
+      "max_stereo_rms_px": 0.75,
+      "max_rectified_vertical_rms_px": 0.5,
+      "max_rectified_vertical_p95_px": 1.0,
+      "max_rectified_vertical_max_px": 3.0,
+      "min_rectification_valid_fraction": 0.995,
+      "min_rectification_jacobian": 0.05,
+      "max_loo_fov_deviation_deg": 5.0,
+      "max_loo_baseline_deviation_mm": 2.0,
+      "max_baseline_offaxis_ratio": 0.1,
+      "baseline_min_mm": 45.0,
+      "baseline_max_mm": 75.0
+    },
+    "passed": true
+  },
+  "display_config": {
+    "horizontal_fov_deg": 107.92383128505634,
+    "vertical_fov_deg": 91.45237189044676,
+    "eye_aspect": 1.3333333333333333,
+    "eye_width_px": 640,
+    "eye_height_px": 480,
+    "left_eye_first": true,
+    "left_tan_bounds": [
+      1.354421234913118,
+      1.3818186343526162,
+      1.084797594155867,
+      0.9607506378225763
+    ],
+    "right_tan_bounds": [
+      1.3586548037586252,
+      1.4036838512225829,
+      1.0889145142306278,
+      0.9753485052120553
+    ],
+    "calibrated": true
+  }
+}
