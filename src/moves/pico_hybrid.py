@@ -36,16 +36,16 @@ from observer import Observation
 
 AGENT_NAME = "pico_teleop.onnx"
 EXPECTED_POLICY_TYPE = "microban_pico_hybrid_teleop"
-EXPECTED_TRAINING_CONTRACT_VERSION = "9"
+EXPECTED_TRAINING_CONTRACT_VERSION = "10"
 # Keep the recipe in one deployment-side constant: a deliberately promoted
 # training recipe then requires one reviewed line change here.  It must match
 # the exporter exactly; accepting a different marker would attach current
 # runtime semantics to weights trained under another reward/config recipe.
 EXPECTED_ACTOR_INITIALIZATION = (
-    "bounded_raw_safe_velocity_actor_only_63_to_83_zero_new_columns_v1"
+    "full_state_v9_model1499_to_v10_fixed_lr_v1"
 )
 EXPECTED_RECIPE_REVISION = (
-    "v9_accepted_safe_velocity_bootstrap_no_walk004_prior_full_pico_curriculum_v3"
+    "v10_v9_model1499_full_state_migration_fixed_lr_pico_curriculum_v1"
 )
 EXPECTED_SAFE_VELOCITY_RECIPE_REVISION = (
     "scratch_bounded_inward_shoulder_sagittal_bodyprogress_v9"
@@ -98,13 +98,38 @@ EXPECTED_ONNX_PARITY_SEED = 20260924
 EXPECTED_ONNX_PARITY_SAMPLE_COUNT = 16
 EXPECTED_ONNX_PARITY_ATOL = 1e-5
 EXPECTED_ONNX_PARITY_RTOL = 1e-4
-EXPECTED_TRAINING_PROVENANCE_SCHEMA_VERSION = 1
-EXPECTED_TRAINING_PROVENANCE_MODE = "canonical_v9_stage"
-EXPECTED_FINAL_TRAINING_STAGE_START_BOUNDARY = 18_000
-EXPECTED_FINAL_TRAINING_STAGE_TARGET_BOUNDARY = 20_000
+EXPECTED_TRAINING_PROVENANCE_SCHEMA_VERSION = 2
+EXPECTED_TRAINING_PROVENANCE_MODE = "canonical_v10_stage"
+EXPECTED_FINAL_TRAINING_STAGE_START_BOUNDARY = 10_000
+EXPECTED_FINAL_TRAINING_STAGE_TARGET_BOUNDARY = 15_000
+EXPECTED_MIGRATION_SOURCE_CHECKPOINT_SHA256 = (
+    "de8b6139872179679a16d72f3007f6d96cf65c97fa88565841eaa5f89511a65f"
+)
+EXPECTED_MIGRATION_SOURCE_CHECKPOINT_ITERATION = 1_499
+EXPECTED_MIGRATION_SOURCE_TRAINING_PROVENANCE_SHA256 = (
+    "f09f5580f03d3e38deef4916db7aea3bd8b1f683dc02a75079d24dd17923fce9"
+)
+EXPECTED_MIGRATION_SOURCE_TREE_SHA256 = (
+    "61a9fc7b1fe10436c0f033f89710e33e9e5470716d94794f110731c18e7d792a"
+)
+EXPECTED_MIGRATION_SOURCE_GATE_SHA256 = (
+    "acb2e39411155d70aed2b18561a243bd8ad20eef56e0942d2dafbb4f96f39b7c"
+)
+EXPECTED_MIGRATION_STATE_TRANSFER = (
+    "actor_critic_optimizer_moments_iteration_common_step_v1"
+)
+EXPECTED_MIGRATION_SOURCE_OPTIMIZER_LEARNING_RATE = 7.593750000000002e-05
+EXPECTED_TRAINING_FIXED_LEARNING_RATE = 1.0e-5
+EXPECTED_SAFE_VELOCITY_SOURCE_CHECKPOINT_SHA256 = (
+    "416a8b16f7f7980822e4e1df81ffaf9515bc18a246e6fc257405a2c46ceece93"
+)
+EXPECTED_SAFE_VELOCITY_SOURCE_CHECKPOINT_ITERATION = 500
+EXPECTED_SAFE_VELOCITY_ACCEPTANCE_RECEIPT_SHA256 = (
+    "e68701b11774dd30c8e45a2fd89614a2e4423a9486d01a0d936f0fa6fb760492"
+)
 EXPECTED_ACCEPTANCE_RECEIPT_SCHEMA_VERSION = 3
-EXPECTED_ACCEPTANCE_EVALUATOR_REVISION = "microban_teleop_deterministic_evaluator_v9_2"
-EXPECTED_ACCEPTANCE_REVISION = "microban_teleop_acceptance_v9_2"
+EXPECTED_ACCEPTANCE_EVALUATOR_REVISION = "microban_teleop_deterministic_evaluator_v10_1"
+EXPECTED_ACCEPTANCE_REVISION = "microban_teleop_acceptance_v10_1"
 EXPECTED_ACCEPTANCE_NOMINAL_REPORT_COUNT = 3
 EXPECTED_ACCEPTANCE_MOVING_HMD_REPORT_COUNT = 3
 
@@ -504,7 +529,7 @@ def _require_tight_json_vector(
 
 def _require_exact_finite_scalar(
     metadata: Mapping[str, str], name: str, expected: float
-) -> None:
+) -> float:
     value = metadata.get(name)
     if value is None:
         raise PicoHybridPolicyContractError(f"missing ONNX metadata: {name}")
@@ -516,6 +541,7 @@ def _require_exact_finite_scalar(
         raise PicoHybridPolicyContractError(
             f"{name} does not match the fixed Microban contract"
         )
+    return actual
 
 
 def _canonical_nonnegative_int(value: str | None, name: str) -> int:
@@ -533,6 +559,77 @@ def _require_lowercase_sha256(metadata: Mapping[str, str], name: str) -> str:
             f"{name} must be 64 lowercase hexadecimal characters"
         )
     return value
+
+
+def _require_exact_sha256(
+    metadata: Mapping[str, str], name: str, expected: str
+) -> str:
+    value = _require_lowercase_sha256(metadata, name)
+    if value != expected:
+        raise PicoHybridPolicyContractError(
+            f"{name} does not match the fixed Microban contract"
+        )
+    return value
+
+
+def _require_v10_migration_provenance(
+    metadata: Mapping[str, str],
+) -> tuple[str, int, str, str, str, str, float, float]:
+    """Require the one authenticated full-state v9-to-v10 migration ledger."""
+
+    checkpoint_sha256 = _require_exact_sha256(
+        metadata,
+        "migration_source_checkpoint_sha256",
+        EXPECTED_MIGRATION_SOURCE_CHECKPOINT_SHA256,
+    )
+    checkpoint_iteration = _canonical_nonnegative_int(
+        metadata.get("migration_source_checkpoint_iteration"),
+        "migration_source_checkpoint_iteration",
+    )
+    if checkpoint_iteration != EXPECTED_MIGRATION_SOURCE_CHECKPOINT_ITERATION:
+        raise PicoHybridPolicyContractError(
+            "migration source checkpoint iteration does not match contract v10"
+        )
+    training_sha256 = _require_exact_sha256(
+        metadata,
+        "migration_source_training_provenance_sha256",
+        EXPECTED_MIGRATION_SOURCE_TRAINING_PROVENANCE_SHA256,
+    )
+    source_tree_sha256 = _require_exact_sha256(
+        metadata,
+        "migration_source_tree_sha256",
+        EXPECTED_MIGRATION_SOURCE_TREE_SHA256,
+    )
+    gate_sha256 = _require_exact_sha256(
+        metadata,
+        "migration_source_gate_sha256",
+        EXPECTED_MIGRATION_SOURCE_GATE_SHA256,
+    )
+    state_transfer = metadata.get("migration_state_transfer", "")
+    if state_transfer != EXPECTED_MIGRATION_STATE_TRANSFER:
+        raise PicoHybridPolicyContractError(
+            "migration state transfer does not match contract v10"
+        )
+    source_learning_rate = _require_exact_finite_scalar(
+        metadata,
+        "migration_source_optimizer_learning_rate",
+        EXPECTED_MIGRATION_SOURCE_OPTIMIZER_LEARNING_RATE,
+    )
+    fixed_learning_rate = _require_exact_finite_scalar(
+        metadata,
+        "training_fixed_learning_rate",
+        EXPECTED_TRAINING_FIXED_LEARNING_RATE,
+    )
+    return (
+        checkpoint_sha256,
+        checkpoint_iteration,
+        training_sha256,
+        source_tree_sha256,
+        gate_sha256,
+        state_transfer,
+        source_learning_rate,
+        fixed_learning_rate,
+    )
 
 
 def _require_gated_export_provenance(
@@ -621,7 +718,7 @@ def _require_final_deployment_provenance(
 
     Diagnostic and automatic exports deliberately carry
     ``deployment_accepted=false``.  The robot must never infer deployability
-    merely from a v9 recipe label or a final-looking checkpoint filename.
+    merely from a v10 recipe label or a final-looking checkpoint filename.
     """
 
     schema_version = _canonical_nonnegative_int(
@@ -646,7 +743,7 @@ def _require_final_deployment_provenance(
         )
     if metadata.get("training_provenance_mode") != EXPECTED_TRAINING_PROVENANCE_MODE:
         raise PicoHybridPolicyContractError(
-            "training provenance is not from the canonical v9 stage driver"
+            "training provenance is not from the canonical v10 stage driver"
         )
     if metadata.get("canonical_training_stage") != "true":
         raise PicoHybridPolicyContractError(
@@ -666,7 +763,7 @@ def _require_final_deployment_provenance(
         or stage_target != EXPECTED_FINAL_TRAINING_STAGE_TARGET_BOUNDARY
     ):
         raise PicoHybridPolicyContractError(
-            "deployment requires canonical training stage 18000->20000"
+            "deployment requires canonical training stage 10000->15000"
         )
     if (
         checkpoint_iteration != stage_target - 1
@@ -691,7 +788,7 @@ def _require_final_deployment_provenance(
     ):
         raise PicoHybridPolicyContractError(
             "training resume source iteration must be inside the final stage "
-            "from model_17999.pt through model_19998.pt"
+            "from model_9999.pt through model_14998.pt"
         )
 
     if metadata.get("deployment_accepted") != "true":
@@ -763,16 +860,22 @@ def _require_final_deployment_provenance(
 
 def _require_safe_velocity_bootstrap_provenance(
     metadata: Mapping[str, str],
-) -> tuple[str, str]:
-    """Require the accepted bounded locomotion source embedded by v9 export."""
+) -> tuple[str, int, str]:
+    """Require the safe source inherited through the pinned v10 migration."""
 
-    checkpoint_sha256 = _require_lowercase_sha256(
-        metadata, "safe_velocity_source_checkpoint_sha256"
+    checkpoint_sha256 = _require_exact_sha256(
+        metadata,
+        "safe_velocity_source_checkpoint_sha256",
+        EXPECTED_SAFE_VELOCITY_SOURCE_CHECKPOINT_SHA256,
     )
-    _canonical_nonnegative_int(
+    checkpoint_iteration = _canonical_nonnegative_int(
         metadata.get("safe_velocity_source_checkpoint_iteration"),
         "safe_velocity_source_checkpoint_iteration",
     )
+    if checkpoint_iteration != EXPECTED_SAFE_VELOCITY_SOURCE_CHECKPOINT_ITERATION:
+        raise PicoHybridPolicyContractError(
+            "safe-velocity source checkpoint iteration does not match migration"
+        )
     if (
         metadata.get("safe_velocity_source_recipe_revision")
         != EXPECTED_SAFE_VELOCITY_RECIPE_REVISION
@@ -780,8 +883,10 @@ def _require_safe_velocity_bootstrap_provenance(
         raise PicoHybridPolicyContractError(
             "safe-velocity source recipe does not match deployment"
         )
-    receipt_sha256 = _require_lowercase_sha256(
-        metadata, "safe_velocity_acceptance_receipt_sha256"
+    receipt_sha256 = _require_exact_sha256(
+        metadata,
+        "safe_velocity_acceptance_receipt_sha256",
+        EXPECTED_SAFE_VELOCITY_ACCEPTANCE_RECEIPT_SHA256,
     )
     receipt_schema = _canonical_nonnegative_int(
         metadata.get("safe_velocity_acceptance_receipt_schema_version"),
@@ -803,7 +908,7 @@ def _require_safe_velocity_bootstrap_provenance(
         raise PicoHybridPolicyContractError(
             "unsupported safe-velocity bootstrap mapping"
         )
-    return checkpoint_sha256, receipt_sha256
+    return checkpoint_sha256, checkpoint_iteration, receipt_sha256
 
 
 def onnxruntime_compatibility_smoke_inputs() -> np.ndarray:
@@ -882,8 +987,9 @@ def validate_onnxruntime_compatibility(
 
     Returns the number of observations executed.  This deliberately does not
     compare against PyTorch: the export gate owns that numerical parity check.
-    V7's exported deterministic graph must also keep every result strictly
-    inside its open actor interval; reaching either endpoint fails the load.
+    Contract v10's exported deterministic graph must also keep every result
+    strictly inside its open actor interval; reaching either endpoint fails the
+    load.
     """
 
     lower = np.asarray(actor_lower, dtype=np.float64)
@@ -1073,9 +1179,18 @@ class _PolicyContract:
     training_source_tree_sha256: str
     training_resume_source_checkpoint_sha256: str
     training_resume_source_checkpoint_iteration: int
+    migration_source_checkpoint_sha256: str
+    migration_source_checkpoint_iteration: int
+    migration_source_training_provenance_sha256: str
+    migration_source_tree_sha256: str
+    migration_source_gate_sha256: str
+    migration_state_transfer: str
+    migration_source_optimizer_learning_rate: float
+    training_fixed_learning_rate: float
     acceptance_receipt_sha256: str
     acceptance_evaluator_source_sha256: str
     safe_velocity_source_checkpoint_sha256: str
+    safe_velocity_source_checkpoint_iteration: int
     safe_velocity_acceptance_receipt_sha256: str
 
 
@@ -1120,6 +1235,7 @@ def _parse_contract(session: Any) -> _PolicyContract:
         )
     (
         safe_velocity_source_checkpoint_sha256,
+        safe_velocity_source_checkpoint_iteration,
         safe_velocity_acceptance_receipt_sha256,
     ) = _require_safe_velocity_bootstrap_provenance(metadata)
     (
@@ -1135,6 +1251,16 @@ def _parse_contract(session: Any) -> _PolicyContract:
         checkpoint_completed_updates=checkpoint_completed_updates,
         checkpoint_sha256=checkpoint_sha256,
     )
+    (
+        migration_source_checkpoint_sha256,
+        migration_source_checkpoint_iteration,
+        migration_source_training_provenance_sha256,
+        migration_source_tree_sha256,
+        migration_source_gate_sha256,
+        migration_state_transfer,
+        migration_source_optimizer_learning_rate,
+        training_fixed_learning_rate,
+    ) = _require_v10_migration_provenance(metadata)
     if metadata.get("observation_schema_version") != EXPECTED_SCHEMA_VERSION:
         raise PicoHybridPolicyContractError("unsupported observation schema version")
     if metadata.get("base_ang_vel_frame") != "robot_body_xyz":
@@ -1431,9 +1557,24 @@ def _parse_contract(session: Any) -> _PolicyContract:
         training_resume_source_checkpoint_iteration=(
             training_resume_source_checkpoint_iteration
         ),
+        migration_source_checkpoint_sha256=migration_source_checkpoint_sha256,
+        migration_source_checkpoint_iteration=migration_source_checkpoint_iteration,
+        migration_source_training_provenance_sha256=(
+            migration_source_training_provenance_sha256
+        ),
+        migration_source_tree_sha256=migration_source_tree_sha256,
+        migration_source_gate_sha256=migration_source_gate_sha256,
+        migration_state_transfer=migration_state_transfer,
+        migration_source_optimizer_learning_rate=(
+            migration_source_optimizer_learning_rate
+        ),
+        training_fixed_learning_rate=training_fixed_learning_rate,
         acceptance_receipt_sha256=acceptance_receipt_sha256,
         acceptance_evaluator_source_sha256=(acceptance_evaluator_source_sha256),
         safe_velocity_source_checkpoint_sha256=(safe_velocity_source_checkpoint_sha256),
+        safe_velocity_source_checkpoint_iteration=(
+            safe_velocity_source_checkpoint_iteration
+        ),
         safe_velocity_acceptance_receipt_sha256=(
             safe_velocity_acceptance_receipt_sha256
         ),

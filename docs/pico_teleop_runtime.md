@@ -28,32 +28,43 @@ The other controls are unchanged:
 
 ## Install and validate a trained policy
 
-Export from `mjlab_microban`, copy the resulting file as
-`src/agents/pico_teleop.onnx`, then validate it without touching hardware:
+Export from `mjlab_microban` to a temporary file, validate it without touching
+hardware, then atomically install it as `src/agents/pico_teleop.onnx`:
 
 ```bash
 cd /home/kanade/Git-projects/mjlab_microban
 uv run --locked python -m mjlab_microban.scripts.export_teleop_onnx \
-  --checkpoint logs/rsl_rl/mjlab_microban_teleop/<run>/model_<iteration>.pt \
+  --checkpoint logs/rsl_rl/mjlab_microban_teleop/<run>/model_14999.pt \
+  --acceptance-receipt artifacts/teleop_v10_gates/<run>_boundary_15000_gate.json \
+  --require-final-acceptance \
   --output /tmp/pico_teleop.onnx
 
 cd /home/kanade/Git-projects/microban
-cp /tmp/pico_teleop.onnx src/agents/pico_teleop.onnx
-PYTHONPATH=src .venv/bin/python tools/validate_pico_policy.py
+PYTHONPATH=src .venv/bin/python tools/validate_pico_policy.py \
+  /tmp/pico_teleop.onnx
+install -m 0644 /tmp/pico_teleop.onnx src/agents/.pico_teleop.onnx.new
+mv -f -- src/agents/.pico_teleop.onnx.new src/agents/pico_teleop.onnx
 ```
+
+The validator must pass against the file in `/tmp` before installation. The
+final rename stays within `src/agents`, so it atomically replaces any installed
+policy rather than exposing a partially copied ONNX file.
 
 The validator and runtime both fail closed unless the model has exactly one
 `[1,83]` input and one `[1,18]` output and its metadata agrees on observation
 order, all 21 encoder defaults, the 18 action joint names/order, body-frame gyro,
 50 Hz rate, action scale/soft limits, target coordinate frames and training
-bounds. The learned-policy training contract must be version `7`, while the
-independent observation schema remains version `2`, with previous-action
-semantics exactly
+bounds. The learned-policy training contract must be version `10`, the training
+provenance schema must be version `2`, and the independent observation schema
+remains version `2`, with previous-action semantics exactly
 `effective_action_after_absolute_target_soft_clip_in_raw_delta_coordinates`.
-Missing/unversioned models and v1 raw-action-feedback models are rejected even
-though their tensor shapes are also `[1,83] -> [1,18]`.
+The actor initialization must be
+`full_state_v9_model1499_to_v10_fixed_lr_v1`, and the recipe revision must be
+`v10_v9_model1499_full_state_migration_fixed_lr_pico_curriculum_v1`.
+Missing, unversioned and contract-v1 through contract-v9 models are rejected
+even when their tensor shapes are also `[1,83] -> [1,18]`.
 
-V7 requires the exact distribution declaration
+Contract v10 requires the exact distribution declaration
 `diagonal_normal_ppo_latent_stored_exactly_then_per_joint_asymmetric_zero_anchored_arctan_environment_transform_with_operational_envelope_v1`.
 PPO stores and scores its finite latent directly; only the action sent to the
 environment is passed through the asymmetric, zero-anchored arctangent. The
@@ -63,8 +74,8 @@ must consume its output directly and must not apply a second transform.
 The metadata also fixes the `0.05` actor target-guard ratio, `0.0001 rad`
 maximum default-interior epsilon, latent scale multiplier `1024`, latent
 absolute cap `32`, mean fraction `3/8`, minimum-standard-deviation cap/divisor
-`0.01`/`64`, and maximum-standard-deviation cap/divisor `0.15`/`16`. Every
-scalar must be present, numeric, finite and exactly equal to the compiled v7
+`0.025`/`64`, and maximum-standard-deviation cap/divisor `1.0`/`16`. Every
+scalar must be present, numeric, finite and exactly equal to the compiled v10
 contract. The runtime independently derives the per-joint operational latent,
 mean, standard-deviation and deterministic `T(mean)` output envelopes in
 float32 and fails at startup if their nesting or ten-sigma margin is invalid.
@@ -96,29 +107,57 @@ After each inference, the runtime converts every raw action to
 `default_joint_pos + raw_action * scale`, clips that absolute target to the
 compiled-in soft limits, commands the clipped value, then maps it back with
 `(clipped_target - default_joint_pos) / scale`. Only that effective delta is
-stored in the next observation. This exactly matches v7 training and prevents
+stored in the next observation. This exactly matches v10 training and prevents
 unbounded network output from feeding back while a servo target is saturated.
 Every live ONNX output must be inside both the guarded actor interval and the
 narrower deterministic `T(mean)` envelope. The resulting absolute target must
 also be strictly inside the robot's compiled soft limit. A violation rejects
 the complete tick before any of its 18 targets are written; it is not silently
 saturated. The absolute clip remains in the matched observation calculation,
-but it is a no-op for every valid v7 output and is never widened by metadata.
+but it is a no-op for every valid v10 output and is never widened by metadata.
 
-V7 must be trained from a clean run. An unversioned v1 checkpoint may be
-inspected only with the simulator evaluator's explicit diagnostic flag; it
-cannot be resumed, exported as v7, accepted by this runtime, or copied into
-`src/agents` as a deployable policy. Versioned-v2 through v6 checkpoints are
-rejected even if their tensor shapes match because they do not prove v7's exact
-latent-storage and finite-envelope semantics. The diagnostic pre-update
-artifact `model_pristine.pt` (iteration `-1`) is also rejected: deployment
-accepts only a parity-gated canonical `model_N.pt` with non-negative `N`.
+Contract v10 permits one migration chain: a full-state transfer from the exact
+accepted contract-v9 `model_1499.pt`. Every later canonical v10 stage must
+inherit the same migration ledger. Its eight flattened ONNX metadata fields are
+fixed as follows:
 
-Contract v7 retains v6's neutral-preserving predicted-joint-state guard while
-changing PPO storage and scoring to the exact latent. The runtime cannot
-reconstruct training behavior from an ONNX graph, so the exact version marker
-and metadata are the fail-closed provenance boundary: v5 and v6 artifacts with
-otherwise identical tensor shapes are still rejected.
+- `migration_source_checkpoint_sha256` =
+  `de8b6139872179679a16d72f3007f6d96cf65c97fa88565841eaa5f89511a65f`
+  and `migration_source_checkpoint_iteration` = `1499`;
+- `migration_source_training_provenance_sha256` =
+  `f09f5580f03d3e38deef4916db7aea3bd8b1f683dc02a75079d24dd17923fce9`;
+- `migration_source_tree_sha256` =
+  `61a9fc7b1fe10436c0f033f89710e33e9e5470716d94794f110731c18e7d792a`;
+- `migration_source_gate_sha256` =
+  `acb2e39411155d70aed2b18561a243bd8ad20eef56e0942d2dafbb4f96f39b7c`;
+- `migration_state_transfer` =
+  `actor_critic_optimizer_moments_iteration_common_step_v1`;
+- `migration_source_optimizer_learning_rate` =
+  `7.593750000000002e-05`, and `training_fixed_learning_rate` = `1e-5`.
+
+That lineage also remains bound to the inherited safe-velocity checkpoint at
+iteration `500`, SHA-256
+`416a8b16f7f7980822e4e1df81ffaf9515bc18a246e6fc257405a2c46ceece93`,
+and its acceptance receipt SHA-256
+`e68701b11774dd30c8e45a2fd89614a2e4423a9486d01a0d936f0fa6fb760492`.
+This records the required transfer of the actor, critic, optimizer moments,
+iteration and common-step state before the optimizer rate is fixed at `1e-5`;
+it is not an actor-only warm start.
+
+Deployment accepts only `canonical_v10_stage` provenance for the final
+`10000->15000` stage and its parity-gated `model_14999.pt` checkpoint
+(iteration `14999`, `15000` completed updates). It also requires a schema-3
+acceptance receipt with status `pass`, boundary `15000`, evaluator revision
+`microban_teleop_deterministic_evaluator_v10_1`, acceptance revision
+`microban_teleop_acceptance_v10_1`, and exactly three nominal plus three
+moving-HMD reports. The receipt must bind the checkpoint and training-
+provenance hashes, plus the recipe revision recorded in the ONNX. Diagnostic,
+canary, intermediate,
+`model_pristine.pt` and direct v9 exports remain non-deployable. Without
+`--acceptance-receipt`, the exporter records `deployment_accepted=false`, which
+the runtime rejects. Keep `--require-final-acceptance` in the deployment command
+so a missing receipt fails the export instead of producing that diagnostic
+artifact.
 
 After metadata validation, the offline validator also runs the same 16 fixed
 neutral, lower-bound, upper-bound, midpoint and seed-`20260924` finite inputs

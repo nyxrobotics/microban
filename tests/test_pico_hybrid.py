@@ -15,6 +15,8 @@ from imu_reader import imu_quat_to_body
 from input.input_source import UserInput
 from moves.move import MotorCommand, MoveState
 from moves.pico_hybrid import (
+    EXPECTED_ACCEPTANCE_EVALUATOR_REVISION,
+    EXPECTED_ACCEPTANCE_REVISION,
     EXPECTED_ACTION_DEFAULT_JOINT_POS,
     EXPECTED_ACTION_DISTRIBUTION_SEMANTICS,
     EXPECTED_ACTION_SCALE,
@@ -38,20 +40,34 @@ from moves.pico_hybrid import (
     EXPECTED_ACTOR_TARGET_GUARD_MARGIN_RATIO,
     EXPECTED_DETERMINISTIC_RAW_ACTION_LOWER,
     EXPECTED_DETERMINISTIC_RAW_ACTION_UPPER,
+    EXPECTED_MIGRATION_SOURCE_CHECKPOINT_ITERATION,
+    EXPECTED_MIGRATION_SOURCE_CHECKPOINT_SHA256,
+    EXPECTED_MIGRATION_SOURCE_GATE_SHA256,
+    EXPECTED_MIGRATION_SOURCE_OPTIMIZER_LEARNING_RATE,
+    EXPECTED_MIGRATION_SOURCE_TRAINING_PROVENANCE_SHA256,
+    EXPECTED_MIGRATION_SOURCE_TREE_SHA256,
+    EXPECTED_MIGRATION_STATE_TRANSFER,
     EXPECTED_OBSERVATION_TERMS,
     EXPECTED_PREVIOUS_ACTION_SEMANTICS,
     EXPECTED_RAW_ACTION_SOFT_LOWER,
     EXPECTED_RAW_ACTION_SOFT_UPPER,
     EXPECTED_RECIPE_REVISION,
     EXPECTED_SAFE_VELOCITY_ACCEPTANCE_GATE,
+    EXPECTED_SAFE_VELOCITY_ACCEPTANCE_RECEIPT_SHA256,
     EXPECTED_SAFE_VELOCITY_BOOTSTRAP_MAPPING_VERSION,
     EXPECTED_SAFE_VELOCITY_RECEIPT_SCHEMA_VERSION,
     EXPECTED_SAFE_VELOCITY_RECIPE_REVISION,
+    EXPECTED_SAFE_VELOCITY_SOURCE_CHECKPOINT_ITERATION,
+    EXPECTED_SAFE_VELOCITY_SOURCE_CHECKPOINT_SHA256,
     EXPECTED_SIMULTANEOUS_BOTH_FEET_TARGET_LOWER,
     EXPECTED_SIMULTANEOUS_BOTH_FEET_TARGET_SEMANTICS,
     EXPECTED_SIMULTANEOUS_BOTH_FEET_TARGET_UPPER,
     EXPECTED_SOFT_JOINT_POS_LOWER,
     EXPECTED_SOFT_JOINT_POS_UPPER,
+    EXPECTED_TRAINING_CONTRACT_VERSION,
+    EXPECTED_TRAINING_FIXED_LEARNING_RATE,
+    EXPECTED_TRAINING_PROVENANCE_MODE,
+    EXPECTED_TRAINING_PROVENANCE_SCHEMA_VERSION,
     PICO_TELEOP_HOME_POSE,
     PicoHybridMove,
     PicoHybridPolicyContractError,
@@ -110,32 +126,56 @@ def valid_metadata():
     observation_defaults = [PICO_TELEOP_HOME_POSE[name] for name in OBSERVATION_JOINTS]
     return {
         "policy_type": "microban_pico_hybrid_teleop",
-        "checkpoint_filename": "model_19999.pt",
-        "checkpoint_iteration": "19999",
+        "checkpoint_filename": "model_14999.pt",
+        "checkpoint_iteration": "14999",
         "checkpoint_iteration_semantics": (
             "zero_based_completed_update_index_from_model_filename"
         ),
-        "checkpoint_completed_updates": "20000",
+        "checkpoint_completed_updates": "15000",
         "checkpoint_sha256": "0123456789abcdef" * 4,
-        "training_provenance_schema_version": "1",
+        "training_provenance_schema_version": str(
+            EXPECTED_TRAINING_PROVENANCE_SCHEMA_VERSION
+        ),
         "training_provenance_sha256": "1" * 64,
         "training_source_tree_sha256": "2" * 64,
         "training_recipe_revision": EXPECTED_RECIPE_REVISION,
         "training_actor_initialization": EXPECTED_ACTOR_INITIALIZATION,
-        "training_provenance_mode": "canonical_v9_stage",
+        "training_provenance_mode": EXPECTED_TRAINING_PROVENANCE_MODE,
         "canonical_training_stage": "true",
-        "training_stage_start_boundary": "18000",
-        "training_stage_target_boundary": "20000",
+        "training_stage_start_boundary": "10000",
+        "training_stage_target_boundary": "15000",
         "training_parent_checkpoint_sha256": "3" * 64,
         "training_parent_gate_sha256": "4" * 64,
         "training_resume_source_checkpoint_sha256": "9" * 64,
-        "training_resume_source_checkpoint_iteration": "18999",
-        "safe_velocity_source_checkpoint_sha256": "7" * 64,
-        "safe_velocity_source_checkpoint_iteration": "500",
+        "training_resume_source_checkpoint_iteration": "9999",
+        "migration_source_checkpoint_sha256": (
+            EXPECTED_MIGRATION_SOURCE_CHECKPOINT_SHA256
+        ),
+        "migration_source_checkpoint_iteration": str(
+            EXPECTED_MIGRATION_SOURCE_CHECKPOINT_ITERATION
+        ),
+        "migration_source_training_provenance_sha256": (
+            EXPECTED_MIGRATION_SOURCE_TRAINING_PROVENANCE_SHA256
+        ),
+        "migration_source_tree_sha256": EXPECTED_MIGRATION_SOURCE_TREE_SHA256,
+        "migration_source_gate_sha256": EXPECTED_MIGRATION_SOURCE_GATE_SHA256,
+        "migration_state_transfer": EXPECTED_MIGRATION_STATE_TRANSFER,
+        "migration_source_optimizer_learning_rate": str(
+            EXPECTED_MIGRATION_SOURCE_OPTIMIZER_LEARNING_RATE
+        ),
+        "training_fixed_learning_rate": str(EXPECTED_TRAINING_FIXED_LEARNING_RATE),
+        "safe_velocity_source_checkpoint_sha256": (
+            EXPECTED_SAFE_VELOCITY_SOURCE_CHECKPOINT_SHA256
+        ),
+        "safe_velocity_source_checkpoint_iteration": str(
+            EXPECTED_SAFE_VELOCITY_SOURCE_CHECKPOINT_ITERATION
+        ),
         "safe_velocity_source_recipe_revision": (
             EXPECTED_SAFE_VELOCITY_RECIPE_REVISION
         ),
-        "safe_velocity_acceptance_receipt_sha256": "8" * 64,
+        "safe_velocity_acceptance_receipt_sha256": (
+            EXPECTED_SAFE_VELOCITY_ACCEPTANCE_RECEIPT_SHA256
+        ),
         "safe_velocity_acceptance_receipt_schema_version": str(
             EXPECTED_SAFE_VELOCITY_RECEIPT_SCHEMA_VERSION
         ),
@@ -147,11 +187,9 @@ def valid_metadata():
         "acceptance_receipt_schema_version": "3",
         "acceptance_receipt_sha256": "5" * 64,
         "acceptance_status": "pass",
-        "acceptance_boundary": "20000",
-        "acceptance_evaluator_revision": (
-            "microban_teleop_deterministic_evaluator_v9_2"
-        ),
-        "acceptance_revision": "microban_teleop_acceptance_v9_2",
+        "acceptance_boundary": "15000",
+        "acceptance_evaluator_revision": EXPECTED_ACCEPTANCE_EVALUATOR_REVISION,
+        "acceptance_revision": EXPECTED_ACCEPTANCE_REVISION,
         "acceptance_evaluator_source_sha256": "6" * 64,
         "acceptance_checkpoint_sha256": "0123456789abcdef" * 4,
         "acceptance_training_provenance_sha256": "1" * 64,
@@ -165,7 +203,9 @@ def valid_metadata():
         "onnx_parity_sample_count": "16",
         "onnx_parity_atol": "1e-05",
         "onnx_parity_rtol": "0.0001",
-        "microban_teleop_training_contract_version": "9",
+        "microban_teleop_training_contract_version": (
+            EXPECTED_TRAINING_CONTRACT_VERSION
+        ),
         "microban_teleop_actor_initialization": EXPECTED_ACTOR_INITIALIZATION,
         "microban_teleop_recipe_revision": EXPECTED_RECIPE_REVISION,
         "observation_schema_version": "2",
@@ -369,7 +409,7 @@ class PicoHybridMoveTest(unittest.TestCase):
         ):
             validate_onnxruntime_compatibility(FakeSession(output=output), "obs")
 
-    def test_v8_latent_envelope_is_finite_nested_and_has_ten_sigma_margin(self):
+    def test_v10_latent_envelope_is_finite_nested_and_has_ten_sigma_margin(self):
         vectors = (
             EXPECTED_ACTOR_LATENT_OPERATIONAL_LOWER,
             EXPECTED_ACTOR_LATENT_OPERATIONAL_UPPER,
@@ -417,9 +457,9 @@ class PicoHybridMoveTest(unittest.TestCase):
 
     def test_contract_accepts_and_exposes_gated_export_provenance(self):
         move = PicoHybridMove(session=FakeSession())
-        self.assertEqual(move._contract.checkpoint_filename, "model_19999.pt")
-        self.assertEqual(move._contract.checkpoint_iteration, 19999)
-        self.assertEqual(move._contract.checkpoint_completed_updates, 20000)
+        self.assertEqual(move._contract.checkpoint_filename, "model_14999.pt")
+        self.assertEqual(move._contract.checkpoint_iteration, 14999)
+        self.assertEqual(move._contract.checkpoint_completed_updates, 15000)
         self.assertEqual(
             move._contract.checkpoint_sha256,
             "0123456789abcdef" * 4,
@@ -438,14 +478,52 @@ class PicoHybridMoveTest(unittest.TestCase):
             move._contract.training_resume_source_checkpoint_sha256, "9" * 64
         )
         self.assertEqual(
-            move._contract.training_resume_source_checkpoint_iteration, 18999
+            move._contract.training_resume_source_checkpoint_iteration, 9999
+        )
+        self.assertEqual(
+            move._contract.migration_source_checkpoint_sha256,
+            EXPECTED_MIGRATION_SOURCE_CHECKPOINT_SHA256,
+        )
+        self.assertEqual(
+            move._contract.migration_source_checkpoint_iteration,
+            EXPECTED_MIGRATION_SOURCE_CHECKPOINT_ITERATION,
+        )
+        self.assertEqual(
+            move._contract.migration_source_training_provenance_sha256,
+            EXPECTED_MIGRATION_SOURCE_TRAINING_PROVENANCE_SHA256,
+        )
+        self.assertEqual(
+            move._contract.migration_source_tree_sha256,
+            EXPECTED_MIGRATION_SOURCE_TREE_SHA256,
+        )
+        self.assertEqual(
+            move._contract.migration_source_gate_sha256,
+            EXPECTED_MIGRATION_SOURCE_GATE_SHA256,
+        )
+        self.assertEqual(
+            move._contract.migration_state_transfer,
+            EXPECTED_MIGRATION_STATE_TRANSFER,
+        )
+        self.assertEqual(
+            move._contract.migration_source_optimizer_learning_rate,
+            EXPECTED_MIGRATION_SOURCE_OPTIMIZER_LEARNING_RATE,
+        )
+        self.assertEqual(
+            move._contract.training_fixed_learning_rate,
+            EXPECTED_TRAINING_FIXED_LEARNING_RATE,
         )
         self.assertEqual(move._contract.acceptance_receipt_sha256, "5" * 64)
         self.assertEqual(
-            move._contract.safe_velocity_source_checkpoint_sha256, "7" * 64
+            move._contract.safe_velocity_source_checkpoint_sha256,
+            EXPECTED_SAFE_VELOCITY_SOURCE_CHECKPOINT_SHA256,
         )
         self.assertEqual(
-            move._contract.safe_velocity_acceptance_receipt_sha256, "8" * 64
+            move._contract.safe_velocity_source_checkpoint_iteration,
+            EXPECTED_SAFE_VELOCITY_SOURCE_CHECKPOINT_ITERATION,
+        )
+        self.assertEqual(
+            move._contract.safe_velocity_acceptance_receipt_sha256,
+            EXPECTED_SAFE_VELOCITY_ACCEPTANCE_RECEIPT_SHA256,
         )
         self.assertEqual(
             move._contract.acceptance_evaluator_source_sha256,
@@ -488,7 +566,7 @@ class PicoHybridMoveTest(unittest.TestCase):
         with self.assertRaises(PicoHybridPolicyContractError):
             PicoHybridMove(session=FakeSession(metadata=metadata))
 
-    def test_contract_rejects_v1_through_v8_or_missing_effective_action_contract(self):
+    def test_contract_rejects_v1_through_v9_or_missing_effective_action_contract(self):
         mutations = {
             "missing_training_contract": (
                 "microban_teleop_training_contract_version",
@@ -526,6 +604,10 @@ class PicoHybridMoveTest(unittest.TestCase):
                 "microban_teleop_training_contract_version",
                 "8",
             ),
+            "v9_training_contract": (
+                "microban_teleop_training_contract_version",
+                "9",
+            ),
             "v1_schema": ("observation_schema_version", "1"),
             "v1_raw_previous_action": (
                 "previous_action_semantics",
@@ -542,7 +624,7 @@ class PicoHybridMoveTest(unittest.TestCase):
                 with self.assertRaises(PicoHybridPolicyContractError):
                     PicoHybridMove(session=FakeSession(metadata=metadata))
 
-    def test_contract_requires_exact_v9_actor_and_recipe_provenance(self):
+    def test_contract_requires_exact_v10_actor_and_recipe_provenance(self):
         mutations = {
             "missing_actor_initialization": (
                 "microban_teleop_actor_initialization",
@@ -550,12 +632,13 @@ class PicoHybridMoveTest(unittest.TestCase):
             ),
             "legacy_actor_initialization": (
                 "microban_teleop_actor_initialization",
-                "velocity_actor_bootstrap_v3_guarded_shoulder_roll_head_v1",
+                "bounded_raw_safe_velocity_actor_only_63_to_83_zero_new_columns_v1",
             ),
             "missing_recipe_revision": ("microban_teleop_recipe_revision", None),
             "different_recipe_revision": (
                 "microban_teleop_recipe_revision",
-                "v8f_clean_shoulder_std1_intermediate_initial_commands_v1",
+                "v9_accepted_safe_velocity_bootstrap_no_walk004_prior_"
+                "full_pico_curriculum_v3",
             ),
         }
         for case, (field, value) in mutations.items():
@@ -583,6 +666,14 @@ class PicoHybridMoveTest(unittest.TestCase):
             "training_parent_gate_sha256",
             "training_resume_source_checkpoint_sha256",
             "training_resume_source_checkpoint_iteration",
+            "migration_source_checkpoint_sha256",
+            "migration_source_checkpoint_iteration",
+            "migration_source_training_provenance_sha256",
+            "migration_source_tree_sha256",
+            "migration_source_gate_sha256",
+            "migration_state_transfer",
+            "migration_source_optimizer_learning_rate",
+            "training_fixed_learning_rate",
             "deployment_accepted",
             "acceptance_receipt_schema_version",
             "acceptance_receipt_sha256",
@@ -606,7 +697,7 @@ class PicoHybridMoveTest(unittest.TestCase):
 
         mutations = {
             "missing_training_schema": ("training_provenance_schema_version", None),
-            "wrong_training_schema": ("training_provenance_schema_version", "2"),
+            "wrong_training_schema": ("training_provenance_schema_version", "1"),
             "noncanonical_training_schema": (
                 "training_provenance_schema_version",
                 "01",
@@ -617,16 +708,17 @@ class PicoHybridMoveTest(unittest.TestCase):
             "short_source_digest": ("training_source_tree_sha256", "a" * 63),
             "wrong_training_recipe": (
                 "training_recipe_revision",
-                "v8f_clean_shoulder_std1_intermediate_initial_commands_v1",
+                "v9_accepted_safe_velocity_bootstrap_no_walk004_prior_"
+                "full_pico_curriculum_v3",
             ),
             "wrong_training_initialization": (
                 "training_actor_initialization",
-                "velocity_actor_bootstrap",
+                "bounded_raw_safe_velocity_actor_only_63_to_83_zero_new_columns_v1",
             ),
             "generic_training": ("training_provenance_mode", "generic"),
             "noncanonical_training": ("canonical_training_stage", "false"),
-            "wrong_stage_start": ("training_stage_start_boundary", "16000"),
-            "wrong_stage_target": ("training_stage_target_boundary", "18000"),
+            "wrong_stage_start": ("training_stage_start_boundary", "7000"),
+            "wrong_stage_target": ("training_stage_target_boundary", "10000"),
             "missing_parent_checkpoint": (
                 "training_parent_checkpoint_sha256",
                 None,
@@ -646,15 +738,15 @@ class PicoHybridMoveTest(unittest.TestCase):
             ),
             "noncanonical_resume_source_iteration": (
                 "training_resume_source_checkpoint_iteration",
-                "018999",
+                "09999",
             ),
             "resume_source_before_final_stage": (
                 "training_resume_source_checkpoint_iteration",
-                "17998",
+                "9998",
             ),
             "resume_source_is_final_checkpoint": (
                 "training_resume_source_checkpoint_iteration",
-                "19999",
+                "14999",
             ),
             "not_accepted": ("deployment_accepted", "false"),
             "missing_receipt_schema": ("acceptance_receipt_schema_version", None),
@@ -662,14 +754,14 @@ class PicoHybridMoveTest(unittest.TestCase):
             "missing_receipt_digest": ("acceptance_receipt_sha256", None),
             "uppercase_receipt_digest": ("acceptance_receipt_sha256", "F" * 64),
             "diagnostic_status": ("acceptance_status", "diagnostic"),
-            "wrong_acceptance_boundary": ("acceptance_boundary", "18000"),
+            "wrong_acceptance_boundary": ("acceptance_boundary", "10000"),
             "old_evaluator": (
                 "acceptance_evaluator_revision",
-                "microban_teleop_deterministic_evaluator_v8_1",
+                "microban_teleop_deterministic_evaluator_v9_2",
             ),
             "old_acceptance": (
                 "acceptance_revision",
-                "microban_teleop_acceptance_v8_1",
+                "microban_teleop_acceptance_v9_2",
             ),
             "missing_evaluator_digest": (
                 "acceptance_evaluator_source_sha256",
@@ -685,7 +777,8 @@ class PicoHybridMoveTest(unittest.TestCase):
             ),
             "wrong_accepted_recipe": (
                 "acceptance_recipe_revision",
-                "v8f_clean_shoulder_std1_intermediate_initial_commands_v1",
+                "v9_accepted_safe_velocity_bootstrap_no_walk004_prior_"
+                "full_pico_curriculum_v3",
             ),
             "wrong_nominal_count": ("acceptance_nominal_report_count", "2"),
             "wrong_moving_hmd_count": (
@@ -706,9 +799,9 @@ class PicoHybridMoveTest(unittest.TestCase):
         metadata = valid_metadata()
         metadata.update(
             {
-                "checkpoint_filename": "model_14999.pt",
-                "checkpoint_iteration": "14999",
-                "checkpoint_completed_updates": "15000",
+                "checkpoint_filename": "model_19999.pt",
+                "checkpoint_iteration": "19999",
+                "checkpoint_completed_updates": "20000",
             }
         )
         with self.assertRaisesRegex(
@@ -718,11 +811,56 @@ class PicoHybridMoveTest(unittest.TestCase):
             PicoHybridMove(session=FakeSession(metadata=metadata))
 
     def test_contract_accepts_final_stage_resume_source_iteration_boundaries(self):
-        for iteration in ("17999", "19998"):
+        for iteration in ("9999", "14998"):
             with self.subTest(iteration=iteration):
                 metadata = valid_metadata()
                 metadata["training_resume_source_checkpoint_iteration"] = iteration
                 PicoHybridMove(session=FakeSession(metadata=metadata))
+
+    def test_contract_requires_exact_v10_migration_provenance(self):
+        mutations = {
+            "wrong_source_checkpoint": (
+                "migration_source_checkpoint_sha256",
+                "a" * 64,
+            ),
+            "noncanonical_source_iteration": (
+                "migration_source_checkpoint_iteration",
+                "01499",
+            ),
+            "wrong_source_iteration": (
+                "migration_source_checkpoint_iteration",
+                "1500",
+            ),
+            "wrong_source_training": (
+                "migration_source_training_provenance_sha256",
+                "b" * 64,
+            ),
+            "wrong_source_tree": ("migration_source_tree_sha256", "c" * 64),
+            "wrong_source_gate": ("migration_source_gate_sha256", "d" * 64),
+            "wrong_state_transfer": (
+                "migration_state_transfer",
+                "actor_only_v1",
+            ),
+            "wrong_source_learning_rate": (
+                "migration_source_optimizer_learning_rate",
+                "1e-5",
+            ),
+            "nonfinite_source_learning_rate": (
+                "migration_source_optimizer_learning_rate",
+                "nan",
+            ),
+            "wrong_fixed_learning_rate": ("training_fixed_learning_rate", "1e-4"),
+            "nonfinite_fixed_learning_rate": (
+                "training_fixed_learning_rate",
+                "inf",
+            ),
+        }
+        for case, (field, value) in mutations.items():
+            with self.subTest(case=case):
+                metadata = valid_metadata()
+                metadata[field] = value
+                with self.assertRaises(PicoHybridPolicyContractError):
+                    PicoHybridMove(session=FakeSession(metadata=metadata))
 
     def test_contract_requires_exact_safe_velocity_bootstrap_identity(self):
         mutations = {
@@ -730,6 +868,10 @@ class PicoHybridMoveTest(unittest.TestCase):
             "uppercase_source_sha": (
                 "safe_velocity_source_checkpoint_sha256",
                 "A" * 64,
+            ),
+            "wrong_source_sha": (
+                "safe_velocity_source_checkpoint_sha256",
+                "a" * 64,
             ),
             "missing_source_iteration": (
                 "safe_velocity_source_checkpoint_iteration",
@@ -739,6 +881,10 @@ class PicoHybridMoveTest(unittest.TestCase):
                 "safe_velocity_source_checkpoint_iteration",
                 "0500",
             ),
+            "wrong_source_iteration": (
+                "safe_velocity_source_checkpoint_iteration",
+                "501",
+            ),
             "wrong_source_recipe": (
                 "safe_velocity_source_recipe_revision",
                 "scratch_bounded_inward_shoulder_sagittal_exploration_v6",
@@ -746,6 +892,10 @@ class PicoHybridMoveTest(unittest.TestCase):
             "missing_receipt_sha": (
                 "safe_velocity_acceptance_receipt_sha256",
                 None,
+            ),
+            "wrong_receipt_sha": (
+                "safe_velocity_acceptance_receipt_sha256",
+                "b" * 64,
             ),
             "wrong_receipt_schema": (
                 "safe_velocity_acceptance_receipt_schema_version",
@@ -819,7 +969,7 @@ class PicoHybridMoveTest(unittest.TestCase):
                 ):
                     PicoHybridMove(session=FakeSession(metadata=metadata))
 
-    def test_contract_requires_exact_v9_bounded_actor_metadata(self):
+    def test_contract_requires_exact_v10_bounded_actor_metadata(self):
         scalar_mutations = {
             "missing_distribution": ("action_distribution_semantics", None),
             "wrong_distribution": ("action_distribution_semantics", "tanh"),
