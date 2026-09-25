@@ -9,7 +9,6 @@ import numpy as np
 from constants import (
     IMU_MOUNT_QUAT,
     MOTOR_TO_ID,
-    NEUTRAL_POSE,
     OBSERVATION_DOF_ORDER,
 )
 from imu_reader import imu_quat_to_body
@@ -44,11 +43,16 @@ from moves.pico_hybrid import (
     EXPECTED_RAW_ACTION_SOFT_LOWER,
     EXPECTED_RAW_ACTION_SOFT_UPPER,
     EXPECTED_RECIPE_REVISION,
+    EXPECTED_SAFE_VELOCITY_ACCEPTANCE_GATE,
+    EXPECTED_SAFE_VELOCITY_BOOTSTRAP_MAPPING_VERSION,
+    EXPECTED_SAFE_VELOCITY_RECEIPT_SCHEMA_VERSION,
+    EXPECTED_SAFE_VELOCITY_RECIPE_REVISION,
     EXPECTED_SIMULTANEOUS_BOTH_FEET_TARGET_LOWER,
     EXPECTED_SIMULTANEOUS_BOTH_FEET_TARGET_SEMANTICS,
     EXPECTED_SIMULTANEOUS_BOTH_FEET_TARGET_UPPER,
     EXPECTED_SOFT_JOINT_POS_LOWER,
     EXPECTED_SOFT_JOINT_POS_UPPER,
+    PICO_TELEOP_HOME_POSE,
     PicoHybridMove,
     PicoHybridPolicyContractError,
     PicoHybridPolicyRuntimeError,
@@ -103,7 +107,7 @@ def _metadata_csv(values):
 
 
 def valid_metadata():
-    observation_defaults = [NEUTRAL_POSE[name] for name in OBSERVATION_JOINTS]
+    observation_defaults = [PICO_TELEOP_HOME_POSE[name] for name in OBSERVATION_JOINTS]
     return {
         "policy_type": "microban_pico_hybrid_teleop",
         "checkpoint_filename": "model_19999.pt",
@@ -118,21 +122,36 @@ def valid_metadata():
         "training_source_tree_sha256": "2" * 64,
         "training_recipe_revision": EXPECTED_RECIPE_REVISION,
         "training_actor_initialization": EXPECTED_ACTOR_INITIALIZATION,
-        "training_provenance_mode": "canonical_v8_stage",
+        "training_provenance_mode": "canonical_v9_stage",
         "canonical_training_stage": "true",
         "training_stage_start_boundary": "18000",
         "training_stage_target_boundary": "20000",
         "training_parent_checkpoint_sha256": "3" * 64,
         "training_parent_gate_sha256": "4" * 64,
+        "training_resume_source_checkpoint_sha256": "9" * 64,
+        "training_resume_source_checkpoint_iteration": "18999",
+        "safe_velocity_source_checkpoint_sha256": "7" * 64,
+        "safe_velocity_source_checkpoint_iteration": "500",
+        "safe_velocity_source_recipe_revision": (
+            EXPECTED_SAFE_VELOCITY_RECIPE_REVISION
+        ),
+        "safe_velocity_acceptance_receipt_sha256": "8" * 64,
+        "safe_velocity_acceptance_receipt_schema_version": str(
+            EXPECTED_SAFE_VELOCITY_RECEIPT_SCHEMA_VERSION
+        ),
+        "safe_velocity_acceptance_gate": EXPECTED_SAFE_VELOCITY_ACCEPTANCE_GATE,
+        "safe_velocity_bootstrap_mapping_version": (
+            EXPECTED_SAFE_VELOCITY_BOOTSTRAP_MAPPING_VERSION
+        ),
         "deployment_accepted": "true",
         "acceptance_receipt_schema_version": "3",
         "acceptance_receipt_sha256": "5" * 64,
         "acceptance_status": "pass",
         "acceptance_boundary": "20000",
         "acceptance_evaluator_revision": (
-            "microban_teleop_deterministic_evaluator_v8_1"
+            "microban_teleop_deterministic_evaluator_v9_1"
         ),
-        "acceptance_revision": "microban_teleop_acceptance_v8_1",
+        "acceptance_revision": "microban_teleop_acceptance_v9_1",
         "acceptance_evaluator_source_sha256": "6" * 64,
         "acceptance_checkpoint_sha256": "0123456789abcdef" * 4,
         "acceptance_training_provenance_sha256": "1" * 64,
@@ -146,7 +165,7 @@ def valid_metadata():
         "onnx_parity_sample_count": "16",
         "onnx_parity_atol": "1e-05",
         "onnx_parity_rtol": "0.0001",
-        "microban_teleop_training_contract_version": "8",
+        "microban_teleop_training_contract_version": "9",
         "microban_teleop_actor_initialization": EXPECTED_ACTOR_INITIALIZATION,
         "microban_teleop_recipe_revision": EXPECTED_RECIPE_REVISION,
         "observation_schema_version": "2",
@@ -263,7 +282,7 @@ class FakeController:
 
 
 def observation(time_s=0.0):
-    positions = {name: NEUTRAL_POSE[name] for name in MOTOR_TO_ID}
+    positions = {name: PICO_TELEOP_HOME_POSE[name] for name in MOTOR_TO_ID}
     velocities = {name: 0.0 for name in MOTOR_TO_ID}
     return Observation(
         robot_state=RobotState(
@@ -415,7 +434,19 @@ class PicoHybridMoveTest(unittest.TestCase):
         )
         self.assertEqual(move._contract.training_provenance_sha256, "1" * 64)
         self.assertEqual(move._contract.training_source_tree_sha256, "2" * 64)
+        self.assertEqual(
+            move._contract.training_resume_source_checkpoint_sha256, "9" * 64
+        )
+        self.assertEqual(
+            move._contract.training_resume_source_checkpoint_iteration, 18999
+        )
         self.assertEqual(move._contract.acceptance_receipt_sha256, "5" * 64)
+        self.assertEqual(
+            move._contract.safe_velocity_source_checkpoint_sha256, "7" * 64
+        )
+        self.assertEqual(
+            move._contract.safe_velocity_acceptance_receipt_sha256, "8" * 64
+        )
         self.assertEqual(
             move._contract.acceptance_evaluator_source_sha256,
             "6" * 64,
@@ -457,7 +488,7 @@ class PicoHybridMoveTest(unittest.TestCase):
         with self.assertRaises(PicoHybridPolicyContractError):
             PicoHybridMove(session=FakeSession(metadata=metadata))
 
-    def test_contract_rejects_v1_through_v7_or_missing_effective_action_contract(self):
+    def test_contract_rejects_v1_through_v8_or_missing_effective_action_contract(self):
         mutations = {
             "missing_training_contract": (
                 "microban_teleop_training_contract_version",
@@ -491,6 +522,10 @@ class PicoHybridMoveTest(unittest.TestCase):
                 "microban_teleop_training_contract_version",
                 "7",
             ),
+            "v8_training_contract": (
+                "microban_teleop_training_contract_version",
+                "8",
+            ),
             "v1_schema": ("observation_schema_version", "1"),
             "v1_raw_previous_action": (
                 "previous_action_semantics",
@@ -507,7 +542,7 @@ class PicoHybridMoveTest(unittest.TestCase):
                 with self.assertRaises(PicoHybridPolicyContractError):
                     PicoHybridMove(session=FakeSession(metadata=metadata))
 
-    def test_contract_requires_exact_v8_actor_and_recipe_provenance(self):
+    def test_contract_requires_exact_v9_actor_and_recipe_provenance(self):
         mutations = {
             "missing_actor_initialization": (
                 "microban_teleop_actor_initialization",
@@ -546,6 +581,8 @@ class PicoHybridMoveTest(unittest.TestCase):
             "training_stage_target_boundary",
             "training_parent_checkpoint_sha256",
             "training_parent_gate_sha256",
+            "training_resume_source_checkpoint_sha256",
+            "training_resume_source_checkpoint_iteration",
             "deployment_accepted",
             "acceptance_receipt_schema_version",
             "acceptance_receipt_sha256",
@@ -595,6 +632,30 @@ class PicoHybridMoveTest(unittest.TestCase):
                 None,
             ),
             "missing_parent_gate": ("training_parent_gate_sha256", None),
+            "uppercase_resume_source_digest": (
+                "training_resume_source_checkpoint_sha256",
+                "A" * 64,
+            ),
+            "none_resume_source_digest": (
+                "training_resume_source_checkpoint_sha256",
+                "none",
+            ),
+            "none_resume_source_iteration": (
+                "training_resume_source_checkpoint_iteration",
+                "none",
+            ),
+            "noncanonical_resume_source_iteration": (
+                "training_resume_source_checkpoint_iteration",
+                "018999",
+            ),
+            "resume_source_before_final_stage": (
+                "training_resume_source_checkpoint_iteration",
+                "17998",
+            ),
+            "resume_source_is_final_checkpoint": (
+                "training_resume_source_checkpoint_iteration",
+                "19999",
+            ),
             "not_accepted": ("deployment_accepted", "false"),
             "missing_receipt_schema": ("acceptance_receipt_schema_version", None),
             "old_receipt_schema": ("acceptance_receipt_schema_version", "2"),
@@ -604,11 +665,11 @@ class PicoHybridMoveTest(unittest.TestCase):
             "wrong_acceptance_boundary": ("acceptance_boundary", "18000"),
             "old_evaluator": (
                 "acceptance_evaluator_revision",
-                "microban_teleop_deterministic_evaluator_v8_0",
+                "microban_teleop_deterministic_evaluator_v8_1",
             ),
             "old_acceptance": (
                 "acceptance_revision",
-                "microban_teleop_acceptance_v8_0",
+                "microban_teleop_acceptance_v8_1",
             ),
             "missing_evaluator_digest": (
                 "acceptance_evaluator_source_sha256",
@@ -656,9 +717,66 @@ class PicoHybridMoveTest(unittest.TestCase):
         ):
             PicoHybridMove(session=FakeSession(metadata=metadata))
 
+    def test_contract_accepts_final_stage_resume_source_iteration_boundaries(self):
+        for iteration in ("17999", "19998"):
+            with self.subTest(iteration=iteration):
+                metadata = valid_metadata()
+                metadata["training_resume_source_checkpoint_iteration"] = iteration
+                PicoHybridMove(session=FakeSession(metadata=metadata))
+
+    def test_contract_requires_exact_safe_velocity_bootstrap_identity(self):
+        mutations = {
+            "missing_source_sha": ("safe_velocity_source_checkpoint_sha256", None),
+            "uppercase_source_sha": (
+                "safe_velocity_source_checkpoint_sha256",
+                "A" * 64,
+            ),
+            "missing_source_iteration": (
+                "safe_velocity_source_checkpoint_iteration",
+                None,
+            ),
+            "noncanonical_source_iteration": (
+                "safe_velocity_source_checkpoint_iteration",
+                "0500",
+            ),
+            "wrong_source_recipe": (
+                "safe_velocity_source_recipe_revision",
+                "scratch_bounded_inward_shoulder_sagittal_exploration_v6",
+            ),
+            "missing_receipt_sha": (
+                "safe_velocity_acceptance_receipt_sha256",
+                None,
+            ),
+            "wrong_receipt_schema": (
+                "safe_velocity_acceptance_receipt_schema_version",
+                "1",
+            ),
+            "wrong_acceptance_gate": (
+                "safe_velocity_acceptance_gate",
+                "microban_safe_velocity_fixed_forward_v1",
+            ),
+            "wrong_mapping": (
+                "safe_velocity_bootstrap_mapping_version",
+                "legacy_velocity_63_to_teleop_83",
+            ),
+        }
+        for case, (field, value) in mutations.items():
+            with self.subTest(case=case):
+                metadata = valid_metadata()
+                if value is None:
+                    del metadata[field]
+                else:
+                    metadata[field] = value
+                with self.assertRaises(PicoHybridPolicyContractError):
+                    PicoHybridMove(session=FakeSession(metadata=metadata))
+
     def test_contract_rejects_missing_or_widened_both_feet_support(self):
         mutations = {
             "missing_lower": ("simultaneous_both_feet_target_lower", None),
+            "play_environment_12mm_upper": (
+                "simultaneous_both_feet_target_upper",
+                _csv((0.01, 0.01, 0.012) * 2),
+            ),
             "widened_upper": (
                 "simultaneous_both_feet_target_upper",
                 _csv((0.03, 0.03, 0.05) * 2),
@@ -701,7 +819,7 @@ class PicoHybridMoveTest(unittest.TestCase):
                 ):
                     PicoHybridMove(session=FakeSession(metadata=metadata))
 
-    def test_contract_requires_exact_v8_bounded_actor_metadata(self):
+    def test_contract_requires_exact_v9_bounded_actor_metadata(self):
         scalar_mutations = {
             "missing_distribution": ("action_distribution_semantics", None),
             "wrong_distribution": ("action_distribution_semantics", "tanh"),
@@ -947,19 +1065,23 @@ class PicoHybridMoveTest(unittest.TestCase):
         move.on_start(obs, MotorCommand())
         move.state = MoveState.STOPPING
         obs.robot_state.motor_positions = {
-            name: NEUTRAL_POSE[name] + 0.2 for name in MOTOR_TO_ID
+            name: PICO_TELEOP_HOME_POSE[name] + 0.2 for name in MOTOR_TO_ID
         }
         first = MotorCommand()
         move.on_stop(obs, first)
         for name in OBSERVATION_DOF_ORDER:
-            self.assertAlmostEqual(first.target_angles[name], NEUTRAL_POSE[name] + 0.2)
+            self.assertAlmostEqual(
+                first.target_angles[name], PICO_TELEOP_HOME_POSE[name] + 0.2
+            )
 
         obs.robot_state.time_s = 10.8
         final = MotorCommand()
         move.on_stop(obs, final)
         self.assertEqual(move.state, MoveState.INACTIVE)
         for name in OBSERVATION_DOF_ORDER:
-            self.assertAlmostEqual(final.target_angles[name], NEUTRAL_POSE[name])
+            self.assertAlmostEqual(
+                final.target_angles[name], PICO_TELEOP_HOME_POSE[name]
+            )
 
         move.state = MoveState.STOPPING
         obs.user_input.active_moves.add("getup")

@@ -36,16 +36,24 @@ from observer import Observation
 
 AGENT_NAME = "pico_teleop.onnx"
 EXPECTED_POLICY_TYPE = "microban_pico_hybrid_teleop"
-EXPECTED_TRAINING_CONTRACT_VERSION = "8"
+EXPECTED_TRAINING_CONTRACT_VERSION = "9"
 # Keep the recipe in one deployment-side constant: a deliberately promoted
 # training recipe then requires one reviewed line change here.  It must match
 # the exporter exactly; accepting a different marker would attach current
 # runtime semantics to weights trained under another reward/config recipe.
 EXPECTED_ACTOR_INITIALIZATION = (
-    "clean_random_except_inward_shoulder_roll_v1_nonshoulder_std_1_v1"
+    "bounded_raw_safe_velocity_actor_only_63_to_83_zero_new_columns_v1"
 )
 EXPECTED_RECIPE_REVISION = (
-    "v8g_clean_shoulder_std1_intermediate_commands_tracking_l1x2_v1"
+    "v9_accepted_safe_velocity_bootstrap_no_walk004_prior_full_pico_curriculum_v3"
+)
+EXPECTED_SAFE_VELOCITY_RECIPE_REVISION = (
+    "scratch_bounded_inward_shoulder_sagittal_bodyprogress_v9"
+)
+EXPECTED_SAFE_VELOCITY_RECEIPT_SCHEMA_VERSION = 2
+EXPECTED_SAFE_VELOCITY_ACCEPTANCE_GATE = "microban_safe_velocity_fixed_forward_v3"
+EXPECTED_SAFE_VELOCITY_BOOTSTRAP_MAPPING_VERSION = (
+    "bounded_raw_safe_velocity_63_to_teleop_83_v1"
 )
 EXPECTED_SCHEMA_VERSION = "2"
 EXPECTED_PREVIOUS_ACTION_SEMANTICS = (
@@ -91,14 +99,12 @@ EXPECTED_ONNX_PARITY_SAMPLE_COUNT = 16
 EXPECTED_ONNX_PARITY_ATOL = 1e-5
 EXPECTED_ONNX_PARITY_RTOL = 1e-4
 EXPECTED_TRAINING_PROVENANCE_SCHEMA_VERSION = 1
-EXPECTED_TRAINING_PROVENANCE_MODE = "canonical_v8_stage"
+EXPECTED_TRAINING_PROVENANCE_MODE = "canonical_v9_stage"
 EXPECTED_FINAL_TRAINING_STAGE_START_BOUNDARY = 18_000
 EXPECTED_FINAL_TRAINING_STAGE_TARGET_BOUNDARY = 20_000
 EXPECTED_ACCEPTANCE_RECEIPT_SCHEMA_VERSION = 3
-EXPECTED_ACCEPTANCE_EVALUATOR_REVISION = (
-    "microban_teleop_deterministic_evaluator_v8_1"
-)
-EXPECTED_ACCEPTANCE_REVISION = "microban_teleop_acceptance_v8_1"
+EXPECTED_ACCEPTANCE_EVALUATOR_REVISION = "microban_teleop_deterministic_evaluator_v9_1"
+EXPECTED_ACCEPTANCE_REVISION = "microban_teleop_acceptance_v9_1"
 EXPECTED_ACCEPTANCE_NOMINAL_REPORT_COUNT = 3
 EXPECTED_ACCEPTANCE_MOVING_HMD_REPORT_COUNT = 3
 
@@ -109,8 +115,16 @@ _CHECKPOINT_SHA256_RE = re.compile(r"[0-9a-f]{64}\Z")
 # full-precision, robot-side action contract here and only use the serialized
 # form when checking the ONNX metadata.  Inference always uses these values,
 # never model-provided limits, so altered metadata cannot widen motor targets.
+# The PICO policy was trained with shoulder pitch at 0 degrees.  Keep this
+# deployment contract local: NEUTRAL_POSE is shared by unrelated legacy moves
+# and historically used an unmeasured +10-degree shoulder-pitch assumption.
+PICO_TELEOP_HOME_POSE = {
+    **NEUTRAL_POSE,
+    "left_shoulder_pitch": 0.0,
+    "right_shoulder_pitch": 0.0,
+}
 EXPECTED_ACTION_DEFAULT_JOINT_POS = tuple(
-    float(NEUTRAL_POSE[name]) for name in OBSERVATION_DOF_ORDER
+    float(PICO_TELEOP_HOME_POSE[name]) for name in OBSERVATION_DOF_ORDER
 )
 EXPECTED_ACTION_SCALE = (1.0,) * EXPECTED_ACTION_WIDTH
 # Midpoint-centered 0.9 soft limits derived from Microban's deployed MJCF joint
@@ -602,12 +616,12 @@ def _require_final_deployment_provenance(
     checkpoint_iteration: int,
     checkpoint_completed_updates: int,
     checkpoint_sha256: str,
-) -> tuple[str, str, str, str]:
+) -> tuple[str, str, str, str, str, int]:
     """Require a canonical final-stage checkpoint and its schema-3 pass receipt.
 
     Diagnostic and automatic exports deliberately carry
     ``deployment_accepted=false``.  The robot must never infer deployability
-    merely from a v8 recipe label or a final-looking checkpoint filename.
+    merely from a v9 recipe label or a final-looking checkpoint filename.
     """
 
     schema_version = _canonical_nonnegative_int(
@@ -618,9 +632,7 @@ def _require_final_deployment_provenance(
         raise PicoHybridPolicyContractError(
             "unsupported training provenance schema version"
         )
-    training_sha256 = _require_lowercase_sha256(
-        metadata, "training_provenance_sha256"
-    )
+    training_sha256 = _require_lowercase_sha256(metadata, "training_provenance_sha256")
     source_tree_sha256 = _require_lowercase_sha256(
         metadata, "training_source_tree_sha256"
     )
@@ -634,7 +646,7 @@ def _require_final_deployment_provenance(
         )
     if metadata.get("training_provenance_mode") != EXPECTED_TRAINING_PROVENANCE_MODE:
         raise PicoHybridPolicyContractError(
-            "training provenance is not from the canonical v8 stage driver"
+            "training provenance is not from the canonical v9 stage driver"
         )
     if metadata.get("canonical_training_stage") != "true":
         raise PicoHybridPolicyContractError(
@@ -665,6 +677,22 @@ def _require_final_deployment_provenance(
         )
     _require_lowercase_sha256(metadata, "training_parent_checkpoint_sha256")
     _require_lowercase_sha256(metadata, "training_parent_gate_sha256")
+    resume_source_checkpoint_sha256 = _require_lowercase_sha256(
+        metadata, "training_resume_source_checkpoint_sha256"
+    )
+    resume_source_checkpoint_iteration = _canonical_nonnegative_int(
+        metadata.get("training_resume_source_checkpoint_iteration"),
+        "training_resume_source_checkpoint_iteration",
+    )
+    if not (
+        stage_start - 1
+        <= resume_source_checkpoint_iteration
+        < stage_target - 1
+    ):
+        raise PicoHybridPolicyContractError(
+            "training resume source iteration must be inside the final stage "
+            "from model_17999.pt through model_19998.pt"
+        )
 
     if metadata.get("deployment_accepted") != "true":
         raise PicoHybridPolicyContractError("deployment_accepted metadata must be true")
@@ -676,9 +704,7 @@ def _require_final_deployment_provenance(
         raise PicoHybridPolicyContractError(
             "unsupported acceptance receipt schema version"
         )
-    receipt_sha256 = _require_lowercase_sha256(
-        metadata, "acceptance_receipt_sha256"
-    )
+    receipt_sha256 = _require_lowercase_sha256(metadata, "acceptance_receipt_sha256")
     if metadata.get("acceptance_status") != "pass":
         raise PicoHybridPolicyContractError("acceptance_status metadata must be pass")
     acceptance_boundary = _canonical_nonnegative_int(
@@ -692,9 +718,7 @@ def _require_final_deployment_provenance(
         metadata.get("acceptance_evaluator_revision")
         != EXPECTED_ACCEPTANCE_EVALUATOR_REVISION
     ):
-        raise PicoHybridPolicyContractError(
-            "unsupported acceptance evaluator revision"
-        )
+        raise PicoHybridPolicyContractError("unsupported acceptance evaluator revision")
     if metadata.get("acceptance_revision") != EXPECTED_ACCEPTANCE_REVISION:
         raise PicoHybridPolicyContractError("unsupported acceptance revision")
     evaluator_source_sha256 = _require_lowercase_sha256(
@@ -732,7 +756,54 @@ def _require_final_deployment_provenance(
         source_tree_sha256,
         receipt_sha256,
         evaluator_source_sha256,
+        resume_source_checkpoint_sha256,
+        resume_source_checkpoint_iteration,
     )
+
+
+def _require_safe_velocity_bootstrap_provenance(
+    metadata: Mapping[str, str],
+) -> tuple[str, str]:
+    """Require the accepted bounded locomotion source embedded by v9 export."""
+
+    checkpoint_sha256 = _require_lowercase_sha256(
+        metadata, "safe_velocity_source_checkpoint_sha256"
+    )
+    _canonical_nonnegative_int(
+        metadata.get("safe_velocity_source_checkpoint_iteration"),
+        "safe_velocity_source_checkpoint_iteration",
+    )
+    if (
+        metadata.get("safe_velocity_source_recipe_revision")
+        != EXPECTED_SAFE_VELOCITY_RECIPE_REVISION
+    ):
+        raise PicoHybridPolicyContractError(
+            "safe-velocity source recipe does not match deployment"
+        )
+    receipt_sha256 = _require_lowercase_sha256(
+        metadata, "safe_velocity_acceptance_receipt_sha256"
+    )
+    receipt_schema = _canonical_nonnegative_int(
+        metadata.get("safe_velocity_acceptance_receipt_schema_version"),
+        "safe_velocity_acceptance_receipt_schema_version",
+    )
+    if receipt_schema != EXPECTED_SAFE_VELOCITY_RECEIPT_SCHEMA_VERSION:
+        raise PicoHybridPolicyContractError(
+            "unsupported safe-velocity acceptance receipt schema"
+        )
+    if (
+        metadata.get("safe_velocity_acceptance_gate")
+        != EXPECTED_SAFE_VELOCITY_ACCEPTANCE_GATE
+    ):
+        raise PicoHybridPolicyContractError("unsupported safe-velocity acceptance gate")
+    if (
+        metadata.get("safe_velocity_bootstrap_mapping_version")
+        != EXPECTED_SAFE_VELOCITY_BOOTSTRAP_MAPPING_VERSION
+    ):
+        raise PicoHybridPolicyContractError(
+            "unsupported safe-velocity bootstrap mapping"
+        )
+    return checkpoint_sha256, receipt_sha256
 
 
 def onnxruntime_compatibility_smoke_inputs() -> np.ndarray:
@@ -1000,8 +1071,12 @@ class _PolicyContract:
     checkpoint_sha256: str
     training_provenance_sha256: str
     training_source_tree_sha256: str
+    training_resume_source_checkpoint_sha256: str
+    training_resume_source_checkpoint_iteration: int
     acceptance_receipt_sha256: str
     acceptance_evaluator_source_sha256: str
+    safe_velocity_source_checkpoint_sha256: str
+    safe_velocity_acceptance_receipt_sha256: str
 
 
 def _parse_contract(session: Any) -> _PolicyContract:
@@ -1044,10 +1119,16 @@ def _parse_contract(session: Any) -> _PolicyContract:
             "unsupported or missing Microban teleop recipe revision"
         )
     (
+        safe_velocity_source_checkpoint_sha256,
+        safe_velocity_acceptance_receipt_sha256,
+    ) = _require_safe_velocity_bootstrap_provenance(metadata)
+    (
         training_provenance_sha256,
         training_source_tree_sha256,
         acceptance_receipt_sha256,
         acceptance_evaluator_source_sha256,
+        training_resume_source_checkpoint_sha256,
+        training_resume_source_checkpoint_iteration,
     ) = _require_final_deployment_provenance(
         metadata,
         checkpoint_iteration=checkpoint_iteration,
@@ -1184,7 +1265,7 @@ def _parse_contract(session: Any) -> _PolicyContract:
         raise PicoHybridPolicyContractError("action_scale values must be positive")
 
     expected_observation_defaults = tuple(
-        float(NEUTRAL_POSE[name]) for name in observation_joints
+        float(PICO_TELEOP_HOME_POSE[name]) for name in observation_joints
     )
     _require_fixed_metadata_vector(
         "observation_default_joint_pos",
@@ -1344,9 +1425,17 @@ def _parse_contract(session: Any) -> _PolicyContract:
         checkpoint_sha256=checkpoint_sha256,
         training_provenance_sha256=training_provenance_sha256,
         training_source_tree_sha256=training_source_tree_sha256,
+        training_resume_source_checkpoint_sha256=(
+            training_resume_source_checkpoint_sha256
+        ),
+        training_resume_source_checkpoint_iteration=(
+            training_resume_source_checkpoint_iteration
+        ),
         acceptance_receipt_sha256=acceptance_receipt_sha256,
-        acceptance_evaluator_source_sha256=(
-            acceptance_evaluator_source_sha256
+        acceptance_evaluator_source_sha256=(acceptance_evaluator_source_sha256),
+        safe_velocity_source_checkpoint_sha256=(safe_velocity_source_checkpoint_sha256),
+        safe_velocity_acceptance_receipt_sha256=(
+            safe_velocity_acceptance_receipt_sha256
         ),
     )
 
@@ -1413,7 +1502,9 @@ class PicoHybridMove(Move):
         for name in self._contract.action_joint_names:
             try:
                 value = float(
-                    obs.robot_state.motor_positions.get(name, NEUTRAL_POSE[name])
+                    obs.robot_state.motor_positions.get(
+                        name, PICO_TELEOP_HOME_POSE[name]
+                    )
                 )
             except (TypeError, ValueError, OverflowError) as exc:
                 raise PicoHybridPolicyRuntimeError(
@@ -1629,7 +1720,9 @@ class PicoHybridMove(Move):
         blend = fraction * fraction * (3.0 - 2.0 * fraction)
         for name in self._contract.action_joint_names:
             start = self._stop_start_angles[name]
-            command.target_angles[name] = start + (NEUTRAL_POSE[name] - start) * blend
+            command.target_angles[name] = (
+                start + (PICO_TELEOP_HOME_POSE[name] - start) * blend
+            )
         if fraction >= 1.0:
             if self._controller is not None:
                 ids = [MOTOR_TO_ID[name] for name in self._contract.action_joint_names]
