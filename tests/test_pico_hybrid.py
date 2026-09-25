@@ -149,9 +149,9 @@ def valid_metadata():
         "acceptance_status": "pass",
         "acceptance_boundary": "20000",
         "acceptance_evaluator_revision": (
-            "microban_teleop_deterministic_evaluator_v9_1"
+            "microban_teleop_deterministic_evaluator_v9_2"
         ),
-        "acceptance_revision": "microban_teleop_acceptance_v9_1",
+        "acceptance_revision": "microban_teleop_acceptance_v9_2",
         "acceptance_evaluator_source_sha256": "6" * 64,
         "acceptance_checkpoint_sha256": "0123456789abcdef" * 4,
         "acceptance_training_provenance_sha256": "1" * 64,
