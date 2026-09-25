@@ -68,6 +68,8 @@ def main() -> None:
             "hmd_head": HmdHeadTrackingMove(),
         },
     )
+    for move in scheduler.registered_moves.values():
+        move.preload()
     scheduler.run()
 
 
