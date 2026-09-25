@@ -25,7 +25,8 @@ The other controls are unchanged:
 | left stick | forward/backward and lateral velocity |
 | right stick X | body yaw rate |
 | left trigger (held) | enable PICO locomotion, HMD and available body/hand tracking |
-| right trigger (held) | slew camera-head yaw to trunk-forward |
+| right trigger (held) | enable absolute HMD-origin controller arm tracking |
+| right grip (held) | slew camera-head yaw to trunk-forward |
 | HMD orientation | camera-head yaw/roll/pitch |
 | left grip (held) | show calibrated robot stereo view; otherwise passthrough |
 | left X | no locomotion-policy function |

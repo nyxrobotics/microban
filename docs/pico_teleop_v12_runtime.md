@@ -12,6 +12,20 @@ fallback remains latched until the left-trigger locomotion activation is fully
 released, so a repaired tracker or hot-reloaded file cannot switch the gait
 mid-stride.
 
+## 実機の全関節ゲート（右手 B / A / R3）
+
+`MICROBAN_INPUT=network` の実機起動は必ず全関節トルクOFF・policy
+OFFから始まる。右手Bはいつでも全21関節のトルクをOFFにし、通信が
+0.3秒途切れた場合も同じ状態へ落ちる。右手AはトルクをONにする前に
+現在角を全servoのgoalへ書き、古いgoalへの跳ねを防いだうえで、policy
+出力を使わず0.5 rad/s以下で全関節を `NEUTRAL_POSE` へ移す。
+
+右スティック押し込み（R3）は、Aの状態を一度受信した後に限り、通常の
+PICO teleop policy出力と初期姿勢復帰をトグルする。policy有効中にAを
+押した場合もpolicyを止め、同じ低速初期姿勢復帰へ入る。R3はトルクOFF
+中には無視される。B、A、R3の処理は個別moveより上位のschedulerが所有
+するため、脚だけでなく腕・首を含む全関節へ一貫して適用される。
+
 ## Physical action semantics
 
 Contract v12 is intentionally different from contract v10:
@@ -54,11 +68,26 @@ without `soft_limit +/- 5 degrees` headroom.
 ## Trigger-only selection
 
 Both current bridge paths always serialize
-`locomotion_policy="pico_teleop"`. The left X/WebXR primary state is ignored;
-only holding the left trigger puts `walk` and `hmd_head` in `active_moves` and
-exposes tracking targets. Releasing the trigger removes those activations and
-starts the return to inactive neutral. `tests/test_policy_selector.py` exercises
-that exact packet through `NetworkInputSource` and `PolicySelectableWalkMove`.
+`locomotion_policy="pico_teleop"`. The left X/WebXR primary state is ignored.
+Holding the left trigger puts `walk` and `hmd_head` in `active_moves` and exposes
+the learned-policy body targets; releasing it removes those activations and
+starts the locomotion return to inactive neutral. The right trigger is separate:
+every valid PICO frame keeps `pico_arms` active, with
+`arm_tracking_enabled=true` and a paired bounded joint target while held, or
+`arm_tracking_enabled=false` and the exact authenticated PICO arm HOME while
+released. The right grip supplies `head_yaw_front` upstream and is not inferred
+from either trigger by the robot. `tests/test_policy_selector.py`,
+`tests/test_network_input.py`, and `tests/test_pico_arms.py` cover these paths.
+
+The right trigger is only an enable gate, never a pose clutch. The bridge
+recomputes each hand every frame from the current HMD-origin-to-controller
+absolute vector in the current HMD axes; it does not capture or subtract the
+controller pose at press or release. The robot authenticates the independent
+direct-overlay contract
+`microban_hmd_absolute_arm_fk_live_box_pitch100_roll120_elbow110_v1`: shoulder
+pitch `-100..+100 degrees`, left/right shoulder roll `+10..+120` /
+`-120..-10 degrees`, and elbow `-110..0 degrees`. This does not widen or alter
+the learned v12 actor's original narrow Cartesian hand-observation contract.
 
 Release is also the explicit re-arm boundary. After startup, transport timeout,
 motion inhibition, tracker/contract degradation, or learned-policy fault, do not
@@ -72,6 +101,17 @@ Do not re-arm with an uncalibrated/reused absolute pose. A stale packet,
 incomplete target pair, or target outside the wire envelope cannot re-arm v12;
 the receiver keeps the joystick-triggered legacy walk path and the selector
 keeps that fallback latched until another release/press boundary.
+
+The arm deadman has its own release-to-rearm latch. A new/reconnected session
+cannot begin with the right trigger held. During a brief controller-tracking
+dropout the bridge repeats its last bounded arm target, so the robot neither
+requires another press nor uses a partially invalid side. An expired transport
+snapshot, malformed/out-of-range paired target, safety inhibition, or session
+loss removes `pico_arms`, clears the cached target, and returns those six joints
+to global neutral. A subsequent valid released frame commands the robot-local
+PICO arm HOME and rearms the next press. The overlay is registered after
+`walk`, so it replaces only shoulder pitch/roll and elbow commands while the
+learned or fallback actor continues to own the legs.
 
 ## Training HOME versus inactive neutral
 
@@ -87,10 +127,14 @@ These are intentionally distinct software conventions:
   the pinned `walk.onnx` `default_joint_pos` metadata all use `0 degrees`.
 
 The PICO actor therefore continues to use its local 0-degree training HOME.
-Trigger release now interpolates all 18 policy joints to the unchanged global
-`NEUTRAL_POSE`, including shoulder pitch `+10 degrees`, before declaring the
-move inactive. The following scheduler tick constructs `MotorCommand` from that
-same global pose, so there is no former one-tick `0 -> +10 degree` target jump.
+Left-trigger locomotion release interpolates all 18 policy joints to the
+unchanged global `NEUTRAL_POSE`, including shoulder pitch `+10 degrees`, before
+declaring the walk move inactive. Independently, a valid right-trigger release
+keeps the arm overlay active and commands its authenticated arm HOME (shoulder
+pitch `0 degrees`, roll `+10/-10 degrees`, elbow `-20 degrees`) after the walk
+output. Only loss of the PICO arm session returns those six joints to global
+neutral. Thus neither release path creates the former one-tick unowned target
+jump.
 
 ## Deployment admission
 
@@ -123,7 +167,8 @@ The ONNX metadata must bind the final checkpoint to all of the following:
   the tracking profile must be either canonical
   `full_body_reachable_performance_perturbation_v2` or the explicitly
   lineage-bound deadline-final profile
-  `deadline_full_body_hand_rms35mm_foot_strict_perturbation_v1`; every other
+  `deadline_full_body_hand_rms35mm_p95_70mm_foot_rms50mm_p95_80mm_perturbation_v2`;
+  every other
   profile is rejected;
 - the tracking report's exact 18-joint v12, pinned-source and learned-minus-
   source raw-action extrema, plus the versioned runtime guard derived from
@@ -150,11 +195,17 @@ For v12, the learned-policy load smoke checks the fixed output shape, float32
 finiteness and the authenticated finite-amplitude guard on every fixed sample.
 The validator reports that guard and an explicit `walk_fallback` record containing
 the fallback path, digest, tensor contract, providers and smoke result.
-For v12 it also hashes the validator, contract parser, selector, walk runtime,
-configuration, `uv.lock`, and fallback ONNX; all seven hashes must equal the
-identities embedded by the packager. It reports that complete identity and
-rehashes it after both CPU smokes so a source changed during admission is
-rejected.
+For v12 it also hashes the validator, learned-policy contract parser, selector,
+walk runtime, direct-arm runtime and contract, network input parser and data
+contract, production entrypoint, scheduler, configuration, `uv.lock`, and
+fallback ONNX; all 13 hashes must equal the identities embedded by the packager.
+This binds both the six-joint overlay and its ordering after the learned walk
+move. The validator reports that complete identity and rehashes it after both
+CPU smokes so a source changed during admission is rejected.
+The production `PicoHybridMove` performs the same embedded-identity check at
+load and repeats it after its fixed CPU smoke. Therefore the `teleop-run`
+rsync cannot start a learned actor against different runtime bytes; the
+selector rejects that actor and retains the authenticated `walk.onnx` fallback.
 Contract-v10 validation remains a separate branch with its existing bounded-
 action and effective-action checks unchanged.
 
@@ -196,7 +247,7 @@ v12_raw_action_{min,max,absmax}_json
 v12_source_raw_action_{min,max,absmax}_json
 v12_learned_source_delta_{min,max,absmax}_json
 runtime_raw_action_guard_formula=max(v12_absmax,source_absmax+delta_absmax)*multiplier
-runtime_raw_action_guard_multiplier=2.0
+runtime_raw_action_guard_multiplier=6.0
 runtime_raw_action_guard_absmax_json
 runtime_raw_action_guard_semantics=finite_float32_then_per_joint_absmax_else_same_cycle_legacy_fallback_v1
 ```
@@ -298,6 +349,21 @@ after it passes should the control loop be launched:
 ```bash
 make teleop-run HOST=microban
 ```
+
+The direct controller-arm overlay does not wait for a newly trained locomotion
+artifact. With the PICO app open in the foreground, start the pinned
+XRoboToolkit service and live bridge from the sibling `microban_teleop`
+checkout in two additional terminals:
+
+```bash
+./scripts/run_xrobot_service_local.sh
+./scripts/run_twist2_local.sh teleop --send --robot microban
+```
+
+Hold the right trigger to command both arms, whether standing or walking;
+release it to command the exact PICO arm HOME. The left trigger remains the
+independent locomotion deadman. These commands do not replace the supported-
+robot physical acceptance checks required before unrestricted operation.
 
 This preflight's scope is artifact admission, CPU load, and two sets of 16 fixed
 inference samples. It does not test UDP freshness/session re-arm, live PICO

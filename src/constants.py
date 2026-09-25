@@ -108,6 +108,13 @@ BAM_MAX_CURRENT: float = 0.91 # XC330-T288-T firmware current limit [A] (Robotis
 # Goal: cut the robot before a current spike (e.g. all motors snapping during a fall) trips the BMS.
 PRESENT_CURRENT_UNIT_A: float = 0.001   # XL330 present_current register unit (1.0 mA/LSB)
 OVERCURRENT_CUTOFF_A: float = 15.0      # total pack current threshold (CALIBRATE: below BMS trip, above normal walk peak). Re-check against the actual 3S BMS in use (the BOM-listed candidate is rated 40A) now that both the battery and motors changed.
+# The get-up move drives all 21 joints at once through large, aggressive corrective
+# motions (unlike steady-state walking) and legitimately draws more current — up to
+# 21 * BAM_MAX_CURRENT =~ 19.1 A if every motor saturated simultaneously, already a
+# hard ceiling from the actuator model's own per-motor current limit. 25 A gives a
+# safety margin above that theoretical max (still well under the 40 A BMS rating)
+# instead of tripping on get-up's normal current profile.
+OVERCURRENT_CUTOFF_A_GETUP: float = 25.0
 OVERCURRENT_DEBOUNCE_TICKS: int = 2     # consecutive over-threshold ticks before cutting
 
 # Current proxy used when present_current is NOT read (Observer.observe_current = False), so the

@@ -7,6 +7,7 @@ from constants import NEUTRAL_POSE, OBSERVATION_DOF_ORDER
 from input.input_source import UserInput
 from input.network_input import NetworkInputSource
 from moves.move import MotorCommand, Move, MoveState
+from moves.pico_hybrid import PicoHybridPolicyContractError
 from moves.policy_selector import PolicySelectableWalkMove
 from moves.walk import WalkMove
 from observer import Observation, RobotState
@@ -89,6 +90,8 @@ def bridge_pico_packet(seq: int, *, trigger_held: bool) -> dict:
             else None
         ),
         "head_yaw_front": False,
+        "torque_enabled": True,
+        "policy_enabled": True,
         "body_target_contract": "microban_pico_offsets_v2_both_feet_stationary",
         "body_target_safety_margin": 0.8,
         "foot_target": (
@@ -170,6 +173,33 @@ class PolicySelectorTest(unittest.TestCase):
         selector.on_start(observation("pico_teleop"), MotorCommand())
         self.assertEqual(selector.effective_policy, "walk")
         self.assertIn("bad metadata", selector.fallback_reason)
+
+    def test_runtime_identity_rejection_uses_existing_walk_fallback(self):
+        walk = FakeMove(marker=10.0)
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "pico_teleop.onnx"
+            path.write_bytes(b"present but bound to another runtime")
+
+            def reject_identity(_controller, _path):
+                raise PicoHybridPolicyContractError(
+                    "contract-v12 runtime source identity validation failed"
+                )
+
+            selector = PolicySelectableWalkMove(
+                pico_policy_path=path,
+                legacy_move=walk,
+                learned_move_factory=reject_identity,
+            )
+            selector.preload()
+            selector.on_start(
+                observation("pico_teleop", vx=0.4),
+                MotorCommand(),
+            )
+
+        self.assertEqual(selector.effective_policy, "walk")
+        self.assertTrue(selector.fallback_latched)
+        self.assertEqual(walk.start_count, 1)
+        self.assertIn("runtime source identity", selector.fallback_reason)
 
     def test_start_failure_falls_back_without_losing_activation(self):
         walk = FakeMove(marker=10.0)

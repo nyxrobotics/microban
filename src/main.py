@@ -12,6 +12,8 @@ from scheduler import Scheduler
 from input.input_source import InputSource
 from input.keyboard_input import KeyboardInputSource
 from moves.hmd_head import HmdHeadTrackingMove
+from moves.getup import GetupMove
+from moves.pico_arms import PicoArmTrackingMove
 from moves.policy_selector import PolicySelectableWalkMove
 from moves.rotate_head import RotateHeadMove
 from moves.squat import SquatMove
@@ -32,9 +34,13 @@ def _another_session_running() -> bool:
         return False
     return True
 
-# Which moves can be toggled from the gamepad / keyboard.
-MOVE_KEYS = {"h": "head", "s": "squat", "v": "walk"}
-GAMEPAD_BUTTON_MOVES = {"A": "walk"}
+# Which moves can be toggled from the gamepad / keyboard. "getup" is also switched
+# automatically by the scheduler on a sustained fall (see Scheduler._update_getup_override,
+# currently disabled -- see Scheduler._getup_auto_trigger_enabled); the key/button here
+# is a manual override for testing. A/B/R3 are reserved for get-up policy testing
+# (see GamepadInputSource) and cannot be reassigned here.
+MOVE_KEYS = {"h": "head", "s": "squat", "v": "walk", "g": "getup"}
+GAMEPAD_BUTTON_MOVES = {"X": "walk"}
 
 
 def build_input_source() -> InputSource:
@@ -104,23 +110,62 @@ def main() -> None:
     controller: RobotController | None = None
     scheduler: Scheduler | None = None
     try:
+        input_source = build_input_source()
+        controls_motor_power = bool(
+            getattr(input_source, "controls_motor_power", False)
+        )
+        force_start_off_value = os.environ.get(
+            "MICROBAN_START_TORQUE_OFF", "0"
+        ).strip().lower()
+        if force_start_off_value not in {"0", "1", "false", "true", "no", "yes"}:
+            raise ValueError(
+                "MICROBAN_START_TORQUE_OFF must be 0/1, false/true, or no/yes"
+            )
+        force_start_off = force_start_off_value in {"1", "true", "yes"}
+        if force_start_off and not controls_motor_power:
+            raise ValueError(
+                "MICROBAN_START_TORQUE_OFF requires an input source with the "
+                "B/A/R3 hardware-power gate (use MICROBAN_INPUT=network or gamepad)"
+            )
+
         controller = RobotController()
         motor_ids = list(MOTOR_TO_ID.values())
-        controller.sync_write_torque_enable(motor_ids, [True] * len(motor_ids))
+        start_limp = controls_motor_power or force_start_off
+        if start_limp:
+            # This is deliberately the first motor-bus write after opening the
+            # controller; a prior process may have exited without clearing the
+            # servos' persistent torque-enable registers.
+            controller.sync_write_torque_enable(
+                motor_ids, [False] * len(motor_ids)
+            )
         controller.sync_write_status_return_level(motor_ids, [1] * len(motor_ids))
         controller.sync_write_kp(motor_ids, [KP_DEFAULT] * len(motor_ids))
 
-        ramp_to_neutral(controller)
+        if start_limp:
+            print(
+                "Hardware-gated startup: all-joint torque OFF; press A to enable "
+                "torque and return slowly to neutral."
+            )
+        else:
+            controller.sync_write_torque_enable(
+                motor_ids, [True] * len(motor_ids)
+            )
+            ramp_to_neutral(controller)
 
         scheduler = Scheduler(
             frequency_hz=50.0,
             controller=controller,
-            input_source=build_input_source(),
+            input_source=input_source,
+            hardware_power_control=controls_motor_power,
             moves={
                 "head": RotateHeadMove(),
                 "squat": SquatMove(),
                 "walk": PolicySelectableWalkMove(controller=controller),
+                # Ordered after walk so the right-trigger direct IK path owns
+                # only the six arm joints in both standing and walking modes.
+                "pico_arms": PicoArmTrackingMove(controller=controller),
                 "hmd_head": HmdHeadTrackingMove(),
+                "getup": GetupMove(controller=controller),
             },
         )
 

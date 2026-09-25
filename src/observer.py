@@ -22,6 +22,7 @@ class RobotState:
     quat: list[float] = field(default_factory=list) # IMU orientation as a quaternion (w, x, y, z)
     body_quat: list[float] = field(default_factory=list) # body frame orientation as a quaternion (w, x, y, z)
     projected_gravity: list[float] = field(default_factory=list) # gravity vector projected in body frame
+    foot_contact: list[float] = field(default_factory=lambda: [1.0, 1.0]) # (right, left) ground contact; sim-only, see mujoco_controller.read_foot_contact
     
     # Motor states
     motor_positions: dict[str, float] = field(default_factory=dict)
@@ -81,6 +82,10 @@ class Observer:
             # Project gravity vector into body frame
             state.body_quat = list(imu_quat_to_body(state.quat))
             state.projected_gravity = list(quat_apply_inverse(state.body_quat, [0.0, 0.0, -1.0]))
+
+            read_foot_contact = getattr(self.controller, "read_foot_contact", None)
+            if callable(read_foot_contact):
+                state.foot_contact = list(read_foot_contact())
 
         except Exception as exc:
             now = time.perf_counter()

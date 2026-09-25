@@ -1,0 +1,34 @@
+[Unit]
+Description=Microban PICO network-control runtime
+Documentation=file://@REPO_ROOT@/docs/pico_autostart.md
+Wants=network-online.target
+After=network-online.target microban-gamepad.service
+Conflicts=microban-gamepad.service
+StartLimitIntervalSec=30
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=@SERVICE_USER@
+WorkingDirectory=@REPO_ROOT@
+Environment=PYTHONPATH=@REPO_ROOT@/src
+Environment=MICROBAN_INPUT=network
+Environment=MICROBAN_START_TORQUE_OFF=1
+EnvironmentFile=/etc/default/microban-pico-runtime
+ExecStartPre=@REPO_ROOT@/.venv/bin/python @REPO_ROOT@/tools/torque_off.py
+ExecStart=@REPO_ROOT@/.venv/bin/python -u @REPO_ROOT@/src/main.py
+ExecStopPost=-@REPO_ROOT@/.venv/bin/python @REPO_ROOT@/tools/torque_off.py
+# The runtime can deliberately exit cleanly after a serial/IMU safety stop.
+# Restarting is safe because startup is physically torque-off and requires a
+# fresh A -> R3 operator sequence before policy output can resume.
+Restart=always
+RestartSec=2
+KillSignal=SIGINT
+TimeoutStopSec=6
+UMask=0077
+NoNewPrivileges=true
+ProtectSystem=full
+ProtectHome=read-only
+
+[Install]
+WantedBy=multi-user.target

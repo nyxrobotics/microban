@@ -1,8 +1,11 @@
 import json
+import math
 import socket
+import time
 import unittest
 
 from input.network_input import NetworkInputSource
+from pico_arm_contract import PICO_ARM_HOME_RAD
 
 BODY_TARGET_CONTRACT = "microban_pico_offsets_v2_both_feet_stationary"
 BODY_TARGET_SAFETY_MARGIN = 0.8
@@ -15,6 +18,11 @@ COMPLETE_HANDS = {
     "right": [-0.01, 0.02, -0.03],
 }
 _DEFAULT_TARGET = object()
+ARM_HOME = {side: list(values) for side, values in PICO_ARM_HOME_RAD.items()}
+ARM_TARGET = {
+    "left": [math.radians(12.0), math.radians(18.0), math.radians(-32.0)],
+    "right": [math.radians(-12.0), math.radians(-18.0), math.radians(-32.0)],
+}
 
 
 def packet(
@@ -27,6 +35,10 @@ def packet(
     hand_target=None,
     body_target_contract=None,
     body_target_safety_margin=None,
+    arm_tracking_enabled=False,
+    arm_joint_target=None,
+    torque_enabled=True,
+    policy_enabled=True,
 ):
     return {
         "version": 1,
@@ -41,6 +53,10 @@ def packet(
         "body_target_safety_margin": body_target_safety_margin,
         "foot_target": foot_target,
         "hand_target": hand_target,
+        "arm_tracking_enabled": arm_tracking_enabled,
+        "arm_joint_target": arm_joint_target,
+        "torque_enabled": torque_enabled,
+        "policy_enabled": policy_enabled,
     }
 
 
@@ -95,6 +111,32 @@ def arm_pico(source):
     source._apply(pico_release_packet(1))
 
 
+def pico_arm_packet(
+    seq,
+    *,
+    enabled,
+    target=_DEFAULT_TARGET,
+    session="test",
+    extra_moves=None,
+    foot_target=None,
+    hand_target=None,
+):
+    if target is _DEFAULT_TARGET:
+        target = ARM_TARGET if enabled else ARM_HOME
+    return packet(
+        seq,
+        ["pico_arms", *(extra_moves or [])],
+        session=session,
+        policy="pico_teleop",
+        foot_target=foot_target,
+        hand_target=hand_target,
+        body_target_contract=BODY_TARGET_CONTRACT,
+        body_target_safety_margin=BODY_TARGET_SAFETY_MARGIN,
+        arm_tracking_enabled=enabled,
+        arm_joint_target=target,
+    )
+
+
 class NetworkInputTest(unittest.TestCase):
     def assert_degraded_fallback(self, state, expected_velocity):
         self.assertIn("walk", state.active_moves)
@@ -113,6 +155,68 @@ class NetworkInputTest(unittest.TestCase):
         state = source.read()
         self.assertEqual(state.velocity, {"vx": 0.0, "vy": 0.0, "vtheta": 0.0})
         self.assertNotIn("walk", state.active_moves)
+
+    def test_getup_is_not_accepted_via_network_active_moves(self):
+        source = NetworkInputSource(stale_after_s=0.5)
+        with self.assertRaises(ValueError):
+            source._apply(packet(0, ["getup"]))
+
+    def test_hardware_torque_and_policy_states_round_trip(self):
+        source = NetworkInputSource(stale_after_s=0.5)
+        source._apply(
+            packet(
+                0,
+                ["walk", "hmd_head"],
+                {"vx": 1.0},
+                torque_enabled=False,
+                policy_enabled=True,
+            )
+        )
+        state = source.read()
+        self.assertFalse(state.torque_enabled)
+        self.assertFalse(state.policy_enabled)
+        self.assertEqual(state.active_moves, set())
+        self.assertEqual(state.velocity, {"vx": 0.0, "vy": 0.0, "vtheta": 0.0})
+
+        source._apply(packet(1, torque_enabled=True, policy_enabled=False))
+        state = source.read()
+        self.assertTrue(state.torque_enabled)
+        self.assertFalse(state.policy_enabled)
+
+        source._apply(packet(2, torque_enabled=True, policy_enabled=True))
+        state = source.read()
+        self.assertTrue(state.torque_enabled)
+        self.assertTrue(state.policy_enabled)
+
+    def test_non_boolean_torque_or_policy_is_rejected(self):
+        source = NetworkInputSource(stale_after_s=0.5)
+        good = packet(0, torque_enabled=True, policy_enabled=False)
+        source._apply(good)
+        bad = dict(packet(1))
+        bad["torque_enabled"] = "yes"
+        with self.assertRaises(TypeError):
+            source._apply(bad)
+        bad = dict(packet(2))
+        bad["policy_enabled"] = 1
+        with self.assertRaises(TypeError):
+            source._apply(bad)
+        # The rejected packet must not have overwritten the prior good state.
+        state = source.read()
+        self.assertTrue(state.torque_enabled)
+        self.assertFalse(state.policy_enabled)
+
+    def test_stale_timeout_fails_hardware_gate_to_limp(self):
+        # UserInput()'s bare dataclass default is torque_enabled=True
+        # (deliberately permissive for callers that never touch this
+        # feature); the stale-timeout path must override it, not return
+        # that default as-is once a get-up test was in progress.
+        source = NetworkInputSource(stale_after_s=0.05)
+        source._apply(packet(0, torque_enabled=True, policy_enabled=True))
+        self.assertTrue(source.read().torque_enabled)
+        time.sleep(0.1)
+        state = source.read()
+        self.assertFalse(state.torque_enabled)
+        self.assertFalse(state.policy_enabled)
 
     def test_new_session_cannot_start_with_trigger_held(self):
         source = NetworkInputSource(stale_after_s=0.5)
@@ -168,6 +272,130 @@ class NetworkInputTest(unittest.TestCase):
         source._apply(packet(4))
         source._apply(packet(5, ["walk"], {"vx": 1.0}))
         self.assertIn("walk", source.read().active_moves)
+
+    def test_right_trigger_arm_channel_is_independent_and_release_homes(self):
+        source = NetworkInputSource(stale_after_s=0.5)
+        source._apply(pico_arm_packet(0, enabled=False))
+        released = source.read()
+        self.assertIn("pico_arms", released.active_moves)
+        self.assertFalse(released.arm_tracking_enabled)
+        self.assertEqual(released.arm_joint_target, PICO_ARM_HOME_RAD)
+
+        source._apply(pico_arm_packet(1, enabled=True, target=ARM_TARGET))
+        held = source.read()
+        self.assertIn("pico_arms", held.active_moves)
+        self.assertTrue(held.arm_tracking_enabled)
+        self.assertEqual(held.arm_joint_target["left"], tuple(ARM_TARGET["left"]))
+        self.assertNotIn("walk", held.active_moves)
+
+        source._apply(pico_arm_packet(2, enabled=False))
+        released_again = source.read()
+        self.assertIn("pico_arms", released_again.active_moves)
+        self.assertFalse(released_again.arm_tracking_enabled)
+        self.assertEqual(released_again.arm_joint_target, PICO_ARM_HOME_RAD)
+
+    def test_release_requires_authenticated_home_target(self):
+        source = NetworkInputSource(stale_after_s=0.5)
+        source._apply(pico_arm_packet(0, enabled=False))
+        wrong_home = {side: list(values) for side, values in ARM_HOME.items()}
+        wrong_home["left"][0] = 0.01
+        source._apply(pico_arm_packet(1, enabled=False, target=wrong_home))
+
+        rejected = source.read()
+        self.assertNotIn("pico_arms", rejected.active_moves)
+        self.assertFalse(rejected.arm_tracking_enabled)
+        self.assertIsNone(rejected.arm_joint_target)
+
+    def test_new_session_cannot_start_with_right_trigger_held(self):
+        source = NetworkInputSource(stale_after_s=0.5)
+        source._apply(
+            pico_arm_packet(
+                10, enabled=True, target=ARM_TARGET, session="new-arm-session"
+            )
+        )
+        self.assertNotIn("pico_arms", source.read().active_moves)
+
+        source._apply(
+            pico_arm_packet(11, enabled=False, session="new-arm-session")
+        )
+        source._apply(
+            pico_arm_packet(
+                12, enabled=True, target=ARM_TARGET, session="new-arm-session"
+            )
+        )
+        self.assertTrue(source.read().arm_tracking_enabled)
+
+    def test_bad_arm_target_clears_and_disarms_complete_overlay(self):
+        source = NetworkInputSource(stale_after_s=0.5)
+        source._apply(pico_arm_packet(0, enabled=False))
+        source._apply(pico_arm_packet(1, enabled=True, target=ARM_TARGET))
+        self.assertTrue(source.read().arm_tracking_enabled)
+
+        malformed = {"left": list(ARM_TARGET["left"]), "right": [0.0, 0.0]}
+        source._apply(pico_arm_packet(2, enabled=True, target=malformed))
+        cleared = source.read()
+        self.assertNotIn("pico_arms", cleared.active_moves)
+        self.assertFalse(cleared.arm_tracking_enabled)
+        self.assertIsNone(cleared.arm_joint_target)
+
+        # A still-held trigger cannot reuse the old or new target until a
+        # deliberate valid release snapshot arrives.
+        source._apply(pico_arm_packet(3, enabled=True, target=ARM_TARGET))
+        self.assertNotIn("pico_arms", source.read().active_moves)
+        source._apply(pico_arm_packet(4, enabled=False))
+        source._apply(pico_arm_packet(5, enabled=True, target=ARM_TARGET))
+        self.assertTrue(source.read().arm_tracking_enabled)
+
+    def test_arm_target_bounds_are_robot_authenticated(self):
+        source = NetworkInputSource(stale_after_s=0.5)
+        source._apply(pico_arm_packet(0, enabled=False))
+        outside = {side: list(values) for side, values in ARM_TARGET.items()}
+        outside["left"][0] = math.radians(100.0) + 1.0e-9
+        source._apply(pico_arm_packet(1, enabled=True, target=outside))
+        rejected = source.read()
+        self.assertNotIn("pico_arms", rejected.active_moves)
+        self.assertFalse(rejected.arm_tracking_enabled)
+        self.assertIsNone(rejected.arm_joint_target)
+
+    def test_body_policy_degradation_does_not_drop_valid_direct_arms(self):
+        source = NetworkInputSource(stale_after_s=0.5)
+        source._apply(pico_arm_packet(0, enabled=False))
+        source._apply(
+            pico_arm_packet(
+                1,
+                enabled=True,
+                target=ARM_TARGET,
+                extra_moves=["walk"],
+                # Missing learned-policy hands/feet intentionally degrades only
+                # locomotion to the proven actor.
+            )
+        )
+        state = source.read()
+        self.assertTrue(state.learned_policy_degraded)
+        self.assertEqual(state.locomotion_policy, "walk")
+        self.assertIn("walk", state.active_moves)
+        self.assertIn("pico_arms", state.active_moves)
+        self.assertTrue(state.arm_tracking_enabled)
+        self.assertEqual(state.arm_joint_target["right"], tuple(ARM_TARGET["right"]))
+
+    def test_timeout_and_safety_inhibit_clear_direct_arm_target(self):
+        source = NetworkInputSource(stale_after_s=0.05)
+        source._apply(pico_arm_packet(0, enabled=False))
+        source._apply(pico_arm_packet(1, enabled=True, target=ARM_TARGET))
+        source.set_motion_inhibited(True)
+        inhibited = source.read()
+        self.assertNotIn("pico_arms", inhibited.active_moves)
+        self.assertFalse(inhibited.arm_tracking_enabled)
+        self.assertIsNone(inhibited.arm_joint_target)
+
+        source.set_motion_inhibited(False)
+        source._apply(pico_arm_packet(2, enabled=False))
+        source._apply(pico_arm_packet(3, enabled=True, target=ARM_TARGET))
+        source._last_recv_s -= 0.1
+        timed_out = source.read()
+        self.assertNotIn("pico_arms", timed_out.active_moves)
+        self.assertFalse(timed_out.arm_tracking_enabled)
+        self.assertIsNone(timed_out.arm_joint_target)
 
     def test_wire_policy_change_never_drops_held_deadman_or_joystick(self):
         source = NetworkInputSource(stale_after_s=0.5)

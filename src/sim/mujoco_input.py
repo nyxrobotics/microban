@@ -35,12 +35,15 @@ class MuJoCoInputSource(InputSource):
         self,
         move_keys: dict[str, str],
         stop_flag_path: str = "/tmp/microban_scheduler.stop",
+        initial_active_moves: set[str] | None = None,
     ) -> None:
         # Convert single-char keys to GLFW keycodes (letters = uppercase ASCII)
         self._keycode_to_move: dict[int, str] = {ord(k.upper()): v for k, v in move_keys.items()}
         self._move_keys_display = move_keys
         self._stop_flag_path = Path(stop_flag_path)
         self._state = UserInput()
+        if initial_active_moves:
+            self._state.active_moves |= initial_active_moves
         self._lock = threading.Lock()
         self._reset_requested = threading.Event()
         self._viewer_opt: "MjvOption | None" = None

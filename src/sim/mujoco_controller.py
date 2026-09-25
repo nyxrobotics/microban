@@ -147,6 +147,19 @@ class MuJoCoController:
         self._sensor_orientation = mujoco.mj_name2id(self._model, mujoco.mjtObj.mjOBJ_SENSOR, "orientation")
         self._sensor_gyro = mujoco.mj_name2id(self._model, mujoco.mjtObj.mjOBJ_SENSOR, "angular-velocity")
 
+        # Foot/floor contact, for the get-up policy's foot_contact observation (order
+        # matches its training-time ContactSensorCfg: right foot first, then left —
+        # "foot" body = right foot, "foot_2" body = left foot, see robot.xml).
+        self._floor_geom_id = mujoco.mj_name2id(self._model, mujoco.mjtObj.mjOBJ_GEOM, "floor")
+        self._right_foot_geom_ids = {
+            mujoco.mj_name2id(self._model, mujoco.mjtObj.mjOBJ_GEOM, f"right_foot_collision_{i}")
+            for i in range(1, 7)
+        }
+        self._left_foot_geom_ids = {
+            mujoco.mj_name2id(self._model, mujoco.mjtObj.mjOBJ_GEOM, f"left_foot_collision_{i}")
+            for i in range(1, 7)
+        }
+
     @property
     def viewer_opt(self) -> mujoco.MjvOption:
         return self._viewer.opt
@@ -266,6 +279,30 @@ class MuJoCoController:
             w, x, y, z = self._data.sensordata[adr:adr + 4]
             current = (float(w), float(x), float(y), float(z))
         return self._delay_quat.push_and_read(current)
+
+    def read_foot_contact(self) -> tuple[float, float]:
+        """Return (right_foot, left_foot) ground-contact as 1.0/0.0.
+
+        Sim-only: derived from MuJoCo's own contact list against the "floor" geom.
+        The real controller has no equivalent sensor yet (see
+        microban_teleop/docs/handling_research.md) — Observer falls back to "always
+        grounded" when this method isn't available, which is safe for the walk policy
+        (it doesn't use this observation) but means the get-up policy's airborne
+        handling is sim-only until real hardware contact sensing exists.
+        """
+        right = 0.0
+        left = 0.0
+        for i in range(self._data.ncon):
+            contact = self._data.contact[i]
+            geoms = (contact.geom1, contact.geom2)
+            if self._floor_geom_id not in geoms:
+                continue
+            other = geoms[0] if geoms[1] == self._floor_geom_id else geoms[1]
+            if other in self._right_foot_geom_ids:
+                right = 1.0
+            elif other in self._left_foot_geom_ids:
+                left = 1.0
+        return right, left
 
     def reset(self) -> None:
         """Reset the simulation to the initial neutral standing pose."""

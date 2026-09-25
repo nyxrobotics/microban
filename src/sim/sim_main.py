@@ -10,8 +10,11 @@ Usage:
 
 import argparse
 
+from input.gamepad_input import GamepadInputSource
 from input.network_input import NetworkInputSource
+from moves.getup import GetupMove
 from moves.hmd_head import HmdHeadTrackingMove
+from moves.pico_arms import PicoArmTrackingMove
 from moves.policy_selector import PolicySelectableWalkMove
 from moves.rotate_head import RotateHeadMove
 from moves.squat import SquatMove
@@ -29,17 +32,30 @@ def main() -> None:
     parser.add_argument("--delay-gyro", type=int, default=3, metavar="TICKS", help="Gyro read delay in ticks")
     parser.add_argument("--delay-quat", type=int, default=4, metavar="TICKS", help="Quaternion (projected gravity) read delay in ticks")
     parser.add_argument("--trunk-com-offset", type=float, nargs=3, default=[0.0, 0.0, 0.0], metavar=("X", "Y", "Z"), help="CoM offset on trunk body in meters (body frame)")
-    parser.add_argument("--input", choices=("keyboard", "network"), default="keyboard", help="Control input (default: keyboard)")
+    parser.add_argument("--input", choices=("keyboard", "network", "gamepad"), default="keyboard", help="Control input (default: keyboard)")
     parser.add_argument("--network-port", type=int, default=5555, help="UDP port used with --input network")
     args = parser.parse_args()
 
+    # "walk" active from launch: standing purely on the neutral-pose position hold
+    # (no active move) isn't a stable equilibrium and drifts into an overcurrent trip
+    # within a couple of seconds — pre-existing, unrelated to the moves registered
+    # here, confirmed by bisecting against this file's pre-getup-integration version.
     if args.input == "network":
         input_source = NetworkInputSource(port=args.network_port)
         key_callback = None
         reset_source = None
+    elif args.input == "gamepad":
+        # Real B/A/R3 get-up test controls (see GamepadInputSource), so that
+        # exact flow can be rehearsed here before ever touching real hardware.
+        # A raw /dev/input/js* reader, independent of the MuJoCo viewer, so
+        # (unlike keyboard) it needs no key_callback/reset_source.
+        input_source = GamepadInputSource(button_moves={"X": "walk"})
+        key_callback = None
+        reset_source = None
     else:
         input_source = MuJoCoInputSource(
-            move_keys={"h": "head", "s": "squat", "v": "walk"},
+            move_keys={"h": "head", "s": "squat", "v": "walk", "g": "getup"},
+            initial_active_moves={"walk"},
         )
         key_callback = input_source.key_callback
         reset_source = input_source
@@ -65,11 +81,21 @@ def main() -> None:
             "head": RotateHeadMove(),
             "squat": SquatMove(),
             "walk": PolicySelectableWalkMove(controller=controller),
+            # Match production ordering: direct controller arms overwrite only
+            # the six arm joints emitted by the locomotion actor.
+            "pico_arms": PicoArmTrackingMove(controller=controller),
             "hmd_head": HmdHeadTrackingMove(),
+            "getup": GetupMove(controller=controller),
         },
     )
     for move in scheduler.registered_moves.values():
         move.preload()
+    # The overcurrent safety's cheap proxy estimate (position-error based) exists to
+    # avoid an extra bus read on real hardware; in sim that cost doesn't apply, and the
+    # proxy overestimates enough during a fall/recovery's large corrective motions to
+    # trip the safety before GetupMove gets a chance to run. Use the real (already
+    # current-limited by the BAM actuator model) simulated current instead.
+    scheduler.observer.observe_current = True
     scheduler.run()
 
 

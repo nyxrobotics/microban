@@ -97,6 +97,7 @@ from moves.pico_hybrid import (
     PicoHybridPolicyContractError,
     PicoHybridPolicyRuntimeError,
     onnxruntime_compatibility_smoke_inputs,
+    runtime_source_identity,
     sensor_gyro_to_body,
     validate_onnxruntime_compatibility,
     validate_v12_onnxruntime_compatibility,
@@ -126,6 +127,7 @@ OBSERVATION_JOINTS = (
     "left_ankle_pitch",
     "left_ankle_roll",
 )
+CURRENT_RUNTIME_SOURCE_IDENTITY = runtime_source_identity()
 
 
 class _Io:
@@ -331,14 +333,14 @@ def valid_v12_metadata():
     delta_minimum = [-1.0] * 18
     delta_maximum = [1.0] * 18
     delta_absolute_maximum = [1.0] * 18
-    guard_absolute_maximum = [8.0] * 18
+    guard_absolute_maximum = [24.0] * 18
     source_minimum[0] = -3.0
     source_maximum[0] = 3.0
     source_absolute_maximum[0] = 3.0
     delta_minimum[0] = -2.0
     delta_maximum[0] = 2.0
     delta_absolute_maximum[0] = 2.0
-    guard_absolute_maximum[0] = 10.0
+    guard_absolute_maximum[0] = 30.0
     metadata.update(
         {
             "microban_teleop_training_contract_version": (
@@ -469,6 +471,7 @@ def valid_v12_metadata():
             ),
         }
     )
+    metadata.update(CURRENT_RUNTIME_SOURCE_IDENTITY)
     return metadata
 
 
@@ -539,6 +542,36 @@ def observation(time_s=0.0):
 
 
 class PicoHybridMoveTest(unittest.TestCase):
+    def test_v12_contract_rejects_runtime_source_identity_mismatch_before_inference(self):
+        metadata = valid_v12_metadata()
+        metadata["microban_scheduler_source_sha256"] = "0" * 64
+        session = FakeSession(metadata=metadata)
+
+        with self.assertRaisesRegex(
+            PicoHybridPolicyContractError, "runtime source identity"
+        ):
+            PicoHybridMove(session=session)
+
+        self.assertEqual(session.run_count, 0)
+
+    def test_v12_contract_rechecks_runtime_source_identity_after_smoke(self):
+        changed = dict(CURRENT_RUNTIME_SOURCE_IDENTITY)
+        changed["microban_scheduler_source_sha256"] = "0" * 64
+        session = FakeSession(metadata=valid_v12_metadata())
+
+        with (
+            patch(
+                "moves.pico_hybrid.runtime_source_identity",
+                side_effect=[CURRENT_RUNTIME_SOURCE_IDENTITY, changed],
+            ),
+            self.assertRaisesRegex(
+                PicoHybridPolicyContractError, "runtime source identity"
+            ),
+        ):
+            PicoHybridMove(session=session)
+
+        self.assertEqual(session.run_count, 16)
+
     def test_v12_contract_accepts_only_final_hash_bound_raw_policy(self):
         session = FakeSession(metadata=valid_v12_metadata())
         move = PicoHybridMove(session=session)
@@ -560,7 +593,7 @@ class PicoHybridMoveTest(unittest.TestCase):
         )
         self.assertEqual(
             move._contract.v12_runtime_raw_action_guard_absolute_maximum,
-            (10.0, *((8.0,) * 17)),
+            (30.0, *((24.0,) * 17)),
         )
         self.assertEqual(move._compatibility_smoke_sample_count, 16)
         self.assertEqual(session.run_count, 16)
@@ -574,6 +607,7 @@ class PicoHybridMoveTest(unittest.TestCase):
         metadata["v12_tracking_profile"] = (
             EXPECTED_V12_DEADLINE_FINAL_TRACKING_PROFILE
         )
+        metadata["v12_onnx_parity_atol"] = "2.5e-05"
         session = FakeSession(metadata=metadata)
 
         move = PicoHybridMove(session=session)
@@ -835,7 +869,7 @@ class PicoHybridMoveTest(unittest.TestCase):
         )
 
     def test_v12_step_accepts_guard_boundary_and_clamps_without_exception(self):
-        raw = np.full((1, 18), 8.0, dtype=np.float32)
+        raw = np.full((1, 18), 24.0, dtype=np.float32)
         move = PicoHybridMove(
             session=FakeSession(metadata=valid_v12_metadata(), output=raw)
         )
@@ -854,7 +888,7 @@ class PicoHybridMoveTest(unittest.TestCase):
         # Five degrees is reserved for measured-angle acceptance adjudication.
         # It must never widen an actuator command beyond the compiled soft limit.
         raw = np.asarray(
-            [[10.0, *(-8.0 if index % 2 else 8.0 for index in range(1, 18))]],
+            [[30.0, *(-24.0 if index % 2 else 24.0 for index in range(1, 18))]],
             dtype=np.float32,
         )
         move = PicoHybridMove(
@@ -882,7 +916,7 @@ class PicoHybridMoveTest(unittest.TestCase):
         np.testing.assert_array_equal(move._last_action, raw[0])
 
     def test_v12_step_rejects_guard_escape_before_any_target_write(self):
-        outside = np.nextafter(np.float32(8.0), np.float32(math.inf))
+        outside = np.nextafter(np.float32(24.0), np.float32(math.inf))
         for sign in (-1.0, 1.0):
             raw = np.zeros((1, 18), dtype=np.float32)
             raw[0, 7] = sign * outside

@@ -1,0 +1,26 @@
+[Unit]
+Description=Microban mutually authenticated latest-camera-snapshot proxy
+Documentation=file://@REPO_ROOT@/docs/pico_autostart.md
+Wants=network-online.target
+After=network-online.target microban-camera.service
+Requires=microban-camera.service
+StartLimitIntervalSec=30
+StartLimitBurst=10
+
+[Service]
+Type=simple
+User=@SERVICE_USER@
+WorkingDirectory=@REPO_ROOT@
+EnvironmentFile=/etc/default/microban-camera-tls
+ExecStart=/usr/bin/python3 @REPO_ROOT@/tools/camera_snapshot_tls_proxy.py --cert @SERVICE_HOME@/.config/microban-camera-tls/server.crt --key @SERVICE_HOME@/.config/microban-camera-tls/server.key --client-cert @SERVICE_HOME@/.config/microban-camera-tls/client.crt --bind 0.0.0.0 --port ${MICROBAN_CAMERA_TLS_PORT} --upstream-host 127.0.0.1 --upstream-port ${MICROBAN_CAMERA_HTTP_PORT}
+Restart=on-failure
+RestartSec=2
+TimeoutStopSec=5
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=read-only
+
+[Install]
+WantedBy=multi-user.target

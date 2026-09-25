@@ -2,9 +2,9 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from moves.pico_hybrid import RUNTIME_SOURCE_IDENTITY_KEYS
 from tools.validate_pico_policy import (
     EXPECTED_WALK_FALLBACK_SHA256,
-    RUNTIME_SOURCE_IDENTITY_KEYS,
     WALK_FALLBACK_POLICY,
     WALK_FALLBACK_SMOKE_SAMPLE_COUNT,
     require_embedded_runtime_source_identity,
@@ -15,6 +15,18 @@ from tools.validate_pico_policy import (
 
 
 class WalkFallbackValidatorTest(unittest.TestCase):
+    def test_runtime_source_identity_authenticates_arm_overlay_pipeline(self):
+        self.assertTrue(
+            {
+                "microban_arm_runtime_source_sha256",
+                "microban_arm_contract_source_sha256",
+                "microban_network_input_source_sha256",
+                "microban_input_contract_source_sha256",
+                "microban_runtime_entrypoint_source_sha256",
+                "microban_scheduler_source_sha256",
+            }.issubset(RUNTIME_SOURCE_IDENTITY_KEYS)
+        )
+
     def test_runtime_source_identity_is_complete_bound_and_toctou_safe(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)

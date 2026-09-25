@@ -6,7 +6,6 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
-from collections.abc import Mapping
 from pathlib import Path
 
 import numpy as np
@@ -19,8 +18,21 @@ from moves.pico_hybrid import (
     EXPECTED_V12_RAW_ACTION_GUARD_SEMANTICS,
     EXPECTED_V12_TRAINING_CONTRACT_VERSION,
     PHYSICAL_MOTOR_TARGET_GUARD_SEMANTICS,
+    RUNTIME_SOURCE_IDENTITY_KEYS,
+    RUNTIME_SOURCE_PATHS,
     PicoHybridMove,
+    require_embedded_runtime_source_identity,
+    require_unchanged_runtime_source_identity,
+    runtime_source_identity,
 )
+
+__all__ = [
+    "RUNTIME_SOURCE_IDENTITY_KEYS",
+    "RUNTIME_SOURCE_PATHS",
+    "require_embedded_runtime_source_identity",
+    "require_unchanged_runtime_source_identity",
+    "runtime_source_identity",
+]
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 WALK_FALLBACK_POLICY = REPOSITORY_ROOT / "src" / "agents" / "walk.onnx"
@@ -28,22 +40,6 @@ EXPECTED_WALK_FALLBACK_SHA256 = (
     "10c58a63c66337669c3d4c588732d541a6a07eea3291c0401f79893c7f60f15d"
 )
 WALK_FALLBACK_SMOKE_SAMPLE_COUNT = 16
-RUNTIME_SOURCE_PATHS = {
-    "microban_runtime_validator_source_sha256": Path(__file__).resolve(),
-    "microban_runtime_contract_source_sha256": (
-        REPOSITORY_ROOT / "src" / "moves" / "pico_hybrid.py"
-    ),
-    "microban_runtime_selector_source_sha256": (
-        REPOSITORY_ROOT / "src" / "moves" / "policy_selector.py"
-    ),
-    "microban_walk_runtime_source_sha256": (
-        REPOSITORY_ROOT / "src" / "moves" / "walk.py"
-    ),
-    "microban_walk_config_source_sha256": REPOSITORY_ROOT / "src" / "constants.py",
-    "microban_runtime_lock_sha256": REPOSITORY_ROOT / "uv.lock",
-    "microban_walk_fallback_onnx_sha256": WALK_FALLBACK_POLICY,
-}
-RUNTIME_SOURCE_IDENTITY_KEYS = frozenset(RUNTIME_SOURCE_PATHS)
 
 
 def _sha256(path: Path) -> str:
@@ -52,48 +48,6 @@ def _sha256(path: Path) -> str:
         for chunk in iter(lambda: stream.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
-
-
-def runtime_source_identity(
-    source_paths: Mapping[str, Path] | None = None,
-) -> dict[str, str]:
-    """Hash the exact validator/runtime/fallback files used for admission."""
-
-    paths = RUNTIME_SOURCE_PATHS if source_paths is None else source_paths
-    if set(paths) != RUNTIME_SOURCE_IDENTITY_KEYS:
-        raise RuntimeError("runtime source identity path set is incomplete")
-    missing = [name for name, path in paths.items() if not path.is_file()]
-    if missing:
-        raise FileNotFoundError(
-            "runtime source identity files are missing: " + ", ".join(sorted(missing))
-        )
-    return {name: _sha256(path) for name, path in paths.items()}
-
-
-def require_embedded_runtime_source_identity(
-    metadata: Mapping[str, str], expected: Mapping[str, str]
-) -> None:
-    """Require the policy to bind every source that performs its admission."""
-
-    if set(expected) != RUNTIME_SOURCE_IDENTITY_KEYS:
-        raise RuntimeError("computed runtime source identity is incomplete")
-    mismatches = [
-        name for name, digest in expected.items() if metadata.get(name) != digest
-    ]
-    if mismatches:
-        raise RuntimeError(
-            "policy runtime source identity is missing or changed: "
-            + ", ".join(sorted(mismatches))
-        )
-
-
-def require_unchanged_runtime_source_identity(
-    expected: Mapping[str, str], source_paths: Mapping[str, Path] | None = None
-) -> None:
-    """Fail if an admission source changes while validation is in progress."""
-
-    if runtime_source_identity(source_paths) != dict(expected):
-        raise RuntimeError("runtime source identity changed during validation")
 
 
 def _walk_fallback_smoke_inputs() -> np.ndarray:

@@ -22,6 +22,23 @@ class UserInput:
     velocity: dict[str, float] = field(default_factory=lambda: {"vx": 0.0, "vy": 0.0, "vtheta": 0.0})
     show_imu: bool = False
 
+    # Real-hardware master gate.  For a power-controlling input source (the
+    # PICO/network bridge, or the local gamepad), B makes torque_enabled false;
+    # A makes torque_enabled true while leaving policy_enabled false so the
+    # scheduler slowly returns every joint to NEUTRAL_POSE; R3 toggles
+    # policy_enabled.  The scheduler, not an individual learned move, owns this
+    # gate so head, arms and legs cannot fight the neutral/limp state.
+    #
+    # Defaults preserve keyboard/simulator behaviour.  NetworkInputSource is
+    # fail-closed and explicitly emits false/false until a live controller asks
+    # otherwise.
+    torque_enabled: bool = True
+    policy_enabled: bool = True
+
+    # Manual get-up-policy testing remains separate from the PICO hardware
+    # gate.  It is intentionally not accepted over the PICO/network protocol.
+    getup_armed: bool = False
+
     # Low-level locomotion policy selected by the PICO controller.  The network
     # receiver accepts only these named modes. Invalid optional body tracking is
     # downgraded to the established walk policy without dropping joystick input.
@@ -59,6 +76,15 @@ class UserInput:
     # the policy is free to move that arm naturally (see HandTargetCommand.is_active).
     hand_target: dict[str, tuple[float, float, float] | None] | None = None
 
+    # Independent direct-arm overlay driven by the right controller trigger.
+    # ``pico_arms`` in active_moves means a live, validated PICO session owns
+    # the six arm joints.  While enabled, this is a paired bounded IK joint
+    # target in (shoulder_pitch, shoulder_roll, elbow) order.  While released,
+    # the wire target must be the exact robot-local PICO home; the overlay also
+    # derives that home locally instead of trusting the sender to define it.
+    arm_tracking_enabled: bool = False
+    arm_joint_target: dict[str, tuple[float, float, float]] | None = None
+
 
 def scale_velocity(velocity: dict[str, float]) -> dict[str, float]:
     """Map a normalized velocity command in [-1, 1] per axis to physical limits.
@@ -84,6 +110,11 @@ def scale_velocity(velocity: dict[str, float]) -> dict[str, float]:
 
 class InputSource(ABC):
     """Abstract interface for human or agent input. Swap keyboard for gamepad without touching the rest."""
+
+    # Sources which expose an explicit B/A/R3 motor-power state set this true.
+    # main.py then starts the real robot limp and enables Scheduler's global
+    # hardware gate.  Other sources retain the established startup behaviour.
+    controls_motor_power: bool = False
 
     def start(self) -> None:
         """Start the input source (e.g., launch a background thread)."""

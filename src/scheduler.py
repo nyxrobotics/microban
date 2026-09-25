@@ -10,8 +10,11 @@ from typing import Optional
 
 from constants import (
     MOTOR_TO_ID,
+    KP_DEFAULT,
+    NEUTRAL_POSE,
     BAM_MAX_CURRENT,
     OVERCURRENT_CUTOFF_A,
+    OVERCURRENT_CUTOFF_A_GETUP,
     OVERCURRENT_DEBOUNCE_TICKS,
     OVERCURRENT_PROXY_DELAY_TICKS,
     PROXY_KT,
@@ -31,6 +34,22 @@ from moves.squat import SquatMove
 from moves.walk import WalkMove
 
 
+def _trunk_roll_pitch(body_quat: list[float]) -> tuple[float, float] | None:
+    """Same formula as walk.py/hmd_head.py's own private helpers (kept as a
+    third small copy rather than a shared import, matching that existing
+    duplication), used here only to report trunk tilt alongside head/neck
+    telemetry (see NetworkInputSource.set_head_telemetry)."""
+    if len(body_quat) != 4 or not all(math.isfinite(value) for value in body_quat):
+        return None
+    norm = math.sqrt(sum(value * value for value in body_quat))
+    if norm < 1e-6:
+        return None
+    w, x, y, z = (value / norm for value in body_quat)
+    roll = math.atan2(2 * (w * x + y * z), 1 - 2 * (x * x + y * y))
+    pitch = math.asin(max(-1.0, min(1.0, 2 * (w * y - z * x))))
+    return roll, pitch
+
+
 class Scheduler:
     def __init__(
         self,
@@ -41,6 +60,7 @@ class Scheduler:
         moves: Optional[dict[str, Move]] = None,
         imu_max_age_s: float = 0.1,
         imu_shutdown_after_s: float = 0.75,
+        hardware_power_control: bool | None = None,
     ):
         if not math.isfinite(imu_max_age_s) or imu_max_age_s <= 0.0:
             raise ValueError("imu_max_age_s must be finite and positive")
@@ -51,6 +71,11 @@ class Scheduler:
         self.stop_flag_path = Path(stop_flag_path)
         self._cleanup_done = False
         self.input_source = input_source
+        self._hardware_power_control = (
+            bool(getattr(input_source, "controls_motor_power", False))
+            if hardware_power_control is None
+            else bool(hardware_power_control)
+        )
 
         self.observer = Observer(self.controller)
 
@@ -70,6 +95,43 @@ class Scheduler:
         self._imu_unsafe_since_s: float | None = None
         self._safety_hold_active = False
         self._overcurrent_ticks = 0
+
+        # Global real-hardware B/A/R3 state.  This lives above individual
+        # moves because limp/neutral must own all 21 joints, including the
+        # neck and direct-arm overlay. None forces a physical torque write on
+        # the first scheduler tick instead of assuming startup state.
+        self._hardware_torque_enabled: bool | None = None
+        self._hardware_policy_enabled = False
+        self._hardware_policy_eligible = False
+        self._hardware_neutral_targets: dict[str, float] | None = None
+        self._hardware_neutral_last_time_s: float | None = None
+
+        # Fall / getup auto-switch (only relevant when a "getup" move is registered).
+        # Thresholds on projected_gravity[2]: -1 is perfectly upright, 0 is on its side.
+        # Fall threshold matches WalkMove's own safety-stop criterion, for consistency.
+        self._fall_threshold = -0.5
+        self._stand_threshold = -0.9
+        self._fall_debounce_ticks = 15  # ~0.3 s at 50 Hz
+        self._stand_debounce_ticks = 20  # ~0.4 s at 50 Hz
+        self._fallen_tick_count = 0
+        self._standing_tick_count = 0
+        self._getup_active_override = False
+        # getup.onnx (as of 2026-09-26) trains a stable-but-garbage attractor:
+        # its "last action" observation term recorded the un-clipped raw
+        # network output during training instead of the +-1.57rad value
+        # actually applied, corrupting that term's running normalizer.
+        # Confirmed independently by two separate replays (open-loop numpy
+        # and this deploy code): saturated ~20-90rad/s raw output across
+        # standing, fallen, and randomized poses alike, not just an
+        # out-of-distribution edge case. Auto-triggering this on a real fall
+        # would drive the robot's own motors at that same policy's command,
+        # which is not "recovers awkwardly" but "thrashes" -- worse than not
+        # getting up at all. Leave the manual "g" toggle available (a human
+        # choosing to test it, presumably spotting the robot), but do not
+        # let a real fall autonomously invoke a policy validated to be this
+        # broken. Flip back to True once getup.onnx is retrained with the
+        # fixed observation term and re-validated.
+        self._getup_auto_trigger_enabled = False
         # History of sent target_angles, to align the current proxy with the delayed feedback:
         # the oldest entry is the command issued OVERCURRENT_PROXY_DELAY_TICKS ticks ago.
         self._cmd_history: deque[dict[str, float]] = deque(maxlen=OVERCURRENT_PROXY_DELAY_TICKS + 1)
@@ -124,13 +186,57 @@ class Scheduler:
                 else:
                     self._imu_unsafe_since_s = None
 
-                motion_inhibited = not imu_safe
+                hardware_mode, hardware_command = self._apply_hardware_gate(
+                    obs,
+                    allow_initial_enable=imu_safe,
+                )
+
+                # Fall / getup auto-switch: forces "getup" on (and "walk" off) after a
+                # sustained fall, and hands back to the user's own "walk" toggle once
+                # stood up (and stable) again. No-op if "getup" isn't registered.
+                fall_pending = False
+                if "getup" in self.registered_moves and self._getup_auto_trigger_enabled:
+                    if imu_safe:
+                        fall_pending = self._update_getup_override(
+                            obs.robot_state.projected_gravity
+                        )
+                    if self._getup_active_override:
+                        obs.user_input.active_moves = (obs.user_input.active_moves | {"getup"}) - {"walk"}
+                    else:
+                        obs.user_input.active_moves = obs.user_input.active_moves - {"getup"}
+
+                # Keep the network deadman disarmed for the complete fault/fall/get-up
+                # interval. Removing the inhibit does not arm it: a later released
+                # trigger snapshot is required before walking can resume.
+                motion_inhibited = (
+                    not imu_safe
+                    or fall_pending
+                    or self._getup_active_override
+                    or hardware_mode != "policy"
+                )
                 if self.input_source:
                     self.input_source.set_motion_inhibited(motion_inhibited)
+                    set_head_telemetry = getattr(
+                        self.input_source, "set_head_telemetry", None
+                    )
+                    if callable(set_head_telemetry):
+                        trunk_angles = _trunk_roll_pitch(obs.robot_state.body_quat)
+                        if trunk_angles is not None:
+                            positions = obs.robot_state.motor_positions
+                            set_head_telemetry(
+                                head=float(positions.get("head", 0.0)),
+                                neck_roll=float(positions.get("neck_roll", 0.0)),
+                                neck_pitch=float(positions.get("neck_pitch", 0.0)),
+                                trunk_roll=trunk_angles[0],
+                                trunk_pitch=trunk_angles[1],
+                            )
 
-                hold_for_safety = not imu_safe
+                hold_for_safety = (
+                    hardware_mode != "limp" and (not imu_safe or fall_pending)
+                )
                 if (
                     not imu_safe
+                    and hardware_mode != "limp"
                     and self._imu_unsafe_since_s is not None
                     and start_time - self._imu_unsafe_since_s >= self._imu_shutdown_after_s
                 ):
@@ -143,7 +249,12 @@ class Scheduler:
                     break
 
                 # Update move states and dispatch one call per move per tick
-                if hold_for_safety:
+                if hardware_mode == "limp":
+                    # B, link loss, or process startup: torque is physically
+                    # off and no goal position is written.
+                    command = MotorCommand(target_angles={})
+                    self._safety_hold_active = False
+                elif hold_for_safety:
                     command = self._measured_hold_command(robot_state)
                     if command is None:
                         print(
@@ -154,6 +265,20 @@ class Scheduler:
                         )
                         break
                     self._safety_hold_active = True
+                elif hardware_mode == "neutral":
+                    # A, or R3 toggled back off: the global gate already built
+                    # a bounded all-joint neutral-return command.
+                    if hardware_command is None:
+                        print(
+                            "Invalid motor feedback during neutral return — "
+                            "disabling torque",
+                            end="\r\n",
+                            flush=True,
+                        )
+                        self._disable_hardware_torque()
+                        continue
+                    command = hardware_command
+                    self._safety_hold_active = False
                 else:
                     if self._safety_hold_active:
                         for move in self.registered_moves.values():
@@ -180,13 +305,26 @@ class Scheduler:
                 # buffered command (== DELAY_TICKS old once full). This reconstructs the real
                 # (delayed) current instead of pairing a fresh target with stale feedback, which
                 # would inflate the error term and false-trigger at gait start.
-                aligned_targets = self._cmd_history[0] if self._cmd_history else command.target_angles
-                if self._check_overcurrent(robot_state, aligned_targets):
-                    break
+                if hardware_mode == "limp":
+                    self._cmd_history.clear()
+                    self._overcurrent_ticks = 0
+                else:
+                    aligned_targets = (
+                        self._cmd_history[0]
+                        if self._cmd_history
+                        else command.target_angles
+                    )
+                    cutoff = (
+                        OVERCURRENT_CUTOFF_A_GETUP
+                        if "getup" in obs.user_input.active_moves
+                        else OVERCURRENT_CUTOFF_A
+                    )
+                    if self._check_overcurrent(robot_state, aligned_targets, cutoff):
+                        break
 
-                # Send command to motors
-                self._cmd_history.append(dict(command.target_angles))
-                self._send_to_motors(command)
+                    # Send command to motors
+                    self._cmd_history.append(dict(command.target_angles))
+                    self._send_to_motors(command)
 
                 # IMU / gyro terminal display
                 if obs.user_input.show_imu and (start_time - self._last_imu_print_s) >= 0.5:
@@ -227,6 +365,200 @@ class Scheduler:
             print("Control loop interrupted by user", end="\r\n", flush=True)
         finally:
             self._cleanup()
+
+    def _apply_hardware_gate(
+        self,
+        obs: Observation,
+        *,
+        allow_initial_enable: bool,
+    ) -> tuple[str, MotorCommand | None]:
+        """Apply the real-hardware B/A/R3 state above every move.
+
+        Returns ``("limp", empty-command)``, ``("neutral", all-joint-command)``
+        or ``("policy", None)``.  Enabling policy is deliberately a two-step
+        operation: at least one torque-on/policy-off (A) snapshot must be seen
+        before a policy-on (R3) snapshot is honored.  This prevents a bridge
+        restart or a stale held button from energizing and driving in one tick.
+        """
+        if not self._hardware_power_control:
+            return "policy", None
+
+        requested_torque = obs.user_input.torque_enabled is True
+        requested_policy = (
+            requested_torque and obs.user_input.policy_enabled is True
+        )
+
+        if not requested_torque:
+            self._disable_hardware_torque()
+            self._reset_moves_for_hardware_gate()
+            return "limp", MotorCommand(target_angles={})
+
+        just_enabled = False
+        if self._hardware_torque_enabled is not True:
+            # Never turn torque on while the IMU/feedback safety precondition is
+            # unknown.  Keep observing packets and retry when it becomes valid.
+            if not allow_initial_enable:
+                self._disable_hardware_torque()
+                self._reset_moves_for_hardware_gate()
+                return "limp", MotorCommand(target_angles={})
+
+            measured = self._finite_joint_positions(obs.robot_state)
+            if measured is None:
+                self._disable_hardware_torque()
+                self._reset_moves_for_hardware_gate()
+                return "limp", MotorCommand(target_angles={})
+
+            motor_ids = list(MOTOR_TO_ID.values())
+            self.controller.sync_write_kp(
+                motor_ids, [KP_DEFAULT] * len(motor_ids)
+            )
+            # A servo can retain an old goal register while torque is off.
+            # Seed every goal with the freshly measured pose *before* enabling
+            # torque, otherwise A could cause a short jump toward that stale
+            # goal before the first neutral-slew tick is written.
+            self.controller.sync_write_goal_position(
+                motor_ids, [measured[name] for name in MOTOR_TO_ID]
+            )
+            self.controller.sync_write_torque_enable(
+                motor_ids, [True] * len(motor_ids)
+            )
+            self._hardware_torque_enabled = True
+            self._hardware_policy_enabled = False
+            self._hardware_neutral_targets = measured
+            self._hardware_neutral_last_time_s = obs.robot_state.time_s
+            self._cmd_history.clear()
+            self._overcurrent_ticks = 0
+            just_enabled = True
+            print(
+                "Hardware gate: torque enabled; policy withheld, returning to neutral",
+                end="\r\n",
+                flush=True,
+            )
+
+        # A's false-policy snapshot is the explicit authorization which makes
+        # a later R3 true-policy snapshot eligible.  A true-policy packet seen
+        # directly from limp is ignored until that intermediate state arrives.
+        if not requested_policy:
+            self._hardware_policy_eligible = True
+        effective_policy = requested_policy and self._hardware_policy_eligible
+
+        if effective_policy:
+            if not self._hardware_policy_enabled:
+                print(
+                    "Hardware gate: normal policy output enabled",
+                    end="\r\n",
+                    flush=True,
+                )
+            self._hardware_policy_enabled = True
+            self._hardware_neutral_targets = None
+            self._hardware_neutral_last_time_s = None
+            return "policy", None
+
+        if self._hardware_policy_enabled:
+            measured = self._finite_joint_positions(obs.robot_state)
+            if measured is None:
+                self._disable_hardware_torque()
+                self._reset_moves_for_hardware_gate()
+                return "limp", MotorCommand(target_angles={})
+            self._hardware_neutral_targets = measured
+            self._hardware_neutral_last_time_s = obs.robot_state.time_s
+            motor_ids = list(MOTOR_TO_ID.values())
+            # Remove the last learned target before changing gains.  Without
+            # this ordering, raising an RL joint from KP_RL to KP_DEFAULT could
+            # briefly amplify its error against a stale policy goal.
+            self.controller.sync_write_goal_position(
+                motor_ids, [measured[name] for name in MOTOR_TO_ID]
+            )
+            self.controller.sync_write_kp(
+                motor_ids, [KP_DEFAULT] * len(motor_ids)
+            )
+            print(
+                "Hardware gate: policy withheld; returning to neutral",
+                end="\r\n",
+                flush=True,
+            )
+        elif not just_enabled and self._hardware_neutral_targets is None:
+            measured = self._finite_joint_positions(obs.robot_state)
+            if measured is None:
+                self._disable_hardware_torque()
+                self._reset_moves_for_hardware_gate()
+                return "limp", MotorCommand(target_angles={})
+            self._hardware_neutral_targets = measured
+            self._hardware_neutral_last_time_s = obs.robot_state.time_s
+
+        self._hardware_policy_enabled = False
+        self._reset_moves_for_hardware_gate()
+        command = self._step_hardware_neutral(obs.robot_state)
+        if command is None:
+            self._disable_hardware_torque()
+            return "limp", MotorCommand(target_angles={})
+        return "neutral", command
+
+    @staticmethod
+    def _finite_joint_positions(robot_state) -> dict[str, float] | None:
+        measured: dict[str, float] = {}
+        for name in MOTOR_TO_ID:
+            try:
+                value = float(robot_state.motor_positions[name])
+            except (KeyError, TypeError, ValueError, OverflowError):
+                return None
+            if not math.isfinite(value):
+                return None
+            measured[name] = value
+        return measured
+
+    def _step_hardware_neutral(self, robot_state) -> MotorCommand | None:
+        targets = self._hardware_neutral_targets
+        if targets is None or set(targets) != set(MOTOR_TO_ID):
+            return None
+
+        try:
+            now = float(robot_state.time_s)
+        except (TypeError, ValueError, OverflowError):
+            return None
+        if not math.isfinite(now):
+            return None
+        previous = self._hardware_neutral_last_time_s
+        raw_dt = self.dt if previous is None else now - previous
+        dt = max(0.001, min(0.1, raw_dt if math.isfinite(raw_dt) else self.dt))
+        self._hardware_neutral_last_time_s = now
+        max_step = 0.5 * dt
+
+        updated: dict[str, float] = {}
+        for name in MOTOR_TO_ID:
+            current = targets[name]
+            neutral = NEUTRAL_POSE[name]
+            delta = max(-max_step, min(max_step, neutral - current))
+            value = current + delta
+            if not math.isfinite(value):
+                return None
+            targets[name] = value
+            updated[name] = value
+        return MotorCommand(target_angles=updated)
+
+    def _reset_moves_for_hardware_gate(self) -> None:
+        """Discard every learned/interpolated state while policy is withheld."""
+        for move in self.registered_moves.values():
+            move.state = MoveState.INACTIVE
+
+    def _disable_hardware_torque(self) -> None:
+        if self._hardware_torque_enabled is not False:
+            motor_ids = list(MOTOR_TO_ID.values())
+            self.controller.sync_write_torque_enable(
+                motor_ids, [False] * len(motor_ids)
+            )
+            print(
+                "Hardware gate: all-joint torque disabled",
+                end="\r\n",
+                flush=True,
+            )
+        self._hardware_torque_enabled = False
+        self._hardware_policy_enabled = False
+        self._hardware_policy_eligible = False
+        self._hardware_neutral_targets = None
+        self._hardware_neutral_last_time_s = None
+        self._cmd_history.clear()
+        self._overcurrent_ticks = 0
 
     @staticmethod
     def _finite_vector(value, length: int) -> bool:
@@ -284,6 +616,28 @@ class Scheduler:
             targets[name] = numeric
         return MotorCommand(target_angles=targets)
 
+    def _update_getup_override(self, projected_gravity: list[float]) -> bool:
+        """Update fall/stand debounce; return True during the pre-get-up hold."""
+        if not self._finite_vector(projected_gravity, 3):
+            return False
+
+        gz = float(projected_gravity[2])
+        if gz > self._fall_threshold:
+            self._fallen_tick_count += 1
+            self._standing_tick_count = 0
+        elif gz < self._stand_threshold:
+            self._standing_tick_count += 1
+            self._fallen_tick_count = 0
+        else:
+            self._fallen_tick_count = 0
+            self._standing_tick_count = 0
+
+        if not self._getup_active_override and self._fallen_tick_count >= self._fall_debounce_ticks:
+            self._getup_active_override = True
+        elif self._getup_active_override and self._standing_tick_count >= self._stand_debounce_ticks:
+            self._getup_active_override = False
+        return not self._getup_active_override and self._fallen_tick_count > 0
+
     def _cleanup(self) -> None:
         """Disable torque, stop input source, and clear stop artifacts."""
         if self._cleanup_done:
@@ -335,15 +689,15 @@ class Scheduler:
             total += min(abs(current), BAM_MAX_CURRENT)
         return total
 
-    def _check_overcurrent(self, robot_state, target_angles: dict[str, float]) -> bool:
-        """Report when the estimated total pack current stays above OVERCURRENT_CUTOFF_A
+    def _check_overcurrent(self, robot_state, target_angles: dict[str, float], cutoff: float) -> bool:
+        """Report when the estimated total pack current stays above `cutoff`
         for OVERCURRENT_DEBOUNCE_TICKS consecutive ticks.
 
         When True, the run loop breaks and _cleanup() disables torque on every motor,
         leaving the robot compliant so the BMS does not trip on the current spike.
         """
         total_current = self._estimate_total_current(robot_state, target_angles)
-        if total_current >= OVERCURRENT_CUTOFF_A:
+        if total_current >= cutoff:
             self._overcurrent_ticks += 1
         else:
             self._overcurrent_ticks = 0
@@ -351,7 +705,7 @@ class Scheduler:
         if self._overcurrent_ticks >= OVERCURRENT_DEBOUNCE_TICKS:
             print(
                 f"Overcurrent safety triggered: {total_current:.2f} A (threshold "
-                f"{OVERCURRENT_CUTOFF_A:.2f} A) — disabling torque",
+                f"{cutoff:.2f} A) — disabling torque",
                 end="\r\n",
                 flush=True,
             )

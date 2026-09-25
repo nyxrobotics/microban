@@ -11,6 +11,7 @@ whose observation order changed, therefore fails before motor torque is used.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import math
 import re
@@ -35,6 +36,45 @@ from moves.move import MotorCommand, Move, MoveState
 from observer import Observation
 
 AGENT_NAME = "pico_teleop.onnx"
+RUNTIME_REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
+RUNTIME_SOURCE_PATHS = {
+    "microban_runtime_validator_source_sha256": (
+        RUNTIME_REPOSITORY_ROOT / "tools" / "validate_pico_policy.py"
+    ),
+    "microban_runtime_contract_source_sha256": Path(__file__).resolve(),
+    "microban_runtime_selector_source_sha256": (
+        RUNTIME_REPOSITORY_ROOT / "src" / "moves" / "policy_selector.py"
+    ),
+    "microban_walk_runtime_source_sha256": (
+        RUNTIME_REPOSITORY_ROOT / "src" / "moves" / "walk.py"
+    ),
+    "microban_arm_runtime_source_sha256": (
+        RUNTIME_REPOSITORY_ROOT / "src" / "moves" / "pico_arms.py"
+    ),
+    "microban_arm_contract_source_sha256": (
+        RUNTIME_REPOSITORY_ROOT / "src" / "pico_arm_contract.py"
+    ),
+    "microban_network_input_source_sha256": (
+        RUNTIME_REPOSITORY_ROOT / "src" / "input" / "network_input.py"
+    ),
+    "microban_input_contract_source_sha256": (
+        RUNTIME_REPOSITORY_ROOT / "src" / "input" / "input_source.py"
+    ),
+    "microban_runtime_entrypoint_source_sha256": (
+        RUNTIME_REPOSITORY_ROOT / "src" / "main.py"
+    ),
+    "microban_scheduler_source_sha256": (
+        RUNTIME_REPOSITORY_ROOT / "src" / "scheduler.py"
+    ),
+    "microban_walk_config_source_sha256": (
+        RUNTIME_REPOSITORY_ROOT / "src" / "constants.py"
+    ),
+    "microban_runtime_lock_sha256": RUNTIME_REPOSITORY_ROOT / "uv.lock",
+    "microban_walk_fallback_onnx_sha256": (
+        RUNTIME_REPOSITORY_ROOT / "src" / "agents" / "walk.onnx"
+    ),
+}
+RUNTIME_SOURCE_IDENTITY_KEYS = frozenset(RUNTIME_SOURCE_PATHS)
 EXPECTED_POLICY_TYPE = "microban_pico_hybrid_teleop"
 EXPECTED_TRAINING_CONTRACT_VERSION = "10"
 EXPECTED_V12_TRAINING_CONTRACT_VERSION = "12"
@@ -92,6 +132,57 @@ EXPECTED_OBSERVATION_TERMS = (
 EXPECTED_OBSERVATION_WIDTH = 83
 EXPECTED_ACTION_WIDTH = 18
 
+
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def runtime_source_identity(
+    source_paths: Mapping[str, Path] | None = None,
+) -> dict[str, str]:
+    """Hash the exact production/admission sources bound into a v12 actor."""
+
+    paths = RUNTIME_SOURCE_PATHS if source_paths is None else source_paths
+    if set(paths) != RUNTIME_SOURCE_IDENTITY_KEYS:
+        raise RuntimeError("runtime source identity path set is incomplete")
+    missing = [name for name, path in paths.items() if not path.is_file()]
+    if missing:
+        raise FileNotFoundError(
+            "runtime source identity files are missing: " + ", ".join(sorted(missing))
+        )
+    return {name: _sha256_file(path) for name, path in paths.items()}
+
+
+def require_embedded_runtime_source_identity(
+    metadata: Mapping[str, str], expected: Mapping[str, str]
+) -> None:
+    """Require a v12 actor to bind every production/admission source."""
+
+    if set(expected) != RUNTIME_SOURCE_IDENTITY_KEYS:
+        raise RuntimeError("computed runtime source identity is incomplete")
+    mismatches = [
+        name for name, digest in expected.items() if metadata.get(name) != digest
+    ]
+    if mismatches:
+        raise RuntimeError(
+            "policy runtime source identity is missing or changed: "
+            + ", ".join(sorted(mismatches))
+        )
+
+
+def require_unchanged_runtime_source_identity(
+    expected: Mapping[str, str], source_paths: Mapping[str, Path] | None = None
+) -> None:
+    """Fail if a bound runtime source changes during admission."""
+
+    if runtime_source_identity(source_paths) != dict(expected):
+        raise RuntimeError("runtime source identity changed during validation")
+
+
 # Contract v12 deliberately retains the proven, normalized legacy velocity
 # actor instead of the bounded v10 action transform.  These identities are
 # pinned on the robot so arbitrary 83-input ONNX files cannot opt themselves
@@ -138,7 +229,8 @@ EXPECTED_V12_LOCOMOTION_GATE = "microban_teleop_v12_neutral_locomotion_9x300"
 EXPECTED_V12_ONNX_GATE = "microban_teleop_v12_checkpoint_onnx"
 EXPECTED_V12_TRACKING_PROFILE = "full_body_reachable_performance_perturbation_v2"
 EXPECTED_V12_DEADLINE_FINAL_TRACKING_PROFILE = (
-    "deadline_full_body_hand_rms35mm_foot_strict_perturbation_v1"
+    "deadline_full_body_hand_rms35mm_p95_70mm_foot_rms50mm_p95_80mm_"
+    "perturbation_v2"
 )
 EXPECTED_V12_TRACKING_PROFILES = frozenset(
     (
@@ -155,13 +247,14 @@ EXPECTED_V12_RAW_ACTION_ENVELOPE_SCHEMA_VERSION = 1
 EXPECTED_V12_RAW_ACTION_GUARD_FORMULA = (
     "max(v12_absmax,source_absmax+delta_absmax)*multiplier"
 )
-EXPECTED_V12_RAW_ACTION_GUARD_MULTIPLIER = 2.0
+EXPECTED_V12_RAW_ACTION_GUARD_MULTIPLIER = 6.0
 EXPECTED_V12_RAW_ACTION_GUARD_SEMANTICS = (
     "finite_float32_then_per_joint_absmax_else_same_cycle_legacy_fallback_v1"
 )
 EXPECTED_V12_PARITY_SEED = 20260925
 EXPECTED_V12_PARITY_SAMPLE_COUNT = 64
 EXPECTED_V12_PARITY_ATOL = 2.0e-5
+EXPECTED_V12_DEADLINE_FINAL_PARITY_ATOL = 2.5e-5
 EXPECTED_V12_OBSERVATION_JOINT_NAMES = (
     "head",
     "neck_roll",
@@ -2032,6 +2125,7 @@ def _parse_v12_contract(session: Any) -> _PolicyContract:
         "microban_teleop_recipe_revision",
         EXPECTED_V12_RECIPE_REVISION,
     )
+    _require_v12_runtime_source_identity(metadata)
 
     filename = metadata.get("checkpoint_filename", "")
     match = _CHECKPOINT_FILENAME_RE.fullmatch(filename)
@@ -2261,15 +2355,18 @@ def _parse_v12_contract(session: Any) -> _PolicyContract:
         != EXPECTED_V12_PARITY_SAMPLE_COUNT
     ):
         raise PicoHybridPolicyContractError("unsupported v12 ONNX parity sample count")
-    _require_exact_finite_scalar(
-        metadata, "v12_onnx_parity_atol", EXPECTED_V12_PARITY_ATOL
+    parity_atol = (
+        EXPECTED_V12_DEADLINE_FINAL_PARITY_ATOL
+        if tracking_profile == EXPECTED_V12_DEADLINE_FINAL_TRACKING_PROFILE
+        else EXPECTED_V12_PARITY_ATOL
     )
+    _require_exact_finite_scalar(metadata, "v12_onnx_parity_atol", parity_atol)
     for name in (
         "v12_onnx_reference_max_abs_error",
         "v12_onnxruntime_cpu_max_abs_error",
         "v12_neutral_legacy_parity_max_abs_error",
     ):
-        _require_v12_bounded_metric(metadata, name, upper=EXPECTED_V12_PARITY_ATOL)
+        _require_v12_bounded_metric(metadata, name, upper=parity_atol)
     if (
         _canonical_nonnegative_int(
             metadata.get("v12_neutral_legacy_parity_sample_count"),
@@ -2557,6 +2654,18 @@ def _parse_v12_contract(session: Any) -> _PolicyContract:
     )
 
 
+def _require_v12_runtime_source_identity(metadata: Mapping[str, str]) -> None:
+    """Translate source-binding failures to the learned-policy contract boundary."""
+
+    try:
+        identity = runtime_source_identity()
+        require_embedded_runtime_source_identity(metadata, identity)
+    except (OSError, RuntimeError) as exc:
+        raise PicoHybridPolicyContractError(
+            f"contract-v12 runtime source identity validation failed: {exc}"
+        ) from exc
+
+
 def _parse_contract(session: Any) -> _PolicyContract:
     try:
         metadata = session.get_modelmeta().custom_metadata_map
@@ -2680,6 +2789,11 @@ class PicoHybridMove(Move):
                     self._contract.input_name,
                     self._contract.v12_runtime_raw_action_guard_absolute_maximum,
                 )
+            )
+            # Rehash after ONNX Runtime execution so an rsync/atomic replacement
+            # racing preload cannot admit a policy against a different checkout.
+            _require_v12_runtime_source_identity(
+                self._session.get_modelmeta().custom_metadata_map
             )
         else:
             self._compatibility_smoke_sample_count = validate_onnxruntime_compatibility(

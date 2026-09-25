@@ -16,7 +16,11 @@ Wire format: one complete JSON snapshot per UDP packet —
       "body_target_contract": "microban_pico_offsets_v2_both_feet_stationary",
       "body_target_safety_margin": 0.8,
       "foot_target": {"left": [dx, dy, dz], "right": [dx, dy, dz]} | null,
-      "hand_target": {"left": [dx, dy, dz] | null, "right": [dx, dy, dz] | null} | null
+      "hand_target": {"left": [dx, dy, dz] | null, "right": [dx, dy, dz] | null} | null,
+      "arm_tracking_enabled": false,
+      "arm_joint_target": {"left": [pitch, roll, elbow], "right": [...]},
+      "torque_enabled": false,
+      "policy_enabled": false
     }
 
 Every packet replaces the previous state; omitted fields are neutral. If no packet
@@ -56,8 +60,13 @@ import threading
 import time
 
 from input.input_source import InputSource, UserInput
+from pico_arm_contract import (
+    PICO_ARM_HOME_RAD,
+    PICO_ARM_SIDES,
+    parse_pico_arm_joint_target,
+)
 
-_NETWORK_MOVES = frozenset({"walk", "hmd_head"})
+_NETWORK_MOVES = frozenset({"walk", "hmd_head", "pico_arms"})
 _LOCOMOTION_POLICIES = frozenset({"walk", "pico_teleop"})
 _PICO_BODY_TARGET_CONTRACT = "microban_pico_offsets_v2_both_feet_stationary"
 _PICO_BODY_TARGET_SAFETY_MARGIN = 0.8
@@ -190,6 +199,11 @@ def _support_foot_floor_projection_valid(
 class NetworkInputSource(InputSource):
     """Non-blocking UDP JSON input source. See module docstring for the wire format."""
 
+    # A network-controlled real robot must never energize itself at process
+    # startup.  main.py uses this marker to start limp and Scheduler uses the
+    # packet's B/A/R3 state as the only way out of that state.
+    controls_motor_power = True
+
     def __init__(
         self,
         port: int = 5555,
@@ -221,6 +235,7 @@ class NetworkInputSource(InputSource):
         self._thread: threading.Thread | None = None
         self._running = False
         self._walk_armed = False
+        self._arm_armed = False
         self._motion_inhibited = False
         self._session_id: str | None = None
         self._last_seq = -1
@@ -256,7 +271,13 @@ class NetworkInputSource(InputSource):
             if (time.monotonic() - self._last_recv_s) > self._stale_after_s:
                 self._state = UserInput()
                 self._walk_armed = False
-                return UserInput()
+                self._arm_armed = False
+                # A dropped connection is lost operator intent exactly like a
+                # dropped gamepad or PICO transport: the
+                # bare UserInput() dataclass default (torque_enabled=True) is
+                # deliberately permissive for callers that never touch this
+                # feature, so it must be overridden here, not trusted as-is.
+                return UserInput(torque_enabled=False, policy_enabled=False)
             return UserInput(
                 active_moves=set(self._state.active_moves),
                 velocity=dict(self._state.velocity),
@@ -273,13 +294,20 @@ class NetworkInputSource(InputSource):
                 hand_target=dict(self._state.hand_target)
                 if self._state.hand_target
                 else None,
+                arm_tracking_enabled=self._state.arm_tracking_enabled,
+                arm_joint_target=dict(self._state.arm_joint_target)
+                if self._state.arm_joint_target
+                else None,
+                torque_enabled=self._state.torque_enabled,
+                policy_enabled=self._state.policy_enabled,
+                getup_armed=self._state.getup_armed,
             )
 
     def set_motion_inhibited(self, inhibited: bool) -> None:
-        """Suppress walking and require a post-recovery trigger release.
+        """Suppress walking/arms and require post-recovery trigger releases.
 
         The flag is checked under the same lock as packet application, closing the
-        race where a held-trigger packet could re-arm walking between the scheduler's
+        race where a held-trigger packet could re-arm motion between the scheduler's
         safety decision and its next input read.
         """
         if not isinstance(inhibited, bool):
@@ -289,8 +317,12 @@ class NetworkInputSource(InputSource):
                 return
             self._motion_inhibited = inhibited
             self._walk_armed = False
+            self._arm_armed = False
             self._state.active_moves.discard("walk")
+            self._state.active_moves.discard("pico_arms")
             self._state.velocity = {"vx": 0.0, "vy": 0.0, "vtheta": 0.0}
+            self._state.arm_tracking_enabled = False
+            self._state.arm_joint_target = None
 
     def set_head_telemetry(
         self,
@@ -430,6 +462,54 @@ class NetworkInputSource(InputSource):
         if not isinstance(head_yaw_front, bool):
             raise TypeError("head_yaw_front must be boolean")
 
+        # Real-hardware master gate. Missing fields are fail-closed so an old,
+        # malformed or partially restarted bridge cannot energize the robot.
+        # B sends false/false; A sends true/false; R3 toggles policy_enabled
+        # only while torque is on.
+        torque_enabled = packet.get("torque_enabled", False)
+        if not isinstance(torque_enabled, bool):
+            raise TypeError("torque_enabled must be boolean")
+        policy_enabled = packet.get("policy_enabled", False)
+        if not isinstance(policy_enabled, bool):
+            raise TypeError("policy_enabled must be boolean")
+        policy_enabled = policy_enabled and torque_enabled
+
+        # Defence in depth: the bridge also sends neutral motion fields while
+        # gated, but the robot independently discards them before any deadman
+        # or learned-policy parsing can retain a previous target.
+        if not policy_enabled:
+            requested_moves.clear()
+            parsed_velocity = {"vx": 0.0, "vy": 0.0, "vtheta": 0.0}
+
+        # Parse the direct-arm channel independently from the learned-policy
+        # Cartesian targets.  A malformed arm snapshot is consumed as a
+        # fail-closed release below instead of raising out of _apply(), because
+        # ignoring the datagram would retain an older joint target until the
+        # network watchdog expired.
+        arm_fields_present = (
+            "arm_tracking_enabled" in packet and "arm_joint_target" in packet
+        )
+        arm_payload_valid = True
+        arm_tracking_enabled = packet.get("arm_tracking_enabled", False)
+        parsed_arm_joint_target = None
+        try:
+            if not isinstance(arm_tracking_enabled, bool):
+                raise TypeError("arm_tracking_enabled must be boolean")
+            parsed_arm_joint_target = parse_pico_arm_joint_target(
+                packet.get("arm_joint_target")
+            )
+            if not arm_tracking_enabled and any(
+                parsed_arm_joint_target[side] != PICO_ARM_HOME_RAD[side]
+                for side in PICO_ARM_SIDES
+            ):
+                raise ValueError(
+                    "released arm tracking requires the exact authenticated HOME target"
+                )
+        except (KeyError, IndexError, TypeError, ValueError, OverflowError):
+            arm_payload_valid = False
+            arm_tracking_enabled = False
+            parsed_arm_joint_target = None
+
         target_payload_valid = True
         try:
             foot_target = packet.get("foot_target")
@@ -485,6 +565,15 @@ class NetworkInputSource(InputSource):
         ) == _PICO_BODY_TARGET_CONTRACT and _matches_pico_safety_margin(
             packet.get("body_target_safety_margin")
         )
+        pico_arm_requested = "pico_arms" in requested_moves
+        pico_arm_snapshot_valid = (
+            incoming_pico_packet
+            and pico_metadata_valid
+            and pico_arm_requested
+            and arm_fields_present
+            and arm_payload_valid
+            and parsed_arm_joint_target is not None
+        )
         if pico_walk_requested:
             pico_body_target_valid = (
                 pico_metadata_valid
@@ -518,14 +607,29 @@ class NetworkInputSource(InputSource):
                 and parsed_hand_target is None
             )
 
+        if not policy_enabled:
+            # Keep a disabled-policy snapshot completely inert even if a
+            # sender accidentally includes held-trigger/body data alongside
+            # the hardware-state fields.
+            requested_moves.clear()
+            parsed_velocity = {"vx": 0.0, "vy": 0.0, "vtheta": 0.0}
+            parsed_foot_target = None
+            parsed_hand_target = None
+            arm_tracking_enabled = False
+            parsed_arm_joint_target = None
+            pico_arm_requested = False
+            pico_arm_snapshot_valid = False
+
         with self._lock:
             if session_id != self._session_id:
                 if session_id in self._retired_sessions:
                     return
                 # A bridge handover must begin from a released walk deadman. This
                 # permits restart at any sequence number while rejecting held-trigger
-                # takeover packets.
-                if "walk" in requested_moves:
+                # takeover packets.  The independent right-trigger arm deadman
+                # follows the same rule so a restarted bridge cannot jump to a
+                # cached arm pose while the physical trigger is already held.
+                if "walk" in requested_moves or arm_tracking_enabled:
                     return
                 if self._session_id is not None:
                     self._retired_sessions.append(self._session_id)
@@ -533,12 +637,13 @@ class NetworkInputSource(InputSource):
                 self._session_id = session_id
                 self._last_seq = -1
                 self._walk_armed = False
+                self._arm_armed = False
             if seq <= self._last_seq:
                 return
             self._last_seq = seq
 
             learned_policy_degraded = (
-                incoming_pico_packet and not pico_body_target_valid
+                policy_enabled and incoming_pico_packet and not pico_body_target_valid
             )
             if learned_policy_degraded:
                 # Body tracking is an enhancement, not the locomotion deadman.
@@ -552,13 +657,42 @@ class NetworkInputSource(InputSource):
 
             if self._motion_inhibited:
                 self._walk_armed = False
+                self._arm_armed = False
                 requested_moves.discard("walk")
+                requested_moves.discard("pico_arms")
                 parsed_velocity = {"vx": 0.0, "vy": 0.0, "vtheta": 0.0}
+                arm_tracking_enabled = False
+                parsed_arm_joint_target = None
             elif "walk" not in requested_moves:
                 self._walk_armed = True
             elif not self._walk_armed:
                 requested_moves.discard("walk")
                 parsed_velocity = {"vx": 0.0, "vy": 0.0, "vtheta": 0.0}
+
+            if self._motion_inhibited:
+                pass
+            elif not pico_arm_requested:
+                # Legacy/non-PICO snapshots do not own the overlay and cannot
+                # implicitly arm a later right-trigger press.
+                self._arm_armed = False
+                arm_tracking_enabled = False
+                parsed_arm_joint_target = None
+            elif not pico_arm_snapshot_valid:
+                # Clear the complete arm channel atomically.  In particular,
+                # never keep one valid side or a previous target after a bad
+                # packet.
+                self._arm_armed = False
+                requested_moves.discard("pico_arms")
+                arm_tracking_enabled = False
+                parsed_arm_joint_target = None
+            elif not arm_tracking_enabled:
+                # A valid released snapshot keeps the overlay active at the
+                # exact PICO home and arms the next physical press.
+                self._arm_armed = True
+            elif not self._arm_armed:
+                requested_moves.discard("pico_arms")
+                arm_tracking_enabled = False
+                parsed_arm_joint_target = None
 
             self._state = UserInput(
                 active_moves=requested_moves,
@@ -569,5 +703,10 @@ class NetworkInputSource(InputSource):
                 head_yaw_front=head_yaw_front,
                 foot_target=parsed_foot_target,
                 hand_target=parsed_hand_target,
+                arm_tracking_enabled=arm_tracking_enabled,
+                arm_joint_target=parsed_arm_joint_target,
+                torque_enabled=torque_enabled,
+                policy_enabled=policy_enabled,
+                getup_armed=False,
             )
             self._last_recv_s = time.monotonic()

@@ -58,6 +58,12 @@ class KeyboardInputSource(InputSource):
                 active_moves=set(self._state.active_moves),
                 velocity=dict(self._state.velocity),
                 show_imu=self._state.show_imu,
+                # Keyboard/sim has no physical robot to hurt and no separate
+                # arm switch: preserve "toggling the move runs it" (unlike
+                # GamepadInputSource's explicit B/A/R3 all-joint gate).
+                torque_enabled=True,
+                policy_enabled=True,
+                getup_armed=True,
             )
 
     # ------------------------------------------------------------------
