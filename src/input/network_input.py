@@ -20,12 +20,14 @@ Wire format: one complete JSON snapshot per UDP packet —
       "arm_tracking_enabled": false,
       "arm_joint_target": {"left": [pitch, roll, elbow], "right": [...]},
       "torque_enabled": false,
+      "torque_off_requested": false,
       "policy_enabled": false
     }
 
-Every packet replaces the previous state; omitted fields are neutral. If no packet
-arrives within `stale_after_s`, read() returns a fully-neutral UserInput. After start
-or a timeout, walking stays disarmed until at least one released-trigger snapshot
+Every packet replaces the previous motion state; omitted fields are neutral. If no
+packet arrives within `stale_after_s`, read() requests a hold of the last motor
+goals and torque state. After start or a timeout, walking stays disarmed until
+at least one released-trigger snapshot
 (``"walk"`` absent) arrives. A dead/reconnecting link therefore cannot resume walking
 from a trigger that was held before the interruption.
 Hybrid ``pico_teleop`` walk snapshots use fixed policy-session calibration
@@ -272,12 +274,13 @@ class NetworkInputSource(InputSource):
                 self._state = UserInput()
                 self._walk_armed = False
                 self._arm_armed = False
-                # A dropped connection is lost operator intent exactly like a
-                # dropped gamepad or PICO transport: the
-                # bare UserInput() dataclass default (torque_enabled=True) is
-                # deliberately permissive for callers that never touch this
-                # feature, so it must be overridden here, not trusted as-is.
-                return UserInput(torque_enabled=False, policy_enabled=False)
+                # A transport gap freezes the last physical goal/torque state.
+                # The scheduler does not run any move on this snapshot.
+                return UserInput(
+                    torque_enabled=None,
+                    policy_enabled=None,
+                    hold_last_targets=True,
+                )
             return UserInput(
                 active_moves=set(self._state.active_moves),
                 velocity=dict(self._state.velocity),
@@ -300,6 +303,7 @@ class NetworkInputSource(InputSource):
                 else None,
                 torque_enabled=self._state.torque_enabled,
                 policy_enabled=self._state.policy_enabled,
+                hold_last_targets=self._state.hold_last_targets,
                 getup_armed=self._state.getup_armed,
             )
 
@@ -462,17 +466,27 @@ class NetworkInputSource(InputSource):
         if not isinstance(head_yaw_front, bool):
             raise TypeError("head_yaw_front must be boolean")
 
-        # Real-hardware master gate. Missing fields are fail-closed so an old,
-        # malformed or partially restarted bridge cannot energize the robot.
-        # B sends false/false; A sends true/false; R3 toggles policy_enabled
-        # only while torque is on.
+        # Only an explicit B event requests torque OFF. A bridge restart or
+        # missing tracking frame emits false/false, which holds the current
+        # physical goal and torque state instead of collapsing the robot.
         torque_enabled = packet.get("torque_enabled", False)
         if not isinstance(torque_enabled, bool):
             raise TypeError("torque_enabled must be boolean")
+        torque_off_requested = packet.get("torque_off_requested", False)
+        if not isinstance(torque_off_requested, bool):
+            raise TypeError("torque_off_requested must be boolean")
         policy_enabled = packet.get("policy_enabled", False)
         if not isinstance(policy_enabled, bool):
             raise TypeError("policy_enabled must be boolean")
-        policy_enabled = policy_enabled and torque_enabled
+        hold_last_targets = not torque_enabled and not torque_off_requested
+        if torque_off_requested:
+            torque_enabled = False
+            policy_enabled = False
+        elif hold_last_targets:
+            torque_enabled = None
+            policy_enabled = None
+        else:
+            policy_enabled = policy_enabled and torque_enabled
 
         # Defence in depth: the bridge also sends neutral motion fields while
         # gated, but the robot independently discards them before any deadman
@@ -707,6 +721,7 @@ class NetworkInputSource(InputSource):
                 arm_joint_target=parsed_arm_joint_target,
                 torque_enabled=torque_enabled,
                 policy_enabled=policy_enabled,
+                hold_last_targets=hold_last_targets,
                 getup_armed=False,
             )
             self._last_recv_s = time.monotonic()

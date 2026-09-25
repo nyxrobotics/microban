@@ -1,11 +1,18 @@
 import json
+import io
 import math
 import socket
-import time
+import tempfile
 import unittest
+from contextlib import redirect_stdout
+from pathlib import Path
+from unittest.mock import patch
 
+from constants import MOTOR_TO_ID, NEUTRAL_POSE
 from input.network_input import NetworkInputSource
+from observer import RobotState
 from pico_arm_contract import PICO_ARM_HOME_RAD
+from scheduler import Scheduler
 
 BODY_TARGET_CONTRACT = "microban_pico_offsets_v2_both_feet_stationary"
 BODY_TARGET_SAFETY_MARGIN = 0.8
@@ -39,6 +46,7 @@ def packet(
     arm_joint_target=None,
     torque_enabled=True,
     policy_enabled=True,
+    torque_off_requested=False,
 ):
     return {
         "version": 1,
@@ -57,6 +65,7 @@ def packet(
         "arm_joint_target": arm_joint_target,
         "torque_enabled": torque_enabled,
         "policy_enabled": policy_enabled,
+        "torque_off_requested": torque_off_requested,
     }
 
 
@@ -170,11 +179,13 @@ class NetworkInputTest(unittest.TestCase):
                 {"vx": 1.0},
                 torque_enabled=False,
                 policy_enabled=True,
+                torque_off_requested=True,
             )
         )
         state = source.read()
         self.assertFalse(state.torque_enabled)
         self.assertFalse(state.policy_enabled)
+        self.assertFalse(state.hold_last_targets)
         self.assertEqual(state.active_moves, set())
         self.assertEqual(state.velocity, {"vx": 0.0, "vy": 0.0, "vtheta": 0.0})
 
@@ -188,6 +199,63 @@ class NetworkInputTest(unittest.TestCase):
         self.assertTrue(state.torque_enabled)
         self.assertTrue(state.policy_enabled)
 
+    def test_false_torque_snapshot_without_b_holds_previous_goal(self):
+        source = NetworkInputSource(stale_after_s=0.5)
+        source._apply(packet(0, torque_enabled=True, policy_enabled=False))
+        source._apply(packet(1, torque_enabled=True, policy_enabled=True))
+        self.assertTrue(source.read().torque_enabled)
+
+        # The PC can briefly report its own torque state as false while the
+        # authenticated link is recovering. Only a separate B event may make
+        # the robot's physical torque state false.
+        interrupted = packet(
+            2,
+            ["walk", "hmd_head"],
+            {"vx": 1.0},
+            torque_enabled=False,
+            policy_enabled=False,
+        )
+        del interrupted["torque_off_requested"]  # old bridge: no explicit B bit
+        source._apply(interrupted)
+        held = source.read()
+        self.assertIsNone(held.torque_enabled)
+        self.assertTrue(held.hold_last_targets)
+        self.assertEqual(held.active_moves, set())
+        self.assertEqual(held.velocity, {"vx": 0.0, "vy": 0.0, "vtheta": 0.0})
+        self.assertIsNone(held.arm_joint_target)
+
+        source._apply(
+            packet(
+                3,
+                torque_enabled=False,
+                policy_enabled=False,
+                torque_off_requested=True,
+            )
+        )
+        stopped = source.read()
+        self.assertIs(stopped.torque_enabled, False)
+        self.assertFalse(stopped.hold_last_targets)
+
+    def test_only_explicit_b_can_cut_torque_after_timeout(self):
+        source = NetworkInputSource(stale_after_s=0.05)
+        source._apply(packet(0, torque_enabled=True, policy_enabled=False))
+        source._last_recv_s -= 1.0
+        held = source.read()
+        self.assertIsNone(held.torque_enabled)
+        self.assertTrue(held.hold_last_targets)
+
+        source._apply(
+            packet(
+                1,
+                torque_enabled=False,
+                policy_enabled=False,
+                torque_off_requested=True,
+            )
+        )
+        stopped = source.read()
+        self.assertIs(stopped.torque_enabled, False)
+        self.assertFalse(stopped.hold_last_targets)
+
     def test_non_boolean_torque_or_policy_is_rejected(self):
         source = NetworkInputSource(stale_after_s=0.5)
         good = packet(0, torque_enabled=True, policy_enabled=False)
@@ -200,23 +268,32 @@ class NetworkInputTest(unittest.TestCase):
         bad["policy_enabled"] = 1
         with self.assertRaises(TypeError):
             source._apply(bad)
+        bad = dict(packet(3))
+        bad["torque_off_requested"] = "yes"
+        with self.assertRaises(TypeError):
+            source._apply(bad)
         # The rejected packet must not have overwritten the prior good state.
         state = source.read()
         self.assertTrue(state.torque_enabled)
         self.assertFalse(state.policy_enabled)
 
-    def test_stale_timeout_fails_hardware_gate_to_limp(self):
-        # UserInput()'s bare dataclass default is torque_enabled=True
-        # (deliberately permissive for callers that never touch this
-        # feature); the stale-timeout path must override it, not return
-        # that default as-is once a get-up test was in progress.
+    def test_stale_timeout_holds_torque_and_last_goal(self):
         source = NetworkInputSource(stale_after_s=0.05)
-        source._apply(packet(0, torque_enabled=True, policy_enabled=True))
+        source._apply(packet(0, torque_enabled=True, policy_enabled=False))
         self.assertTrue(source.read().torque_enabled)
-        time.sleep(0.1)
+        source._last_recv_s -= 0.1
         state = source.read()
-        self.assertFalse(state.torque_enabled)
-        self.assertFalse(state.policy_enabled)
+        self.assertIsNone(state.torque_enabled)
+        self.assertTrue(state.hold_last_targets)
+        self.assertEqual(state.active_moves, set())
+        self.assertEqual(state.velocity, {"vx": 0.0, "vy": 0.0, "vtheta": 0.0})
+
+    def test_timeout_before_first_packet_cannot_enable_torque(self):
+        source = NetworkInputSource(stale_after_s=0.05)
+        state = source.read()
+        self.assertIsNone(state.torque_enabled)
+        self.assertTrue(state.hold_last_targets)
+        self.assertEqual(state.active_moves, set())
 
     def test_new_session_cannot_start_with_trigger_held(self):
         source = NetworkInputSource(stale_after_s=0.5)
@@ -250,7 +327,9 @@ class NetworkInputTest(unittest.TestCase):
         source._apply(packet(0))
         source._apply(packet(1, ["walk"], {"vx": 1.0}))
         source._last_recv_s -= 0.1
-        self.assertEqual(source.read().active_moves, set())
+        stale = source.read()
+        self.assertEqual(stale.active_moves, set())
+        self.assertTrue(stale.hold_last_targets)
         source._apply(packet(2, ["walk"], {"vx": 1.0}))
         self.assertNotIn("walk", source.read().active_moves)
 
@@ -934,6 +1013,99 @@ class ClockPingTest(unittest.TestCase):
         self.assertEqual(
             json.loads(data), {"type": "clock_pong", "nonce": "nan-rejected"}
         )
+
+
+class NetworkDisconnectSchedulerTest(unittest.TestCase):
+    def test_timeout_holds_physical_goal_until_explicit_b(self):
+        source = NetworkInputSource(stale_after_s=0.05)
+        source._apply(packet(0, torque_enabled=True, policy_enabled=False))
+
+        class Controller:
+            def __init__(self):
+                self.tick = 0
+                self.events = []
+
+            def sync_write_goal_position(self, ids, positions):
+                self.events.append(("goal", self.tick, list(positions)))
+
+            def sync_write_kp(self, ids, values):
+                self.events.append(("kp", self.tick, list(values)))
+
+            def sync_write_torque_enable(self, ids, enabled):
+                self.events.append(("torque", self.tick, all(enabled)))
+
+            def shutdown(self):
+                self.events.append(("shutdown", self.tick, None))
+
+        controller = Controller()
+        with tempfile.TemporaryDirectory() as temp_dir:
+            stop_path = Path(temp_dir) / "stop"
+
+            class Observer:
+                reads = 0
+
+                def read_state(self, _dt):
+                    self.reads += 1
+                    controller.tick = self.reads
+                    if self.reads == 2:
+                        source._last_recv_s -= 1.0  # longer than watchdog
+                    elif self.reads == 3:
+                        source._apply(
+                            packet(
+                                1,
+                                torque_enabled=False,
+                                policy_enabled=False,
+                                torque_off_requested=True,
+                            )
+                        )
+                        stop_path.touch()
+                    return RobotState(
+                        gyro=[0.0, 0.0, 0.0],
+                        quat=[1.0, 0.0, 0.0, 0.0],
+                        body_quat=[1.0, 0.0, 0.0, 0.0],
+                        projected_gravity=[0.0, 0.0, -1.0],
+                        motor_positions={
+                            name: neutral + 0.4
+                            for name, neutral in NEUTRAL_POSE.items()
+                        },
+                        motor_velocities={name: 0.0 for name in MOTOR_TO_ID},
+                    )
+
+            scheduler = Scheduler(
+                controller=controller,
+                stop_flag_path=str(stop_path),
+                input_source=source,
+                moves={},
+                hardware_power_control=True,
+                serial_hold_on_error=True,
+            )
+            scheduler.observer = Observer()
+            with (
+                patch.object(source, "start"),
+                patch.object(source, "stop"),
+                patch("scheduler.time.sleep"),
+                redirect_stdout(io.StringIO()),
+            ):
+                scheduler.run()
+
+        self.assertIn(("torque", 1, True), controller.events)
+        self.assertFalse(
+            any(kind == "torque" and tick == 2 and not value
+                for kind, tick, value in controller.events),
+            "a UDP timeout must not write torque OFF",
+        )
+        self.assertFalse(
+            any(kind == "goal" and tick == 2
+                for kind, tick, _value in controller.events),
+            "a UDP timeout must not advance the neutral or policy goal",
+        )
+        self.assertIn(("torque", 3, False), controller.events)
+        shutdown_index = next(
+            index for index, event in enumerate(controller.events)
+            if event[0] == "shutdown"
+        )
+        b_off_index = controller.events.index(("torque", 3, False))
+        self.assertLess(b_off_index, shutdown_index)
 
 
 if __name__ == "__main__":

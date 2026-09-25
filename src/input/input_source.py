@@ -29,11 +29,11 @@ class UserInput:
     # policy_enabled.  The scheduler, not an individual learned move, owns this
     # gate so head, arms and legs cannot fight the neutral/limp state.
     #
-    # Defaults preserve keyboard/simulator behaviour.  NetworkInputSource is
-    # fail-closed and explicitly emits false/false until a live controller asks
-    # otherwise.
-    torque_enabled: bool = True
-    policy_enabled: bool = True
+    # Defaults preserve keyboard/simulator behaviour. None means keep the
+    # current hardware gate, used when network input is unavailable.
+    torque_enabled: bool | None = True
+    policy_enabled: bool | None = True
+    hold_last_targets: bool = False
 
     # Manual get-up-policy testing remains separate from the PICO hardware
     # gate.  It is intentionally not accepted over the PICO/network protocol.
