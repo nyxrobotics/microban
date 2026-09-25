@@ -28,9 +28,13 @@ sudo bash systemd/configure-pico-services.sh enable
 sudo bash systemd/configure-pico-services.sh uninstall
 ```
 
+`enable`は競合する既存の`microban-gamepad.service`を停止・無効化してからPICO runtimeを起動します。これにより、
+両方がboot対象になった場合の起動順依存を避けます。PICO側の`disable`だけではgamepad serviceを再有効化しません。
+gamepadへ戻す場合はPICO側を`disable`した後、既存のgamepad用設定手順で明示的に有効化してください。
+
 `disable`はruntimeを先に停止し、その終了処理と独立したall-joint torque-off helperを実行してからcamera proxyを
 停止します。`uninstall`は既存のuStreamer service、camera証明書・秘密鍵、学習済みONNXを削除しません。
-gamepad headless unitとはsystemd上で競合させています。手動runtimeのPIDが既にmotor busを所有している場合も、
+gamepad headless unitとはsystemd上でも競合させています。手動runtimeのPIDが既にmotor busを所有している場合も、
 serviceのpre-start helperはそのsessionへ割り込んでtorqueを変更せず、起動を失敗させます。
 
 ## 起動時の状態遷移

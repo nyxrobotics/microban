@@ -6,6 +6,7 @@ readonly script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 readonly repo_root="$(cd -- "${script_dir}/.." && pwd)"
 readonly runtime_unit="microban-pico-runtime.service"
 readonly camera_unit="microban-camera-tls.service"
+readonly conflicting_unit="microban-gamepad.service"
 readonly runtime_unit_path="/etc/systemd/system/${runtime_unit}"
 readonly camera_unit_path="/etc/systemd/system/${camera_unit}"
 readonly runtime_env="/etc/default/microban-pico-runtime"
@@ -144,6 +145,10 @@ PY
       [[ -f "${camera_unit_path}" ]] || die "camera service configuration is incomplete"
       units=("${camera_unit}" "${runtime_unit}")
     fi
+    # Do not leave both mutually exclusive controllers enabled for the next
+    # boot.  Merely declaring Conflicts= prevents concurrent execution, but
+    # does not define which controller wins when both are enabled.
+    systemctl disable --now "${conflicting_unit}" 2>/dev/null || true
     systemctl enable --now "${units[@]}"
     ;;
   disable)
