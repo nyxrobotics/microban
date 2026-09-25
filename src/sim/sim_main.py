@@ -10,14 +10,14 @@ Usage:
 
 import argparse
 
-from scheduler import Scheduler
-from sim.mujoco_input import MuJoCoInputSource
-from sim.mujoco_controller import MuJoCoController
 from input.network_input import NetworkInputSource
 from moves.hmd_head import HmdHeadTrackingMove
+from moves.policy_selector import PolicySelectableWalkMove
 from moves.rotate_head import RotateHeadMove
 from moves.squat import SquatMove
-from moves.walk import WalkMove
+from scheduler import Scheduler
+from sim.mujoco_controller import MuJoCoController
+from sim.mujoco_input import MuJoCoInputSource
 
 
 def main() -> None:
@@ -64,7 +64,7 @@ def main() -> None:
         moves={
             "head": RotateHeadMove(),
             "squat": SquatMove(),
-            "walk": WalkMove(controller=controller),
+            "walk": PolicySelectableWalkMove(controller=controller),
             "hmd_head": HmdHeadTrackingMove(),
         },
     )
