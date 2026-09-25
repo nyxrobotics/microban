@@ -2,11 +2,15 @@
 
 The robot accepts contract-v12 only as an optional learned locomotion policy.
 The pinned `walk.onnx` policy remains the availability baseline. A missing
-artifact, rejected metadata, ONNX load error, malformed observation, non-finite
-inference result, or non-finite target makes `PolicySelectableWalkMove` start
-and step `walk` in the same control cycle. The fallback remains latched until
-the left-trigger locomotion activation is released, so a repaired tracker or
-hot-reloaded file cannot switch the gait mid-stride.
+artifact, rejected metadata, ONNX load error, or learned-policy start error
+makes `PolicySelectableWalkMove` select and start `walk` in that activation's
+start cycle; the scheduler first calls `walk.step()` on its next control cycle.
+By contrast, an error during an active learned-policy step (including a
+malformed observation, non-finite inference result/target, or finite-amplitude
+guard violation) starts **and steps** `walk` in the faulting control cycle. The
+fallback remains latched until the left-trigger locomotion activation is fully
+released, so a repaired tracker or hot-reloaded file cannot switch the gait
+mid-stride.
 
 ## Physical action semantics
 
@@ -40,9 +44,12 @@ exact match; if neither is present, the robot uses its compiled vectors. In both
 cases construction fails before ONNX inference unless every bound/default/scale
 and the global inactive neutral form a finite, ordered 18-joint clamp contract.
 
-The allowed **5-degree physical acceptance tolerance** applies only when judging
-a measured encoder angle after motion. It never expands either commanded soft
-limit: no command may be `soft_limit +/- 5 degrees`.
+The allowed **5-degree measured-joint overshoot** is only an offline simulator
+stage-gate tolerance: the evaluator may observe a simulated measured joint up to
+5 degrees beyond a soft limit. It is not a physical-robot encoder acceptance
+tolerance and grants no runtime permission. It never expands a commanded soft
+limit: the physical runtime clamps every actuator target to the compiled limit,
+without `soft_limit +/- 5 degrees` headroom.
 
 ## Trigger-only selection
 
@@ -52,6 +59,19 @@ only holding the left trigger puts `walk` and `hmd_head` in `active_moves` and
 exposes tracking targets. Releasing the trigger removes those activations and
 starts the return to inactive neutral. `tests/test_policy_selector.py` exercises
 that exact packet through `NetworkInputSource` and `PolicySelectableWalkMove`.
+
+Release is also the explicit re-arm boundary. After startup, transport timeout,
+motion inhibition, tracker/contract degradation, or learned-policy fault, do not
+resume from a trigger that was already held: send and receive a released-trigger
+snapshot, then press again. The new pressed snapshot must be fresh and must
+contain the exact v12 target contract plus complete feet and hands expressed
+from the bridge's fixed policy-session calibration origin. Calibration is a
+bridge-side prerequisite: the robot validates freshness, contract, completeness
+and envelopes, but cannot prove the physical origin was calibrated correctly.
+Do not re-arm with an uncalibrated/reused absolute pose. A stale packet,
+incomplete target pair, or target outside the wire envelope cannot re-arm v12;
+the receiver keeps the joystick-triggered legacy walk path and the selector
+keeps that fallback latched until another release/press boundary.
 
 ## Training HOME versus inactive neutral
 
@@ -74,9 +94,14 @@ same global pose, so there is no former one-tick `0 -> +10 degree` target jump.
 
 ## Deployment admission
 
-Intermediate 3,000, 7,000 and 10,000-update checkpoints are simulator-only.
-The physical parser accepts only `model_14999.pt` at 15,000 completed updates,
-with `deployment_accepted=true` and a passing canonical stage gate.
+The canonical staged route is
+`601 -> 3000 -> 3100 -> 7000 -> 7100 -> 10000 -> 10100 -> 15000` completed
+updates. The 100-update boundaries are mandatory activation canaries: 3,100
+checks the first staged activation, 7,100 checks HMD/hand activation, and 10,100
+checks full-body/foot activation. Every boundary checkpoint, every activation
+canary, every interrupted checkpoint, and every preview is simulator-only. The
+physical parser accepts only `model_14999.pt` at 15,000 completed updates, with
+`deployment_accepted=true` and a passing canonical final-stage gate.
 
 The ONNX metadata must bind the final checkpoint to all of the following:
 
@@ -110,7 +135,7 @@ The ONNX metadata must bind the final checkpoint to all of the following:
 ONNX Runtime CPU smoke without opening motor or network interfaces:
 
 ```bash
-PYTHONPATH=src .venv/bin/python tools/validate_pico_policy.py \
+PYTHONPATH=src uv run --locked python tools/validate_pico_policy.py \
   /path/to/final-pico-teleop-v12.onnx
 ```
 
@@ -171,6 +196,37 @@ Missing/malformed evidence, a changed joint order, inconsistent extrema,
 float32 overflow, a formula/factor/semantics mismatch, or a recomputed-bound
 mismatch rejects the ONNX at load time.
 
+After packaging, produce a concrete human-review record from the same robot
+validator. This command fails unless names and bounds both have exactly 18
+entries, prints one named bound per line, and records the validator JSON, the
+reviewed table, and all three file digests. Reviewing this table is a release
+action; these local files do not replace the hash-bound canonical stage-gate
+receipt.
+
+```bash
+review_dir=artifacts/pico_teleop_release_review
+mkdir -p "$review_dir"
+PYTHONPATH=src uv run --locked python tools/validate_pico_policy.py \
+  src/agents/pico_teleop.onnx | tee "$review_dir/validator.json"
+PYTHONPATH=src uv run --locked python - "$review_dir/validator.json" <<'PY' \
+  | tee "$review_dir/runtime_raw_action_guard.tsv"
+import json
+import sys
+
+report = json.load(open(sys.argv[1], encoding="utf-8"))
+names = report["action_joint_names"]
+bounds = report["v12_raw_action_guard"]["absolute_maximum"]
+if len(names) != 18 or len(bounds) != 18:
+    raise SystemExit(f"expected 18 named bounds, got {len(names)} and {len(bounds)}")
+for index, (name, bound) in enumerate(zip(names, bounds, strict=True)):
+    print(f"{index:02d}\t{name}\t{float(bound):.9g}")
+PY
+sha256sum src/agents/pico_teleop.onnx \
+  "$review_dir/validator.json" \
+  "$review_dir/runtime_raw_action_guard.tsv" \
+  | tee "$review_dir/SHA256SUMS"
+```
+
 Metadata attachment should happen in a final deployment-packaging step after
 the sidecar stage gate exists. Attaching metadata changes the ONNX file digest,
 so the packager must then rerun ONNX checker, the full-83-column parity check,
@@ -196,6 +252,14 @@ the previously installed policy unchanged.
 ## Workstation and Raspberry Pi preflight
 
 The repository tracks `uv.lock`; do not regenerate it implicitly on the Pi.
+Run this release preflight only from a clean, committed worktree: the following
+must print nothing. `make teleop-validate` rsyncs the current filesystem, not a
+named commit, and does not itself reject unrelated modified or untracked files.
+
+```bash
+git status --porcelain=v1 --untracked-files=all
+```
+
 After the final exporter above installs `src/agents/pico_teleop.onnx`, run the
 same parser and fixed 16-input ONNX Runtime CPU smoke on the workstation and on
 the Pi before opening the motor bus:
@@ -218,6 +282,22 @@ after it passes should the control loop be launched:
 ```bash
 make teleop-run HOST=microban
 ```
+
+This preflight's scope is artifact admission, CPU load, and 16 fixed inference
+samples. It does not test UDP freshness/session re-arm, live PICO calibration,
+tracker loss, selector transition timing, MuJoCo dynamics, motor commands, or a
+physical fall. In particular it does not deliberately fault the final ONNX to
+prove end-to-end same-cycle fallback: that evidence currently comes from
+isolated `PolicySelectableWalkMove` tests with an injected failing learned
+child, not a hardware integration test.
+
+Likewise, `make teleop-sim` by itself only starts the robot repository's MuJoCo
+process with a network input socket. It neither generates calibrated v12 body
+targets nor supplies a trigger activation, so that command alone does not
+exercise `pico_teleop` selection and is not v12 body-target validation. Use the
+canonical training-repository stage/canary evaluators for checkpoint validation;
+use an explicitly paired PICO bridge plus simulator only as a separate live
+integration observation.
 
 If either validator fails, do not bypass it. The learned policy remains
 optional: removing or withholding `src/agents/pico_teleop.onnx` leaves the
