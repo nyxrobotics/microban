@@ -17,7 +17,7 @@ usage() {
   cat <<'EOF'
 usage:
   sudo bash systemd/configure-pico-services.sh install --allowed-ip IPV4 [options]
-  sudo bash systemd/configure-pico-services.sh enable|disable|restart|status|logs|uninstall
+  sudo bash systemd/configure-pico-services.sh enable|disable|restart|status|health|logs|uninstall
 
 install options:
   --allowed-ip IPV4       Only this PC may send control snapshots (required)
@@ -55,6 +55,42 @@ render_unit() {
     -e "s|@SERVICE_HOME@|${service_home}|g" \
     "${source}" > "${destination}"
   chmod 0644 "${destination}"
+}
+
+camera_enabled() {
+  [[ -f "${state_file}" ]] &&
+    grep -qx 'MICROBAN_CAMERA_TLS_ENABLED=1' "${state_file}"
+}
+
+report_unit_health() {
+  local unit=$1
+  local healthy=0
+  if systemctl is-enabled --quiet "${unit}"; then
+    echo "OK enabled ${unit}"
+  else
+    echo "ERROR not enabled: ${unit}" >&2
+    healthy=1
+  fi
+  if systemctl is-active --quiet "${unit}"; then
+    echo "OK active ${unit}"
+  else
+    echo "ERROR not active: ${unit}" >&2
+    healthy=1
+  fi
+  return "${healthy}"
+}
+
+report_listener_health() {
+  local protocol=$1
+  local port=$2
+  local selector=-ltn
+  [[ "${protocol}" == udp ]] && selector=-lun
+  if ss -H "${selector}" "sport = :${port}" | grep -q .; then
+    echo "OK ${protocol} listener :${port}"
+    return 0
+  fi
+  echo "ERROR missing ${protocol} listener :${port}" >&2
+  return 1
 }
 
 action=${1:-}
@@ -158,18 +194,54 @@ PY
     ;;
   restart)
     (( $# == 0 )) || die "restart takes no options"
-    systemctl restart "${runtime_unit}"
-    if [[ -f "${state_file}" ]] && grep -qx 'MICROBAN_CAMERA_TLS_ENABLED=1' "${state_file}"; then
+    if camera_enabled; then
       systemctl restart "${camera_unit}"
     fi
+    systemctl restart "${runtime_unit}"
     ;;
   status)
     (( $# == 0 )) || die "status takes no options"
-    systemctl --no-pager --full status "${runtime_unit}" "${camera_unit}"
+    units=("${runtime_unit}")
+    camera_enabled && units+=("${camera_unit}")
+    systemctl --no-pager --full status "${units[@]}"
+    ;;
+  health)
+    (( $# == 0 )) || die "health takes no options"
+    [[ -f "${runtime_env}" && -f "${state_file}" ]] || die "run '$0 install ...' first"
+    healthy=0
+    report_unit_health "${runtime_unit}" || healthy=1
+    if systemctl is-enabled --quiet "${conflicting_unit}" ||
+       systemctl is-active --quiet "${conflicting_unit}"; then
+      echo "ERROR conflicting controller is enabled or active: ${conflicting_unit}" >&2
+      healthy=1
+    else
+      echo "OK conflicting controller disabled/inactive: ${conflicting_unit}"
+    fi
+    network_port=$(sed -n 's/^MICROBAN_NETWORK_PORT=//p' "${runtime_env}")
+    [[ "${network_port}" =~ ^[0-9]+$ ]] || die "invalid installed network port"
+    report_listener_health udp "${network_port}" || healthy=1
+    if camera_enabled; then
+      report_unit_health "microban-camera.service" || healthy=1
+      report_unit_health "${camera_unit}" || healthy=1
+      camera_http_port=$(sed -n 's/^MICROBAN_CAMERA_HTTP_PORT=//p' "${camera_env}")
+      camera_tls_port=$(sed -n 's/^MICROBAN_CAMERA_TLS_PORT=//p' "${camera_env}")
+      [[ "${camera_http_port}" =~ ^[0-9]+$ ]] || die "invalid installed camera HTTP port"
+      [[ "${camera_tls_port}" =~ ^[0-9]+$ ]] || die "invalid installed camera TLS port"
+      report_listener_health tcp "${camera_http_port}" || healthy=1
+      report_listener_health tcp "${camera_tls_port}" || healthy=1
+    fi
+    (( healthy == 0 )) || exit 1
+    echo "Robot PICO services are ready."
     ;;
   logs)
     (( $# == 0 )) || die "logs takes no options"
-    journalctl -u "${runtime_unit}" -u "${camera_unit}" -f
+    units=("${runtime_unit}")
+    camera_enabled && units+=("${camera_unit}")
+    journal_args=()
+    for unit in "${units[@]}"; do
+      journal_args+=(-u "${unit}")
+    done
+    journalctl "${journal_args[@]}" -f
     ;;
   uninstall)
     (( $# == 0 )) || die "uninstall takes no options"

@@ -70,7 +70,7 @@ class HmdHeadTrackingMove(Move):
 
     Roll and pitch are stabilized against trunk tilt. Yaw is deliberately trunk-
     relative because the robot IMU has no reliable absolute heading. Holding the
-    right controller trigger sets ``head_yaw_front`` and slews yaw to zero while
+    right controller grip sets ``head_yaw_front`` and slews yaw to zero while
     roll/pitch tracking remains active.
     """
 

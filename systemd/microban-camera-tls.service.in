@@ -1,11 +1,11 @@
 [Unit]
 Description=Microban mutually authenticated latest-camera-snapshot proxy
 Documentation=file://@REPO_ROOT@/docs/pico_autostart.md
-Wants=network-online.target
+Wants=network-online.target microban-camera.service
 After=network-online.target microban-camera.service
-Requires=microban-camera.service
-StartLimitIntervalSec=30
-StartLimitBurst=10
+# Keep the TLS endpoint alive while the upstream camera restarts; snapshot
+# requests fail explicitly and recover as soon as uStreamer is available.
+StartLimitIntervalSec=0
 
 [Service]
 Type=simple

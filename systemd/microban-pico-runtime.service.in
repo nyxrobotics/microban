@@ -4,8 +4,9 @@ Documentation=file://@REPO_ROOT@/docs/pico_autostart.md
 Wants=network-online.target
 After=network-online.target microban-gamepad.service
 Conflicts=microban-gamepad.service
-StartLimitIntervalSec=30
-StartLimitBurst=5
+# Hardware and network outages may last arbitrarily long. Every retry starts
+# torque-off and still requires a fresh A -> R3 operator sequence.
+StartLimitIntervalSec=0
 
 [Service]
 Type=simple

@@ -21,6 +21,7 @@ sudo bash systemd/configure-pico-services.sh enable
 
 ```bash
 sudo bash systemd/configure-pico-services.sh status
+sudo bash systemd/configure-pico-services.sh health
 sudo bash systemd/configure-pico-services.sh logs
 sudo bash systemd/configure-pico-services.sh restart
 sudo bash systemd/configure-pico-services.sh disable
@@ -31,6 +32,11 @@ sudo bash systemd/configure-pico-services.sh uninstall
 `enable`は競合する既存の`microban-gamepad.service`を停止・無効化してからPICO runtimeを起動します。これにより、
 両方がboot対象になった場合の起動順依存を避けます。PICO側の`disable`だけではgamepad serviceを再有効化しません。
 gamepadへ戻す場合はPICO側を`disable`した後、既存のgamepad用設定手順で明示的に有効化してください。
+
+`status`は設定した構成のsystemd状態を表示し、`health`はenable/active、旧gamepadとの競合、UDP 5555、
+camera構成時のHTTP 8080/TLS 8443 listenerまで検査して、未準備なら非zeroで終了します。cameraを使わない
+`--without-camera`構成では、存在しないcamera unitを異常扱いしません。runtimeとTLS proxyは一時的な
+network、camera、serial障害が長時間続いても再起動上限で停止せず、復旧を待ち続けます。
 
 `disable`はruntimeを先に停止し、その終了処理と独立したall-joint torque-off helperを実行してからcamera proxyを
 停止します。`uninstall`は既存のuStreamer service、camera証明書・秘密鍵、学習済みONNXを削除しません。
