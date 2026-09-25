@@ -10,9 +10,16 @@ selects the policy momentarily:
 
 This is a controller state, not an environment-variable switch. The bridge
 places `locomotion_policy` in every complete UDP snapshot. Changing X state while
-the left trigger is held immediately disarms walking, and a released-trigger
-snapshot is required before a later trigger press can move the robot. The two
-policies never own the same 18 joints in the same scheduler tick.
+the left trigger is held changes the policy without dropping the trigger or stick
+command. The selector hands ownership to only one 18-joint child at a time and
+starts/steps the new child in that same scheduler cycle.
+
+The learned policy is optional. A missing/rejected ONNX, load/start/inference
+exception, non-finite output, or invalid body-target snapshot immediately uses the
+pinned `walk.onnx` actor with the current joystick command. A tracker/policy fault
+latches `walk` for the rest of that left-trigger activation; recovery is considered
+only after release and the next press, so it cannot surprise-switch mid-stride.
+Ordinary X press/release remains momentary and can switch policies while held.
 
 The other controls are unchanged:
 
@@ -181,9 +188,19 @@ needed:
 make teleop-run HOST=microban
 ```
 
-If `pico_teleop.onnx` is absent, normal walking remains available, but pressing
-X to request `pico_teleop` stops the control loop and disables torque rather than
-falling back silently.
+If `pico_teleop.onnx` is absent or rejected, pressing X continues with normal
+walking and records the fallback reason in `PolicySelectableWalkMove.fallback_reason`.
+An atomically replaced file is parsed in a background thread and becomes eligible
+on a later trigger activation; the process does not need to restart. Construction
+is behind the injected `LearnedMoveFactory`, so a future policy-contract parser can
+be added without changing the fallback state machine.
+
+Camera transport is deliberately outside this decision. A stale/missing frame,
+invalid calibration/FOV/IPD, or passthrough failure may degrade the HMD view, but
+does not remove `walk`, zero the joystick, or affect policy inference. Only loss of
+the controller/network command stream invokes the existing watchdog: it returns a
+neutral `UserInput`, releases locomotion, and requires a fresh trigger release
+before reconnection can move again.
 
 ## Body-target reference
 
@@ -191,9 +208,10 @@ Training defines hand/foot commands as offsets from an episode-reset reference
 in the robot trunk frame (`+X` forward, `+Y` left, `+Z` up). The PICO bridge must
 capture the matching body-tracker reference at explicit policy enable/reset and
 keep it fixed. It must never send the absolute human pelvis-to-limb positions.
-Stale/jumping tracking clears the calibration, removes `walk`, zeros velocity
-and sends no hand/foot target. Walking stays disarmed until the left trigger is
-released and a fresh reference can be established again. The robot receiver
+Stale/jumping tracking clears the learned target calibration and sends no trusted
+hand/foot target. The robot receiver then keeps the held trigger and joystick but
+downgrades that activation to the legacy walking actor. A fresh learned-policy
+activation is considered after the left trigger is released. The robot receiver
 independently requires
 `body_target_contract: "microban_pico_offsets_v2_both_feet_stationary"`,
 `body_target_safety_margin: 0.8`, complete left/right foot and hand pairs, and
@@ -206,9 +224,10 @@ single-foot Z is `(0.0025, 0.040] m`, matching v4 training from the floor
 boundary upward. After that projection, if both foot offsets are active, each is
 limited to X/Y `[-0.008, 0.008] m` and active Z `(0.0025, 0.016] m`, and `vx`,
 `vy` and `vtheta` must all be exactly zero. A missing, legacy-v1, malformed,
-out-of-range or moving-both-feet snapshot immediately removes `walk`, zeros
-velocity, clears both target pairs and requires a valid released-trigger
-snapshot before rearming.
+out-of-range or moving-both-feet snapshot clears both target pairs, marks the
+learned channel degraded and preserves the packet's `walk` deadman plus velocity
+for the legacy actor. It never turns an optional tracker fault into loss of basic
+joystick locomotion.
 
 The runtime clips received offsets to the ONNX-recorded training support before
 inference. This is a last safety boundary, not a substitute for bridge-side

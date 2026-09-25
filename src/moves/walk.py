@@ -3,14 +3,19 @@
 
 import math
 
-import onnxruntime as ort
 import numpy as np
+import onnxruntime as ort
 
-from constants import MOTOR_TO_ID, NEUTRAL_POSE, KP_DEFAULT, KP_RL, OBSERVATION_DOF_ORDER
+from constants import (
+    KP_DEFAULT,
+    KP_RL,
+    MOTOR_TO_ID,
+    NEUTRAL_POSE,
+    OBSERVATION_DOF_ORDER,
+)
 from controller import ControllerProtocol
-from observer import Observation
 from moves.move import MotorCommand, Move, MoveState
-
+from observer import Observation
 
 # Set to True to log motor positions and voltages during the walk move
 # Note: requires to set observe_voltage = True in the Observer to log voltages
@@ -122,6 +127,11 @@ class WalkMove(Move):
         }
         
     def on_start(self, obs: Observation, command: MotorCommand) -> None:
+        # A learned-policy runtime fault can hand ownership to this proven actor in
+        # one control cycle. Never carry action/phase recurrence from an older walk
+        # activation into that emergency handoff.
+        self._last_action = [0.0] * len(OBSERVATION_DOF_ORDER)
+        self._phase_step = 0
         if self._controller is not None:
             ids = [MOTOR_TO_ID[name] for name in OBSERVATION_DOF_ORDER]
             self._controller.sync_write_kp(ids, [KP_RL] * len(ids))
@@ -179,7 +189,7 @@ class WalkMove(Move):
 
         # Log positions and voltages
         if LOGGING:
-            for name in MOTOR_TO_ID.keys():
+            for name in MOTOR_TO_ID:
                 self.position[name].append(obs.robot_state.motor_positions[name])
                 self.voltage[name].append(obs.robot_state.motor_voltages[name])
 

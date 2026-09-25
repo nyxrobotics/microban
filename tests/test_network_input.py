@@ -88,12 +88,20 @@ def pico_release_packet(
 
 
 def arm_pico(source):
-    # Changing joint owner forces one released packet; the second release arms it.
+    # Repeated release snapshots are harmless and mirror the steady bridge stream.
     source._apply(pico_release_packet(0))
     source._apply(pico_release_packet(1))
 
 
 class NetworkInputTest(unittest.TestCase):
+    def assert_degraded_fallback(self, state, expected_velocity):
+        self.assertIn("walk", state.active_moves)
+        self.assertEqual(state.velocity, expected_velocity)
+        self.assertEqual(state.locomotion_policy, "walk")
+        self.assertTrue(state.learned_policy_degraded)
+        self.assertIsNone(state.foot_target)
+        self.assertIsNone(state.hand_target)
+
     def test_complete_snapshots_do_not_retain_old_velocity(self):
         source = NetworkInputSource(stale_after_s=0.5)
         source._apply(packet(0))  # released snapshot arms walking
@@ -159,27 +167,25 @@ class NetworkInputTest(unittest.TestCase):
         source._apply(packet(5, ["walk"], {"vx": 1.0}))
         self.assertIn("walk", source.read().active_moves)
 
-    def test_policy_change_requires_released_deadman_and_an_extra_release(self):
+    def test_policy_button_change_never_drops_held_deadman_or_joystick(self):
         source = NetworkInputSource(stale_after_s=0.5)
         source._apply(packet(0))
         source._apply(packet(1, ["walk"], {"vx": 0.5}))
         self.assertIn("walk", source.read().active_moves)
 
-        # A malicious/inconsistent sender cannot hot-swap the joint owner while
-        # the trigger is active. It forces a stop and retains the old policy.
-        source._apply(packet(2, ["walk"], {"vx": 0.5}, policy="pico_teleop"))
+        # The receiver carries the requested button state, while the policy selector
+        # keeps the current child for this activation. It must not manufacture a stop.
+        source._apply(pico_walk_packet(2, {"vx": 0.5}))
         state = source.read()
-        self.assertNotIn("walk", state.active_moves)
-        self.assertEqual(state.locomotion_policy, "walk")
+        self.assertIn("walk", state.active_moves)
+        self.assertEqual(state.velocity["vx"], 0.5)
+        self.assertEqual(state.locomotion_policy, "pico_teleop")
+        self.assertFalse(state.learned_policy_degraded)
 
-        # A released packet accepts the mode but does not arm it. A second
-        # released snapshot and a later trigger press are required.
+        # Release is the activation boundary; the next press may use the new policy.
         source._apply(pico_release_packet(3))
         self.assertEqual(source.read().locomotion_policy, "pico_teleop")
         source._apply(pico_walk_packet(4, {"vx": 0.5}))
-        self.assertNotIn("walk", source.read().active_moves)
-        source._apply(pico_release_packet(5))
-        source._apply(pico_walk_packet(6, {"vx": 0.5}))
         state = source.read()
         self.assertIn("walk", state.active_moves)
         self.assertEqual(state.locomotion_policy, "pico_teleop")
@@ -189,7 +195,7 @@ class NetworkInputTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             source._apply(packet(0, policy="unknown"))
 
-    def test_pico_walk_requires_both_foot_targets_and_release_to_rearm(self):
+    def test_missing_foot_targets_fall_back_without_losing_joystick(self):
         incomplete_targets = (
             None,
             {"left": COMPLETE_FEET["left"]},
@@ -199,36 +205,32 @@ class NetworkInputTest(unittest.TestCase):
         for incomplete in incomplete_targets:
             with self.subTest(foot_target=incomplete):
                 source = NetworkInputSource(stale_after_s=0.5)
-                # Mode changes require one extra released snapshot before arming.
                 source._apply(pico_release_packet(0))
-                source._apply(pico_release_packet(1))
 
                 source._apply(
                     pico_walk_packet(
-                        2,
+                        1,
                         {"vx": 0.8},
                         foot_target=incomplete,
                     )
                 )
-                refused = source.read()
-                self.assertNotIn("walk", refused.active_moves)
-                self.assertEqual(
-                    refused.velocity,
-                    {"vx": 0.0, "vy": 0.0, "vtheta": 0.0},
-                )
-                self.assertFalse(source._walk_armed)
-                self.assertIsNone(refused.foot_target)
-                self.assertIsNone(refused.hand_target)
+                fallback = source.read()
+                self.assertIn("walk", fallback.active_moves)
+                self.assertEqual(fallback.velocity["vx"], 0.8)
+                self.assertEqual(fallback.locomotion_policy, "walk")
+                self.assertTrue(fallback.learned_policy_degraded)
+                self.assertTrue(source._walk_armed)
+                self.assertIsNone(fallback.foot_target)
+                self.assertIsNone(fallback.hand_target)
 
-                # Supplying targets while still held cannot bypass the latch.
-                source._apply(pico_walk_packet(3, {"vx": 0.8}))
-                self.assertNotIn("walk", source.read().active_moves)
-
-                source._apply(pico_release_packet(4))
-                source._apply(pico_walk_packet(5, {"vx": 0.8}))
-                accepted = source.read()
-                self.assertIn("walk", accepted.active_moves)
-                self.assertEqual(accepted.velocity["vx"], 0.8)
+                # Receiver recovery also does not drop the command. The selector
+                # independently keeps legacy latched until trigger release.
+                source._apply(pico_walk_packet(2, {"vx": 0.8}))
+                recovered = source.read()
+                self.assertIn("walk", recovered.active_moves)
+                self.assertEqual(recovered.velocity["vx"], 0.8)
+                self.assertEqual(recovered.locomotion_policy, "pico_teleop")
+                self.assertFalse(recovered.learned_policy_degraded)
 
     def test_pico_contract_accepts_exact_80_percent_boundaries(self):
         source = NetworkInputSource(stale_after_s=0.5)
@@ -283,14 +285,16 @@ class NetworkInputTest(unittest.TestCase):
                 source = NetworkInputSource(stale_after_s=0.5)
                 arm_pico(source)
                 source._apply(pico_walk_packet(2, velocity, foot_target=feet))
-                refused = source.read()
-                self.assertNotIn("walk", refused.active_moves)
-                self.assertEqual(
-                    refused.velocity,
-                    {"vx": 0.0, "vy": 0.0, "vtheta": 0.0},
+                fallback = source.read()
+                self.assert_degraded_fallback(
+                    fallback,
+                    {
+                        "vx": velocity.get("vx", 0.0),
+                        "vy": velocity.get("vy", 0.0),
+                        "vtheta": velocity.get("vtheta", 0.0),
+                    },
                 )
-                self.assertIsNone(refused.foot_target)
-                self.assertFalse(source._walk_armed)
+                self.assertTrue(source._walk_armed)
 
     def test_pico_contract_rejects_unprojected_support_floor_band(self):
         invalid_feet = (
@@ -312,14 +316,12 @@ class NetworkInputTest(unittest.TestCase):
                 source = NetworkInputSource(stale_after_s=0.5)
                 arm_pico(source)
                 source._apply(pico_walk_packet(2, foot_target=feet))
-                refused = source.read()
-                self.assertNotIn("walk", refused.active_moves)
-                self.assertEqual(
-                    refused.velocity,
+                fallback = source.read()
+                self.assert_degraded_fallback(
+                    fallback,
                     {"vx": 0.0, "vy": 0.0, "vtheta": 0.0},
                 )
-                self.assertIsNone(refused.foot_target)
-                self.assertFalse(source._walk_armed)
+                self.assertTrue(source._walk_armed)
 
     def test_pico_contract_rejects_epsilon_outside_80_percent_bounds(self):
         invalid_targets = (
@@ -357,17 +359,14 @@ class NetworkInputTest(unittest.TestCase):
                         hand_target=hands,
                     )
                 )
-                refused = source.read()
-                self.assertNotIn("walk", refused.active_moves)
-                self.assertEqual(
-                    refused.velocity,
-                    {"vx": 0.0, "vy": 0.0, "vtheta": 0.0},
+                fallback = source.read()
+                self.assert_degraded_fallback(
+                    fallback,
+                    {"vx": 0.8, "vy": 0.0, "vtheta": 0.0},
                 )
-                self.assertIsNone(refused.foot_target)
-                self.assertIsNone(refused.hand_target)
-                self.assertFalse(source._walk_armed)
+                self.assertTrue(source._walk_armed)
 
-    def test_pico_contract_missing_or_wrong_metadata_stops_current_walk(self):
+    def test_bad_pico_metadata_falls_back_without_stopping_current_walk(self):
         mutations = (
             ("missing_contract", lambda value: value.pop("body_target_contract")),
             (
@@ -407,16 +406,13 @@ class NetworkInputTest(unittest.TestCase):
                 mutate(invalid)
 
                 source._apply(invalid)
-                refused = source.read()
+                fallback = source.read()
 
-                self.assertNotIn("walk", refused.active_moves)
-                self.assertEqual(
-                    refused.velocity,
-                    {"vx": 0.0, "vy": 0.0, "vtheta": 0.0},
+                self.assert_degraded_fallback(
+                    fallback,
+                    {"vx": 0.8, "vy": 0.0, "vtheta": 0.0},
                 )
-                self.assertIsNone(refused.foot_target)
-                self.assertIsNone(refused.hand_target)
-                self.assertFalse(source._walk_armed)
+                self.assertTrue(source._walk_armed)
 
     def test_pico_contract_requires_complete_paired_hands(self):
         incomplete_hands = (
@@ -437,17 +433,14 @@ class NetworkInputTest(unittest.TestCase):
                 arm_pico(source)
                 source._apply(pico_walk_packet(2, {"vx": 0.8}))
                 source._apply(pico_walk_packet(3, {"vx": 0.8}, hand_target=hands))
-                refused = source.read()
-                self.assertNotIn("walk", refused.active_moves)
-                self.assertEqual(
-                    refused.velocity,
-                    {"vx": 0.0, "vy": 0.0, "vtheta": 0.0},
+                fallback = source.read()
+                self.assert_degraded_fallback(
+                    fallback,
+                    {"vx": 0.8, "vy": 0.0, "vtheta": 0.0},
                 )
-                self.assertIsNone(refused.foot_target)
-                self.assertIsNone(refused.hand_target)
-                self.assertFalse(source._walk_armed)
+                self.assertTrue(source._walk_armed)
 
-    def test_invalid_pico_release_packet_fails_closed_and_cannot_rearm(self):
+    def test_invalid_pico_release_remains_a_release_and_arms_next_press(self):
         invalid_releases = (
             (
                 "malformed_target",
@@ -470,23 +463,22 @@ class NetworkInputTest(unittest.TestCase):
                 source._apply(pico_walk_packet(2, {"vx": 0.8}))
                 self.assertIn("walk", source.read().active_moves)
 
-                # Invalid release packets are accepted sequence snapshots, so
-                # they must replace the active command with a fail-closed state.
+                # It is still a released deadman snapshot: targets are discarded,
+                # the policy is downgraded, and the following press may walk.
                 source._apply(invalid_release)
-                refused = source.read()
-                self.assertNotIn("walk", refused.active_moves)
+                released = source.read()
+                self.assertNotIn("walk", released.active_moves)
                 self.assertEqual(
-                    refused.velocity,
+                    released.velocity,
                     {"vx": 0.0, "vy": 0.0, "vtheta": 0.0},
                 )
-                self.assertIsNone(refused.foot_target)
-                self.assertIsNone(refused.hand_target)
-                self.assertFalse(source._walk_armed)
+                self.assertEqual(released.locomotion_policy, "walk")
+                self.assertTrue(released.learned_policy_degraded)
+                self.assertIsNone(released.foot_target)
+                self.assertIsNone(released.hand_target)
+                self.assertTrue(source._walk_armed)
 
                 source._apply(pico_walk_packet(4, {"vx": 0.8}))
-                self.assertNotIn("walk", source.read().active_moves)
-                source._apply(pico_release_packet(5))
-                source._apply(pico_walk_packet(6, {"vx": 0.8}))
                 self.assertIn("walk", source.read().active_moves)
 
     def test_pico_target_components_require_json_numbers(self):
@@ -506,16 +498,13 @@ class NetworkInputTest(unittest.TestCase):
                 )
 
                 source._apply(invalid)
-                refused = source.read()
+                fallback = source.read()
 
-                self.assertNotIn("walk", refused.active_moves)
-                self.assertEqual(
-                    refused.velocity,
-                    {"vx": 0.0, "vy": 0.0, "vtheta": 0.0},
+                self.assert_degraded_fallback(
+                    fallback,
+                    {"vx": 0.8, "vy": 0.0, "vtheta": 0.0},
                 )
-                self.assertIsNone(refused.foot_target)
-                self.assertIsNone(refused.hand_target)
-                self.assertFalse(source._walk_armed)
+                self.assertTrue(source._walk_armed)
 
     def test_invalid_held_pico_policy_change_clears_targets(self):
         source = NetworkInputSource(stale_after_s=0.5)
@@ -530,19 +519,15 @@ class NetworkInputTest(unittest.TestCase):
                 body_target_contract="wrong",
             )
         )
-        refused = source.read()
+        fallback = source.read()
 
-        self.assertEqual(refused.locomotion_policy, "walk")
-        self.assertNotIn("walk", refused.active_moves)
-        self.assertEqual(
-            refused.velocity,
-            {"vx": 0.0, "vy": 0.0, "vtheta": 0.0},
+        self.assert_degraded_fallback(
+            fallback,
+            {"vx": 0.8, "vy": 0.0, "vtheta": 0.0},
         )
-        self.assertIsNone(refused.foot_target)
-        self.assertIsNone(refused.hand_target)
-        self.assertFalse(source._walk_armed)
+        self.assertTrue(source._walk_armed)
 
-    def test_invalid_pico_contract_requires_release_to_rearm(self):
+    def test_tracker_recovery_never_interrupts_held_joystick(self):
         source = NetworkInputSource(stale_after_s=0.5)
         arm_pico(source)
         source._apply(pico_walk_packet(2, {"vx": 0.8}))
@@ -555,10 +540,19 @@ class NetworkInputTest(unittest.TestCase):
                 body_target_contract="wrong",
             )
         )
-        self.assertNotIn("walk", source.read().active_moves)
+        degraded = source.read()
+        self.assert_degraded_fallback(
+            degraded,
+            {"vx": 0.8, "vy": 0.0, "vtheta": 0.0},
+        )
         source._apply(pico_walk_packet(4, {"vx": 0.8}))
-        self.assertNotIn("walk", source.read().active_moves)
+        recovered = source.read()
+        self.assertIn("walk", recovered.active_moves)
+        self.assertEqual(recovered.velocity["vx"], 0.8)
+        self.assertEqual(recovered.locomotion_policy, "pico_teleop")
+        self.assertFalse(recovered.learned_policy_degraded)
 
+        # Release/press remains the selector's policy-retry boundary.
         source._apply(pico_release_packet(5))
         source._apply(pico_walk_packet(6, {"vx": 0.8}))
         self.assertIn("walk", source.read().active_moves)
@@ -578,6 +572,25 @@ class NetworkInputTest(unittest.TestCase):
         accepted = source.read()
         self.assertIn("walk", accepted.active_moves)
         self.assertEqual(accepted.velocity["vx"], 0.7)
+
+    def test_camera_diagnostics_never_gate_trigger_or_joystick(self):
+        source = NetworkInputSource(stale_after_s=0.5)
+        source._apply(packet(0))
+        visual_fault = packet(1, ["walk"], {"vx": 0.6, "vtheta": -0.4})
+        visual_fault.update(
+            camera_fresh=False,
+            camera_configuration_valid=False,
+            stereo_fov_valid=False,
+            eye_baseline_valid=False,
+        )
+
+        source._apply(visual_fault)
+        state = source.read()
+
+        self.assertIn("walk", state.active_moves)
+        self.assertEqual(state.velocity["vx"], 0.6)
+        self.assertEqual(state.velocity["vtheta"], -0.4)
+        self.assertFalse(state.learned_policy_degraded)
 
     def test_non_finite_value_is_rejected(self):
         source = NetworkInputSource()

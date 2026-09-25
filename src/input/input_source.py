@@ -1,11 +1,17 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright 2026 Marc Duclusaud
 
+import math
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-import math
 
-from constants import VX_MAX, VX_MAX_BACKWARD, VY_MAX, VTHETA_MAX_STATIONARY, VTHETA_MAX_MOVING
+from constants import (
+    VTHETA_MAX_MOVING,
+    VTHETA_MAX_STATIONARY,
+    VX_MAX,
+    VX_MAX_BACKWARD,
+    VY_MAX,
+)
 
 
 @dataclass
@@ -17,10 +23,16 @@ class UserInput:
     show_imu: bool = False
 
     # Low-level locomotion policy selected by the PICO controller.  The network
-    # receiver accepts only these named modes and changes mode only while the
-    # walking deadman is released.  Keyboard/gamepad operation stays on the
-    # established walking policy.
+    # receiver accepts only these named modes. Invalid optional body tracking is
+    # downgraded to the established walk policy without dropping joystick input.
+    # Keyboard/gamepad operation always stays on that established policy.
     locomotion_policy: str = "walk"
+
+    # Receiver-only degradation signal. True means ``pico_teleop`` was requested
+    # but its optional body/tracker payload was unusable, so the selector must use
+    # the baseline actor for the rest of this trigger activation. Ordinary policy
+    # button changes leave this false and are deferred until the next activation.
+    learned_policy_degraded: bool = False
 
     # Desired camera orientation in radians. Roll/pitch are gravity-aligned; yaw is
     # relative to the trunk (the IMU has no stable absolute-yaw reference). None means

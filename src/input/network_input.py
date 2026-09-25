@@ -31,8 +31,9 @@ paired feet and hands, and stay inside the bridge's 80% training envelope.
 After the bridge projects a support foot into its floor band, two active foot
 offsets use the narrower simultaneous-foot envelope and require an exactly zero
 twist command.
-Any mismatch stops and disarms walking immediately, clears both target pairs,
-and requires another trigger release.
+Any mismatch clears both target pairs and downgrades that snapshot to the proven
+``walk`` policy without discarding its trigger or joystick command. The optional
+tracking channel can therefore degrade without disabling basic locomotion.
 """
 
 import json
@@ -247,6 +248,7 @@ class NetworkInputSource(InputSource):
                 velocity=dict(self._state.velocity),
                 show_imu=self._state.show_imu,
                 locomotion_policy=self._state.locomotion_policy,
+                learned_policy_degraded=self._state.learned_policy_degraded,
                 head_orientation=dict(self._state.head_orientation)
                 if self._state.head_orientation
                 else None,
@@ -461,28 +463,16 @@ class NetworkInputSource(InputSource):
                 return
             self._last_seq = seq
 
-            mode_changed = locomotion_policy != self._state.locomotion_policy
-            force_disarmed = mode_changed
-            if mode_changed:
-                self._walk_armed = False
-            if mode_changed and "walk" in requested_moves:
-                # A policy may never change while either policy owns the joints.
-                # Ignore the requested mode and force a deadman release instead.
-                locomotion_policy = self._state.locomotion_policy
-                requested_moves.discard("walk")
-                parsed_velocity = {"vx": 0.0, "vy": 0.0, "vtheta": 0.0}
-                parsed_foot_target = None
-                parsed_hand_target = None
-                mode_changed = False
-
-            if incoming_pico_packet and not pico_body_target_valid:
-                # Never raise and retain an older walking snapshot for a bad
-                # body-target contract. Apply this packet as an immediate stop
-                # and require an explicit later release before re-arming.
-                self._walk_armed = False
-                force_disarmed = True
-                requested_moves.discard("walk")
-                parsed_velocity = {"vx": 0.0, "vy": 0.0, "vtheta": 0.0}
+            learned_policy_degraded = (
+                incoming_pico_packet and not pico_body_target_valid
+            )
+            if learned_policy_degraded:
+                # Body tracking is an enhancement, not the locomotion deadman.
+                # Replace the learned-policy request with the proven velocity actor
+                # while retaining this packet's trigger and joystick values. The
+                # selector latches that fallback until a trigger release so recovery
+                # cannot hot-swap policies mid-stride.
+                locomotion_policy = "walk"
                 parsed_foot_target = None
                 parsed_hand_target = None
 
@@ -490,7 +480,7 @@ class NetworkInputSource(InputSource):
                 self._walk_armed = False
                 requested_moves.discard("walk")
                 parsed_velocity = {"vx": 0.0, "vy": 0.0, "vtheta": 0.0}
-            elif "walk" not in requested_moves and not force_disarmed:
+            elif "walk" not in requested_moves:
                 self._walk_armed = True
             elif not self._walk_armed:
                 requested_moves.discard("walk")
@@ -500,6 +490,7 @@ class NetworkInputSource(InputSource):
                 active_moves=requested_moves,
                 velocity=parsed_velocity,
                 locomotion_policy=locomotion_policy,
+                learned_policy_degraded=learned_policy_degraded,
                 head_orientation=parsed_orientation,
                 head_yaw_front=head_yaw_front,
                 foot_target=parsed_foot_target,
