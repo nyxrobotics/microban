@@ -75,6 +75,7 @@ from moves.pico_hybrid import (
     EXPECTED_V12_ACTUAL_DYNAMIC_SOFT_LIMIT_OVERSHOOT_MAX_RAD,
     EXPECTED_V12_BOOTSTRAP_MAPPING_VERSION,
     EXPECTED_V12_COMMANDED_TARGET_SOFT_LIMIT_EXCESS_MAX_RAD,
+    EXPECTED_V12_DEADLINE_FINAL_TRACKING_PROFILE,
     EXPECTED_V12_EXTRA_OBSERVATION_COLUMNS,
     EXPECTED_V12_HAND_TARGET_FK,
     EXPECTED_V12_LEGACY_PROBE_SHA256,
@@ -567,6 +568,19 @@ class PicoHybridMoveTest(unittest.TestCase):
             PHYSICAL_MOTOR_TARGET_GUARD_SEMANTICS,
             "compiled_soft_limit_continuous_clamp_preserve_policy_recurrence_v1",
         )
+
+    def test_v12_contract_accepts_deadline_final_tracking_profile(self):
+        metadata = valid_v12_metadata()
+        metadata["v12_tracking_profile"] = (
+            EXPECTED_V12_DEADLINE_FINAL_TRACKING_PROFILE
+        )
+        session = FakeSession(metadata=metadata)
+
+        move = PicoHybridMove(session=session)
+
+        self.assertEqual(move._contract.training_contract_version, "12")
+        self.assertEqual(move._compatibility_smoke_sample_count, 16)
+        self.assertEqual(session.run_count, 16)
 
     def test_v12_soft_limits_match_metadata_or_compiled_fallback(self):
         metadata = valid_v12_metadata()

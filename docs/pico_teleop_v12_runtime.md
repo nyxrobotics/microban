@@ -119,9 +119,12 @@ The ONNX metadata must bind the final checkpoint to all of the following:
   physical target-position normalization, and the complete `hand_target_fk`
   JSON contract (joint box, HOME, reachable AABB, scale, wire/runtime limits and
   named evaluator points);
-- the final nine-scenario locomotion report, mandatory
-  `full_body_reachable_performance_perturbation_v2` tracking report, and schema-v2
-  stage-gate identities;
+- the final nine-scenario locomotion report and schema-v2 stage-gate identities;
+  the tracking profile must be either canonical
+  `full_body_reachable_performance_perturbation_v2` or the explicitly
+  lineage-bound deadline-final profile
+  `deadline_full_body_hand_rms35mm_foot_strict_perturbation_v1`; every other
+  profile is rejected;
 - the tracking report's exact 18-joint v12, pinned-source and learned-minus-
   source raw-action extrema, plus the versioned runtime guard derived from
   those hash-bound values;
@@ -147,6 +150,11 @@ For v12, the learned-policy load smoke checks the fixed output shape, float32
 finiteness and the authenticated finite-amplitude guard on every fixed sample.
 The validator reports that guard and an explicit `walk_fallback` record containing
 the fallback path, digest, tensor contract, providers and smoke result.
+For v12 it also hashes the validator, contract parser, selector, walk runtime,
+configuration, `uv.lock`, and fallback ONNX; all seven hashes must equal the
+identities embedded by the packager. It reports that complete identity and
+rehashes it after both CPU smokes so a source changed during admission is
+rejected.
 Contract-v10 validation remains a separate branch with its existing bounded-
 action and effective-action checks unchanged.
 

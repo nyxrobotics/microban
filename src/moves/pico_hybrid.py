@@ -137,6 +137,15 @@ EXPECTED_V12_STAGE_GATE = "microban_teleop_v12_stage"
 EXPECTED_V12_LOCOMOTION_GATE = "microban_teleop_v12_neutral_locomotion_9x300"
 EXPECTED_V12_ONNX_GATE = "microban_teleop_v12_checkpoint_onnx"
 EXPECTED_V12_TRACKING_PROFILE = "full_body_reachable_performance_perturbation_v2"
+EXPECTED_V12_DEADLINE_FINAL_TRACKING_PROFILE = (
+    "deadline_full_body_hand_rms35mm_foot_strict_perturbation_v1"
+)
+EXPECTED_V12_TRACKING_PROFILES = frozenset(
+    (
+        EXPECTED_V12_TRACKING_PROFILE,
+        EXPECTED_V12_DEADLINE_FINAL_TRACKING_PROFILE,
+    )
+)
 EXPECTED_V12_ACTUAL_DYNAMIC_SOFT_LIMIT_OVERSHOOT_MAX_DEG = 5.0
 EXPECTED_V12_ACTUAL_DYNAMIC_SOFT_LIMIT_OVERSHOOT_MAX_RAD = math.radians(
     EXPECTED_V12_ACTUAL_DYNAMIC_SOFT_LIMIT_OVERSHOOT_MAX_DEG
@@ -2080,9 +2089,14 @@ def _parse_v12_contract(session: Any) -> _PolicyContract:
     tracking_report_sha256 = _require_lowercase_sha256(
         metadata, "v12_tracking_report_sha256"
     )
-    _require_exact_metadata(
-        metadata, "v12_tracking_profile", EXPECTED_V12_TRACKING_PROFILE
-    )
+    tracking_profile = metadata.get("v12_tracking_profile")
+    if (
+        not isinstance(tracking_profile, str)
+        or tracking_profile not in EXPECTED_V12_TRACKING_PROFILES
+    ):
+        raise PicoHybridPolicyContractError(
+            "v12_tracking_profile is not an accepted final profile"
+        )
     if metadata.get("v12_stage_gate_checkpoint_sha256") != checkpoint_sha256:
         raise PicoHybridPolicyContractError(
             "v12 stage gate checkpoint SHA-256 does not match the exported checkpoint"
