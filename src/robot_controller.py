@@ -41,7 +41,7 @@ class RobotController:
         self._last_goals = dict(self._last_positions)
         self._proxy_ignore_until: dict[int, float] = {}
         self._head_last_read_s: dict[int, float] = {}
-        self._imu_reader = ThreadedIMUReader(i2c_bus=IMU_I2C_BUS, frequency_hz=200.0)
+        self._imu_reader = ThreadedIMUReader(i2c_bus=IMU_I2C_BUS, frequency_hz=100.0)
         self._imu_reader.start()
 
     @property
