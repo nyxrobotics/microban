@@ -31,6 +31,7 @@ class RobotController:
         self._head_cursor = 0
         self._retry_after: dict[tuple[str, tuple[int, ...]], float] = {}
         self._head_retry_after: dict[int, float] = {}
+        self._head_failures: dict[int, int] = {}
         self._stale_ids = set(MOTOR_TO_ID.values())
         self._pending_enable: set[int] = set()
         self._last_positions = {MOTOR_TO_ID[name]: float(NEUTRAL_POSE[name]) for name in MOTOR_TO_ID}
@@ -155,7 +156,11 @@ class RobotController:
                     self._state_failures.pop(key, None)
                 else:
                     if len(group) == 1:
-                        self._state_retry_after[key] = now + 0.2
+                        motor_id = group[0]
+                        max_delay = 0.2 if motor_id // 10 in (1, 2) else 1.0
+                        self._state_retry_after[key] = now + min(
+                            max_delay, 0.2 * 2 ** min(failures - 1, 3)
+                        )
                     next_groups.append(group)
                 continue
             self._state_failures.pop(key, None)
@@ -192,8 +197,13 @@ class RobotController:
                     raise RuntimeError("non-finite head position")
             except (RuntimeError, OSError, TypeError, ValueError):
                 self._stale_ids.add(motor_id)
-                self._head_retry_after[motor_id] = now + 0.2
+                failures = self._head_failures.get(motor_id, 0) + 1
+                self._head_failures[motor_id] = failures
+                self._head_retry_after[motor_id] = now + min(
+                    1.0, 0.2 * 2 ** min(failures - 1, 3)
+                )
                 return
+            self._head_failures.pop(motor_id, None)
             previous_s = self._head_last_read_s.get(motor_id)
             if previous_s is not None and now > previous_s:
                 self._last_velocities[motor_id] = (value - self._last_positions[motor_id]) / (now - previous_s)
