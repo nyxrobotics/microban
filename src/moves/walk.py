@@ -24,6 +24,10 @@ LOGGING = False
 # Policy name
 AGENT_NAME = "walk.onnx"
 
+# Reject gross actor corruption before a position target reaches the servo bus.
+# Valid policy outputs are passed through unchanged; this is not a joint clamp.
+_POLICY_MAX_TARGET_ABS_RAD = 2.0 * math.pi
+
 # Neck roll/pitch joint ranges (rad), from src/model/mjcf/robot.xml. The stabilization
 # below clips to these so a large trunk tilt can't request an out-of-range neck target.
 NECK_ROLL_RANGE = (-0.436332, 0.436332)
@@ -50,6 +54,8 @@ class WalkMove(Move):
         super().__init__()
         self._controller = controller
         self._last_action = [0.0] * len(OBSERVATION_DOF_ORDER)
+        self._last_safe_targets: dict[str, float] = {}
+        self._last_invalid_action_warn_s = -math.inf
 
         # Load ONNX policy
         session_options = ort.SessionOptions()
@@ -146,6 +152,9 @@ class WalkMove(Move):
             command.target_angles[name] = obs.robot_state.motor_positions.get(
                 name, NEUTRAL_POSE[name]
             )
+        self._last_safe_targets = {
+            name: command.target_angles[name] for name in OBSERVATION_DOF_ORDER
+        }
         self._stop_start_time_s = None
         self._stop_start_angles = {}
         self.state = MoveState.ACTIVE
@@ -168,18 +177,48 @@ class WalkMove(Move):
                 command.target_angles[name] = obs.robot_state.motor_positions.get(
                     name, NEUTRAL_POSE[name]
                 )
+            self._last_safe_targets = {
+                name: command.target_angles[name] for name in OBSERVATION_DOF_ORDER
+            }
             return
         
         # Run policy
-        input_obs = self.build_observation(obs)
-        ort_inputs = {self._ort_session.get_inputs()[0].name: [input_obs]}
-        ort_outs = self._ort_session.run(None, ort_inputs)
-        action = ort_outs[0][0]
-        self._last_action = action.tolist()
+        try:
+            input_obs = self.build_observation(obs)
+            ort_inputs = {self._ort_session.get_inputs()[0].name: [input_obs]}
+            ort_outs = self._ort_session.run(None, ort_inputs)
+            action = [float(value) for value in ort_outs[0][0]]
+            if len(action) != len(OBSERVATION_DOF_ORDER):
+                raise ValueError(f"actor returned {len(action)} actions")
+            if not all(math.isfinite(value) for value in action):
+                raise ValueError("actor returned a non-finite action")
+            targets = {
+                name: self._default_pose[name] + action[i] * self.action_scale
+                for i, name in enumerate(OBSERVATION_DOF_ORDER)
+            }
+            if not all(
+                math.isfinite(target) and abs(target) <= _POLICY_MAX_TARGET_ABS_RAD
+                for target in targets.values()
+            ):
+                raise ValueError("actor target exceeded the gross position bound")
+        except Exception as exc:
+            now = float(obs.robot_state.time_s)
+            if now - self._last_invalid_action_warn_s >= 1.0:
+                print(f"Walk policy output unavailable; holding last targets: {exc}", flush=True)
+                self._last_invalid_action_warn_s = now
+            for name in OBSERVATION_DOF_ORDER:
+                command.target_angles[name] = self._last_safe_targets.get(
+                    name, obs.robot_state.motor_positions.get(name, NEUTRAL_POSE[name])
+                )
+            for name in ("neck_roll", "neck_pitch"):
+                command.target_angles[name] = obs.robot_state.motor_positions.get(
+                    name, NEUTRAL_POSE[name]
+                )
+            return
 
-        # Update command
-        for i, name in enumerate(OBSERVATION_DOF_ORDER):
-            command.target_angles[name] = self._default_pose[name] + action[i] * self.action_scale
+        self._last_action = action
+        command.target_angles.update(targets)
+        self._last_safe_targets = targets
 
         # Head stabilization: hold the neck level (or, with VR teleop active, at the
         # commanded head_orientation) against trunk roll/pitch. Independent of the RL policy

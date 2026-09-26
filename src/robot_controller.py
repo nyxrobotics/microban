@@ -6,7 +6,7 @@ import numpy as np
 import math
 import time
 
-from constants import MOTOR_TO_ID, MOTOR_SIGN, NEUTRAL_POSE, IMU_I2C_BUS, PRESENT_CURRENT_UNIT_A
+from constants import MOTOR_TO_ID, MOTOR_SIGN, NEUTRAL_POSE, IMU_I2C_BUS, PRESENT_CURRENT_UNIT_A, KP_DEFAULT
 from imu_reader import ThreadedIMUReader
 
 
@@ -34,11 +34,21 @@ class RobotController:
         self._head_failures: dict[int, int] = {}
         self._stale_ids = set(MOTOR_TO_ID.values())
         self._pending_enable: set[int] = set()
+        self._requested_torque_ids: set[int] = set()
+        self._torque_unconfirmed_ids: set[int] = set()
+        self._torque_check_ids = tuple(MOTOR_TO_ID.values())
+        self._torque_check_cursor = 0
+        self._torque_check_next_s = time.monotonic() + 0.1
+        self._torque_warn_after_s: dict[int, float] = {}
+        # A servo that reappears after losing torque must join a moving target
+        # gradually, even if the scheduler has already finished its A slew.
+        self._torque_rejoin_last_s: dict[int, float] = {}
         self._last_positions = {MOTOR_TO_ID[name]: float(NEUTRAL_POSE[name]) for name in MOTOR_TO_ID}
         self._last_velocities = {motor_id: 0.0 for motor_id in MOTOR_TO_ID.values()}
         self._last_currents = {motor_id: 0.0 for motor_id in MOTOR_TO_ID.values()}
         self._last_voltages = {motor_id: 0.0 for motor_id in MOTOR_TO_ID.values()}
         self._last_goals = dict(self._last_positions)
+        self._last_kp = {motor_id: KP_DEFAULT for motor_id in MOTOR_TO_ID.values()}
         self._proxy_ignore_until: dict[int, float] = {}
         self._head_last_read_s: dict[int, float] = {}
         self._imu_reader = ThreadedIMUReader(i2c_bus=IMU_I2C_BUS, frequency_hz=100.0)
@@ -58,7 +68,9 @@ class RobotController:
         return frozenset(
             self._id_to_name[motor_id]
             for motor_id in MOTOR_TO_ID.values()
-            if motor_id in self._stale_ids or now < self._proxy_ignore_until.get(motor_id, 0.0)
+            if motor_id in self._stale_ids
+            or motor_id in self._torque_unconfirmed_ids
+            or now < self._proxy_ignore_until.get(motor_id, 0.0)
         )
 
     @property
@@ -77,12 +89,17 @@ class RobotController:
     def _position_recovered(self, motor_id: int, value: float) -> None:
         was_stale = motor_id in self._stale_ids
         self._last_positions[motor_id] = value
-        if motor_id in self._pending_enable:
+        if motor_id in self._pending_enable and motor_id not in self._requested_torque_ids:
+            self._pending_enable.discard(motor_id)
+        if motor_id in self._pending_enable and motor_id not in self._torque_unconfirmed_ids:
             # A previously silent joint must receive its measured pose before
             # torque is enabled. A failed write leaves it pending for retry.
             try:
                 self._controller.sync_write_goal_position(
                     [motor_id], [value * self._id_to_sign[motor_id]]
+                )
+                self._controller.sync_write_position_p_gain(
+                    [motor_id], [self._last_kp[motor_id]]
                 )
                 self._controller.sync_write_torque_enable([motor_id], [True])
             except (RuntimeError, OSError):
@@ -90,6 +107,7 @@ class RobotController:
                 return
             self._last_goals[motor_id] = value
             self._pending_enable.discard(motor_id)
+            self._torque_rejoin_last_s[motor_id] = time.monotonic()
         self._stale_ids.discard(motor_id)
         if was_stale:
             # Current estimation aligns feedback with delayed goal history.
@@ -216,6 +234,12 @@ class RobotController:
             raise ValueError("motor ID and torque value counts differ")
         write_ids, write_values = [], []
         for motor_id, enabled in zip(ids, values):
+            if not enabled:
+                # Clear the desired state before touching the bus so a failed
+                # B write can never cause the feedback loop to re-enable it.
+                self._requested_torque_ids.discard(motor_id)
+                self._torque_unconfirmed_ids.discard(motor_id)
+                self._torque_rejoin_last_s.pop(motor_id, None)
             if enabled and motor_id in self._stale_ids:
                 self._pending_enable.add(motor_id)
             else:
@@ -225,6 +249,9 @@ class RobotController:
                     self._pending_enable.discard(motor_id)
         if write_ids:
             self._controller.sync_write_torque_enable(write_ids, write_values)
+        for motor_id, enabled in zip(ids, values):
+            if enabled:
+                self._requested_torque_ids.add(motor_id)
 
     def sync_write_status_return_level(self, ids: list[int], levels: list[int]) -> None:
         self._controller.sync_write_status_return_level(ids, levels)
@@ -232,19 +259,151 @@ class RobotController:
     def sync_write_goal_position(self, ids: list[int], positions: list[float]) -> None:
         if len(ids) != len(positions):
             raise ValueError("motor ID and goal counts differ")
-        live = [(motor_id, float(pos)) for motor_id, pos in zip(ids, positions) if motor_id not in self._stale_ids]
+        now = time.monotonic()
+        live = []
+        rejoining = []
+        for motor_id, raw_pos in zip(ids, positions):
+            if motor_id in self._stale_ids or motor_id in self._torque_unconfirmed_ids:
+                continue
+            pos = float(raw_pos)
+            last_rejoin_s = self._torque_rejoin_last_s.get(motor_id)
+            if last_rejoin_s is not None:
+                dt = max(0.001, min(0.1, now - last_rejoin_s))
+                max_step = 0.5 * dt
+                previous = self._last_goals[motor_id]
+                delta = max(-max_step, min(max_step, pos - previous))
+                sent = previous + delta
+                rejoining.append((motor_id, abs(sent - pos) <= 1e-9))
+                pos = sent
+            live.append((motor_id, pos))
         if live:
             self._controller.sync_write_goal_position(
                 [motor_id for motor_id, _ in live],
                 [pos * self._id_to_sign[motor_id] for motor_id, pos in live],
             )
             self._last_goals.update(live)
+            for motor_id, finished in rejoining:
+                if finished:
+                    self._torque_rejoin_last_s.pop(motor_id, None)
+                else:
+                    self._torque_rejoin_last_s[motor_id] = now
 
     def sync_read_present_position(self, ids: list[int]) -> list[float]:
         self._read_core_state()
         if self._head_ids:
             self._poll_one_head_position()
+        self._poll_torque_state()
         return [self._last_positions[motor_id] for motor_id in ids]
+
+    def _torque_warn(self, motor_id: int, detail: str) -> None:
+        now = time.monotonic()
+        if now < self._torque_warn_after_s.get(motor_id, 0.0):
+            return
+        self._torque_warn_after_s[motor_id] = now + 10.0
+        print(
+            f"Servo torque feedback: id={motor_id} "
+            f"name={self._id_to_name[motor_id]} {detail}",
+            end="\r\n", flush=True,
+        )
+
+    def _seed_rejoin_goal(self, motor_id: int) -> float:
+        """Hold a freshly measured pose before restoring this servo's drive."""
+        motor_position = self._scalar(
+            self._controller.read_present_position(motor_id)
+        )
+        measured = motor_position * self._id_to_sign[motor_id]
+        if not math.isfinite(measured):
+            raise ValueError("non-finite measured position")
+        self._controller.sync_write_goal_position([motor_id], [motor_position])
+        self._last_goals[motor_id] = measured
+        # RAM gains may have reset if the servo rebooted.  Preserve the A or
+        # policy gain that the scheduler most recently requested for this ID.
+        self._controller.sync_write_position_p_gain(
+            [motor_id], [self._last_kp[motor_id]]
+        )
+        return measured
+
+    def _poll_torque_state(self) -> None:
+        if not self._requested_torque_ids:
+            return
+        now = time.monotonic()
+        if now < self._torque_check_next_s:
+            return
+        self._torque_check_next_s = now + 0.1
+        motor_id = self._torque_check_ids[self._torque_check_cursor]
+        self._torque_check_cursor = (self._torque_check_cursor + 1) % len(self._torque_check_ids)
+        if motor_id not in self._requested_torque_ids:
+            return
+
+        try:
+            enabled = self._scalar(self._controller.read_torque_enable(motor_id))
+        except (RuntimeError, OSError, TypeError, ValueError) as exc:
+            self._torque_warn(motor_id, f"read failed: {exc}")
+            return
+        if enabled == 1.0:
+            if motor_id in self._torque_unconfirmed_ids:
+                try:
+                    measured = self._seed_rejoin_goal(motor_id)
+                except (RuntimeError, OSError, TypeError, ValueError) as exc:
+                    self._torque_warn(motor_id, f"ON, rejoin deferred: {exc}")
+                    return
+                self._finish_torque_rejoin(motor_id, measured, "ON again")
+            return
+        if enabled != 0.0:
+            self._torque_warn(motor_id, f"invalid register value: {enabled!r}")
+            return
+
+        self._torque_unconfirmed_ids.add(motor_id)
+        self._torque_rejoin_last_s.pop(motor_id, None)
+        try:
+            hardware_error = self._scalar(
+                self._controller.read_hardware_error_status(motor_id)
+            )
+            if hardware_error != 0.0:
+                self._torque_warn(
+                    motor_id,
+                    f"OFF, hardware error={hardware_error}; enable deferred",
+                )
+                return
+            # Never revive a servo against an old goal register.  The next
+            # scheduler command is slew-limited from this fresh pose.
+            measured = self._seed_rejoin_goal(motor_id)
+            if motor_id not in self._requested_torque_ids:
+                return
+            self._controller.sync_write_torque_enable([motor_id], [True])
+            verified = self._scalar(
+                self._controller.read_torque_enable(motor_id)
+            )
+        except (RuntimeError, OSError, TypeError, ValueError) as exc:
+            self._torque_warn(motor_id, f"OFF, recovery deferred: {exc}")
+            return
+        if verified != 1.0:
+            self._torque_warn(
+                motor_id,
+                f"OFF, retry did not take effect (register={verified!r})",
+            )
+            return
+
+        self._finish_torque_rejoin(motor_id, measured, "was OFF")
+
+    def _finish_torque_rejoin(
+        self, motor_id: int, measured: float, previous_status: str
+    ) -> None:
+        was_stale = motor_id in self._stale_ids
+        self._last_positions[motor_id] = measured
+        self._pending_enable.discard(motor_id)
+        self._stale_ids.discard(motor_id)
+        self._torque_unconfirmed_ids.discard(motor_id)
+        self._torque_rejoin_last_s[motor_id] = time.monotonic()
+        if was_stale:
+            self._proxy_ignore_until[motor_id] = time.monotonic() + 0.12
+        self._torque_warn_after_s.pop(motor_id, None)
+        print(
+            f"Servo torque feedback: id={motor_id} "
+            f"name={self._id_to_name[motor_id]} {previous_status}; "
+            "seeded measured goal and restored torque with 0.5 rad/s rejoin",
+            end="\r\n", flush=True,
+        )
 
     def read_present_position(self, motor_id: int) -> float:
         try:
@@ -303,6 +462,7 @@ class RobotController:
 
     def sync_write_kp(self, ids: list[int], gains: list[int]) -> None:
         self._controller.sync_write_position_p_gain(ids, gains)
+        self._last_kp.update(zip(ids, gains))
 
     def read_acc(self) -> tuple[float, float, float]:
         """Return raw accelerometer (ax, ay, az) in g."""

@@ -85,7 +85,8 @@ MOTOR_SIGN = {
 }
 
 # Position P Gain (Dynamixel register value)
-KP_DEFAULT: int = 400        # ~0.886 Nm/rad in MuJoCo
+KP_DEFAULT: int = 400        # Legacy gain used by existing policy and simulation
+KP_HARDWARE_NEUTRAL: int = 900  # XC330-T288-T factory P gain for A neutral hold
 KP_RL: int = 125             # ~0.277 Nm/rad in MuJoCo
 KP_GAIN_PRM: float = 0.0022  # Nm/rad per register unit (for Xl330). NOT updated for XC330-T288-T: likely scales with the ~2.85x higher torque constant (see PROXY_KT) but the exact derivation (register-to-PWM/current scaling) is not confident enough here to rescale blindly. Needs review.
 

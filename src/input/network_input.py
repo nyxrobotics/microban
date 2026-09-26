@@ -461,9 +461,26 @@ class NetworkInputSource(InputSource):
             try:
                 self._apply(packet)
             except (KeyError, IndexError, TypeError, ValueError, OverflowError):
-                # A malformed datagram must never kill the receiver thread and leave
-                # the scheduler unknowingly running on its previous command.
-                continue
+                # A bad tracking or motion field must not discard an otherwise
+                # valid B/A/R3 command from the same authenticated snapshot.
+                # Re-parse just the session, sequence and hardware gate with
+                # optional motion fields omitted.  _apply() still validates the
+                # sender's session/sequence and the three boolean gate fields.
+                if not isinstance(packet, dict):
+                    continue
+                gate_packet = {
+                    key: packet[key]
+                    for key in (
+                        "version", "session_id", "seq", "torque_enabled",
+                        "torque_off_requested", "policy_enabled",
+                    )
+                    if key in packet
+                }
+                try:
+                    self._apply(gate_packet, gate_only=True)
+                except (KeyError, IndexError, TypeError, ValueError, OverflowError):
+                    # An invalid gate/session is not an authenticated command.
+                    continue
 
     def _reply_clock_ping(self, packet: dict, addr: tuple[str, int]) -> None:
         """Echo a bridge-side latency probe. Stateless: never touches UserInput.
@@ -493,7 +510,7 @@ class NetworkInputSource(InputSource):
         except OSError:
             pass
 
-    def _apply(self, packet: dict) -> None:
+    def _apply(self, packet: dict, *, gate_only: bool = False) -> None:
         if not isinstance(packet, dict):
             raise TypeError("packet must be a JSON object")
         if packet.get("version") != 1:
@@ -534,18 +551,23 @@ class NetworkInputSource(InputSource):
 
         orientation = packet.get("head_orientation")
         if orientation is not None:
-            if not isinstance(orientation, dict):
-                raise TypeError("head_orientation must be an object or null")
-            parsed_orientation = {
-                axis: _finite_float(orientation.get(axis, 0.0))
-                for axis in ("roll", "pitch", "yaw")
-            }
+            try:
+                if not isinstance(orientation, dict):
+                    raise TypeError("head_orientation must be an object or null")
+                parsed_orientation = {
+                    axis: _finite_float(orientation.get(axis, 0.0))
+                    for axis in ("roll", "pitch", "yaw")
+                }
+            except (TypeError, ValueError, OverflowError):
+                # Head tracking is optional; keep this snapshot's buttons,
+                # joystick and other independently valid tracking channels.
+                parsed_orientation = None
         else:
             parsed_orientation = None
 
         head_yaw_front = packet.get("head_yaw_front", False)
         if not isinstance(head_yaw_front, bool):
-            raise TypeError("head_yaw_front must be boolean")
+            head_yaw_front = False
 
         # Only an explicit B event requests torque OFF. A bridge restart or
         # missing tracking frame emits false/false, which holds the current
@@ -734,7 +756,7 @@ class NetworkInputSource(InputSource):
                 # takeover packets.  The independent right-trigger arm deadman
                 # follows the same rule so a restarted bridge cannot jump to a
                 # cached arm pose while the physical trigger is already held.
-                if "walk" in requested_moves or arm_tracking_enabled:
+                if ("walk" in requested_moves and not balance_only) or arm_tracking_enabled:
                     return
                 if self._session_id is not None:
                     self._retired_sessions.append(self._session_id)
@@ -769,9 +791,10 @@ class NetworkInputSource(InputSource):
                 arm_tracking_enabled = False
                 parsed_arm_joint_target = None
             elif balance_only:
-                # R3 is an edge-authorized request and the left trigger is
-                # released here, satisfying its rearm boundary.
-                self._walk_armed = True
+                # A complete R3 snapshot proves the left trigger is released.
+                # A gate-only retry has no trigger data, so keep the balance
+                # actor active at zero velocity without arming later walking.
+                self._walk_armed = not gate_only
             elif "walk" not in requested_moves:
                 self._walk_armed = True
             elif not self._walk_armed:

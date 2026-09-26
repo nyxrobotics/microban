@@ -10,7 +10,7 @@ from typing import Optional
 
 from constants import (
     MOTOR_TO_ID,
-    KP_DEFAULT,
+    KP_HARDWARE_NEUTRAL,
     NEUTRAL_POSE,
     BAM_MAX_CURRENT,
     OVERCURRENT_CUTOFF_A,
@@ -59,6 +59,8 @@ class Scheduler:
         input_source: Optional[InputSource] = None,
         moves: Optional[dict[str, Move]] = None,
         imu_max_age_s: float = 0.1,
+        # On hardware, warn after this interval while holding the last goals.
+        # Other input modes retain the historical terminal safety timeout.
         imu_shutdown_after_s: float = 0.75,
         hardware_power_control: bool | None = None,
         serial_hold_on_error: bool = False,
@@ -112,6 +114,7 @@ class Scheduler:
         self._imu_max_age_s = imu_max_age_s
         self._imu_shutdown_after_s = imu_shutdown_after_s
         self._imu_unsafe_since_s: float | None = None
+        self._imu_extended_hold_warned = False
         self._safety_hold_active = False
         self._overcurrent_ticks = 0
 
@@ -271,6 +274,7 @@ class Scheduler:
                         self._last_imu_stale_warn_s = start_time
                 else:
                     self._imu_unsafe_since_s = None
+                    self._imu_extended_hold_warned = False
 
                 try:
                     hardware_mode, hardware_command = self._apply_hardware_gate(
@@ -362,24 +366,44 @@ class Scheduler:
                     and self._imu_unsafe_since_s is not None
                     and start_time - self._imu_unsafe_since_s >= self._imu_shutdown_after_s
                 ):
-                    print(
-                        f"IMU remained unsafe for {self._imu_shutdown_after_s:.2f} s "
-                        "— stopping control loop and disabling torque",
-                        end="\r\n",
-                        flush=True,
-                    )
-                    break
+                    if self._hardware_power_control:
+                        if not self._imu_extended_hold_warned:
+                            print(
+                                "IMU remains unavailable; holding previous motor goals and torque",
+                                end="\r\n",
+                                flush=True,
+                            )
+                            self._imu_extended_hold_warned = True
+                    else:
+                        print(
+                            f"IMU remained unsafe for {self._imu_shutdown_after_s:.2f} s "
+                            "— stopping control loop and disabling torque",
+                            end="\r\n",
+                            flush=True,
+                        )
+                        break
 
                 # Update move states and dispatch one call per move per tick
                 if hardware_mode == "limp":
-                    # B, link loss, or process startup: torque is physically
-                    # off and no goal position is written.
+                    # Explicit B or process startup: torque is physically off
+                    # and no goal position is written. Network gaps are held
+                    # earlier without changing the hardware gate.
                     command = MotorCommand(target_angles={})
                     self._safety_hold_active = False
                     self._serial_write_hold_pending = False
                     self._serial_write_hold_since_s = None
                 elif hold_for_safety:
-                    command = self._measured_hold_command(robot_state)
+                    # A transient IMU outage must not turn the joints into a
+                    # compliant follower or end the hardware control process.
+                    # Freeze the exact last goal; policy output stays inhibited
+                    # until the IMU is valid again.
+                    if not imu_safe and self._hardware_power_control and self._last_sent_targets:
+                        command = MotorCommand(target_angles=dict(self._last_sent_targets))
+                        if hardware_mode == "neutral":
+                            self._hardware_neutral_targets = dict(self._last_sent_targets)
+                            self._hardware_neutral_last_time_s = robot_state.time_s
+                    else:
+                        command = self._measured_hold_command(robot_state)
                     if command is None:
                         print(
                             "Invalid motor feedback during safety hold — stopping control "
@@ -581,7 +605,7 @@ class Scheduler:
 
             motor_ids = list(MOTOR_TO_ID.values())
             self.controller.sync_write_kp(
-                motor_ids, [KP_DEFAULT] * len(motor_ids)
+                motor_ids, [KP_HARDWARE_NEUTRAL] * len(motor_ids)
             )
             # A servo can retain an old goal register while torque is off.
             # Seed every goal with the freshly measured pose *before* enabling
@@ -636,14 +660,14 @@ class Scheduler:
             self._hardware_neutral_last_time_s = obs.robot_state.time_s
             motor_ids = list(MOTOR_TO_ID.values())
             # Remove the last learned target before changing gains.  Without
-            # this ordering, raising an RL joint from KP_RL to KP_DEFAULT could
+            # this ordering, raising an RL joint to neutral holding gain could
             # briefly amplify its error against a stale policy goal.
             self.controller.sync_write_goal_position(
                 motor_ids, [measured[name] for name in MOTOR_TO_ID]
             )
             self._remember_goal_write(measured)
             self.controller.sync_write_kp(
-                motor_ids, [KP_DEFAULT] * len(motor_ids)
+                motor_ids, [KP_HARDWARE_NEUTRAL] * len(motor_ids)
             )
             print(
                 "Hardware gate: policy withheld; returning to neutral",
