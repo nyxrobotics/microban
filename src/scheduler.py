@@ -127,10 +127,11 @@ class Scheduler:
         self._fallen_tick_count = 0
         self._standing_tick_count = 0
         self._getup_active_override = False
-        # The shipped get-up actor has shown saturated outputs in offline
-        # replays. Allow a bounded attempt only: GetupMove limits each joint's
-        # target speed and rejects extreme raw actions; this scheduler stops
-        # the attempt on a policy fault, poor progress, or an eight-second cap.
+        # getup.onnx was retrained with the raw/pre-clip observation bug fixed
+        # (the "last action" term now records the actually-applied, clipped
+        # target instead of the raw un-clipped network output) and redeployed
+        # 2026-09-26. Auto-trigger uses bounded target speed, progress, and
+        # time limits. The manual "g" toggle remains available.
         self._getup_auto_trigger_enabled = True
         self._getup_auto_started_s: float | None = None
         self._getup_auto_best_gravity_z = 1.0
@@ -505,6 +506,7 @@ class Scheduler:
                     gyro = obs.robot_state.gyro
                     quat = obs.robot_state.quat
                     print("--------------------------------------------", end="\r\n", flush=True)
+                    print(f"Policy: {'ON' if hardware_mode == 'policy' else 'OFF'}", end="\r\n", flush=True)
                     if gyro:
                         gx, gy, gz = gyro
                         print(f"Gyro: gx={gx:+.3f}  gy={gy:+.3f}  gz={gz:+.3f} rad/s", end="\r\n", flush=True)
