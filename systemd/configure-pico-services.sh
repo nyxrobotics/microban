@@ -12,6 +12,8 @@ readonly camera_unit_path="/etc/systemd/system/${camera_unit}"
 readonly runtime_env="/etc/default/microban-pico-runtime"
 readonly camera_env="/etc/default/microban-camera-tls"
 readonly state_file="/etc/default/microban-pico-services"
+readonly allow_ip_helper="/usr/local/sbin/microban-pico-allowed-ip"
+readonly allow_ip_sudoers="/etc/sudoers.d/050_microban-pico-allow-ip"
 
 usage() {
   cat <<'EOF'
@@ -143,7 +145,7 @@ PY
       [[ "${key_mode}" == "600" || "${key_mode}" == "400" ]] || die "camera TLS server key must be mode 0600 or 0400"
     fi
 
-    install -d -m 0755 /etc/systemd/system /etc/default
+    install -d -m 0755 /etc/systemd/system /etc/default /usr/local/sbin /etc/sudoers.d
     temp_runtime=$(mktemp /etc/default/.microban-pico-runtime.XXXXXX)
     temp_camera=$(mktemp /etc/default/.microban-camera-tls.XXXXXX)
     temp_state=$(mktemp /etc/default/.microban-pico-services.XXXXXX)
@@ -164,6 +166,14 @@ PY
     mv -f -- "${temp_state}" "${state_file}"
     trap - EXIT
     render_unit "${repo_root}/systemd/${runtime_unit}.in" "${runtime_unit_path}" "${service_user}" "${service_home}"
+    install -o root -g root -m 0755 "${repo_root}/systemd/update_pico_allowed_ip.py" "${allow_ip_helper}"
+    temp_sudoers=$(mktemp /etc/sudoers.d/.microban-pico-allow-ip.XXXXXX)
+    trap 'rm -f -- "${temp_sudoers:-}"' EXIT
+    printf '%s ALL=(root) NOPASSWD: %s *\n' "${service_user}" "${allow_ip_helper}" > "${temp_sudoers}"
+    chmod 0440 "${temp_sudoers}"
+    visudo -cf "${temp_sudoers}" >/dev/null || die "invalid PICO allow-IP sudoers rule"
+    mv -f -- "${temp_sudoers}" "${allow_ip_sudoers}"
+    trap - EXIT
     if (( with_camera == 1 )); then
       render_unit "${repo_root}/systemd/${camera_unit}.in" "${camera_unit_path}" "${service_user}" "${service_home}"
     else
@@ -246,7 +256,7 @@ PY
   uninstall)
     (( $# == 0 )) || die "uninstall takes no options"
     systemctl disable --now "${runtime_unit}" "${camera_unit}" 2>/dev/null || true
-    rm -f -- "${runtime_unit_path}" "${camera_unit_path}" "${runtime_env}" "${camera_env}" "${state_file}"
+    rm -f -- "${runtime_unit_path}" "${camera_unit_path}" "${runtime_env}" "${camera_env}" "${state_file}" "${allow_ip_helper}" "${allow_ip_sudoers}"
     systemctl daemon-reload
     echo "Removed PICO runtime units/config. Camera stream service and TLS identities were preserved."
     ;;
