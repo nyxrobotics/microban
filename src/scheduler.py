@@ -746,6 +746,10 @@ class Scheduler:
 
     def _remember_goal_write(self, targets: dict[str, float]) -> None:
         """Track the last goal register value for every joint written so far."""
+        actual_targets = getattr(self.controller, "last_goal_targets", None)
+        if actual_targets is not None:
+            self._last_sent_targets = dict(actual_targets)
+            return
         if self._last_sent_targets is None:
             self._last_sent_targets = {}
         self._last_sent_targets.update(targets)
@@ -873,13 +877,20 @@ class Scheduler:
           toward an overshot RL target, while still flagging stalled motors (low dq, high error).
         """
         currents = robot_state.motor_currents
+        stale_names = getattr(
+            self.controller,
+            "proxy_ignored_motor_names",
+            getattr(self.controller, "stale_motor_names", frozenset()),
+        )
         if currents:
-            return sum(abs(c) for c in currents.values())
+            return sum(abs(c) for name, c in currents.items() if name not in stale_names)
 
         positions = robot_state.motor_positions
         velocities = robot_state.motor_velocities
         total = 0.0
         for name, target in target_angles.items():
+            if name in stale_names:
+                continue
             pos = positions.get(name)
             if pos is None:
                 continue
