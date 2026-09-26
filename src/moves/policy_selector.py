@@ -311,6 +311,10 @@ class PolicySelectableWalkMove(Move):
         if self._selected is None or self._selected_name is None:
             raise RuntimeError("locomotion selector is active without a child")
 
+        if obs.user_input.balance_only:
+            # Left trigger released: a later press may retry learned control.
+            self._fallback_latched = False
+
         requested = self._requested_policy(obs)
         if self._selected_name == "pico_teleop" and requested != "pico_teleop":
             if obs.user_input.learned_policy_degraded:

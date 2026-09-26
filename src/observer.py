@@ -2,6 +2,7 @@
 # Copyright 2026 Marc Duclusaud
 
 from dataclasses import dataclass, field
+import math
 import time
 
 from controller import ControllerProtocol
@@ -60,18 +61,26 @@ class Observer:
 
         motor_names = list(MOTOR_TO_ID.keys())
         motor_ids = list(MOTOR_TO_ID.values())
-        angles = self.controller.sync_read_present_position(motor_ids)
+        angles = self._complete_motor_read(
+            "position", self.controller.sync_read_present_position(motor_ids), len(motor_ids)
+        )
         state.motor_positions = dict(zip(motor_names, angles))
 
-        velocities = self.controller.sync_read_present_velocity(motor_ids)
+        velocities = self._complete_motor_read(
+            "velocity", self.controller.sync_read_present_velocity(motor_ids), len(motor_ids)
+        )
         state.motor_velocities = dict(zip(motor_names, velocities))
 
         if self.observe_current:
-            currents = self.controller.sync_read_present_current(motor_ids)
+            currents = self._complete_motor_read(
+                "current", self.controller.sync_read_present_current(motor_ids), len(motor_ids)
+            )
             state.motor_currents = dict(zip(motor_names, currents))
 
         if self.observe_voltage:
-            voltages = self.controller.sync_read_present_input_voltage(motor_ids)
+            voltages = self._complete_motor_read(
+                "voltage", self.controller.sync_read_present_input_voltage(motor_ids), len(motor_ids)
+            )
             state.motor_voltages = dict(zip(motor_names, voltages))
 
         try:
@@ -94,3 +103,17 @@ class Observer:
                 self._last_imu_warn_s = now
 
         return state
+
+    @staticmethod
+    def _complete_motor_read(label: str, values, expected: int) -> list[float]:
+        """Treat a partial or invalid sync read as one missing observation tick."""
+        try:
+            result = [float(value) for value in values]
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise RuntimeError(f"invalid {label} motor feedback") from exc
+        if len(result) != expected or not all(math.isfinite(value) for value in result):
+            raise RuntimeError(
+                f"invalid {label} motor feedback: expected {expected} finite values, "
+                f"received {len(result)}"
+            )
+        return result

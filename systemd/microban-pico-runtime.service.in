@@ -15,11 +15,13 @@ WorkingDirectory=@REPO_ROOT@
 Environment=PYTHONPATH=@REPO_ROOT@/src
 Environment=MICROBAN_INPUT=network
 Environment=MICROBAN_START_TORQUE_OFF=1
+Environment=MICROBAN_SERIAL_HOLD_LAST_ON_ERROR=1
+Environment=MICROBAN_NETWORK_ALLOWED_IP_FILE=/etc/default/microban-pico-runtime
 EnvironmentFile=/etc/default/microban-pico-runtime
 ExecStartPre=@REPO_ROOT@/.venv/bin/python @REPO_ROOT@/tools/torque_off.py
 ExecStart=@REPO_ROOT@/.venv/bin/python -u @REPO_ROOT@/src/main.py
 ExecStopPost=-@REPO_ROOT@/.venv/bin/python @REPO_ROOT@/tools/torque_off.py
-# The runtime can deliberately exit cleanly after a serial/IMU safety stop.
+# The runtime can deliberately exit cleanly after an IMU safety stop.
 # Restarting is safe because startup is physically torque-off and requires a
 # fresh A -> R3 operator sequence before policy output can resume.
 Restart=always

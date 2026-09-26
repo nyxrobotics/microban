@@ -15,13 +15,15 @@ mid-stride.
 ## 実機の全関節ゲート（右手 B / A / R3）
 
 `MICROBAN_INPUT=network` の実機起動は必ず全関節トルクOFF・policy
-OFFから始まる。右手Bはいつでも全21関節のトルクをOFFにし、通信が
-0.3秒途切れた場合も同じ状態へ落ちる。右手AはトルクをONにする前に
+OFFから始まる。右手Bはいつでも全21関節のトルクをOFFにする。通信が
+途切れた場合は直前のサーボ目標とトルク状態を保持し、新しい動作目標を送らない。右手AはトルクをONにする前に
 現在角を全servoのgoalへ書き、古いgoalへの跳ねを防いだうえで、policy
 出力を使わず0.5 rad/s以下で全関節を `NEUTRAL_POSE` へ移す。
 
 右スティック押し込み（R3）は、Aの状態を一度受信した後に限り、通常の
-PICO teleop policy出力と初期姿勢復帰をトグルする。policy有効中にAを
+policy出力と初期姿勢復帰をトグルする。左トリガーを離していても、R3で
+policyを有効にすると既存の歩行policyへ速度ゼロを渡して立位を保つ。
+左トリガーを押すとPICO teleop policyに切り替わる。policy有効中にAを
 押した場合もpolicyを止め、同じ低速初期姿勢復帰へ入る。R3はトルクOFF
 中には無視される。B、A、R3の処理は個別moveより上位のschedulerが所有
 するため、脚だけでなく腕・首を含む全関節へ一貫して適用される。
@@ -69,9 +71,10 @@ without `soft_limit +/- 5 degrees` headroom.
 
 Both current bridge paths always serialize
 `locomotion_policy="pico_teleop"`. The left X/WebXR primary state is ignored.
-Holding the left trigger puts `walk` and `hmd_head` in `active_moves` and exposes
-the learned-policy body targets; releasing it removes those activations and
-starts the locomotion return to inactive neutral. The right trigger is separate:
+Holding the left trigger puts `walk` in `active_moves` and exposes
+the learned-policy body targets. R3 also keeps the baseline `walk` actor active
+at zero velocity while the left trigger is released. The right trigger puts
+`hmd_head` in `active_moves` for neck tracking:
 every valid PICO frame keeps `pico_arms` active, with
 `arm_tracking_enabled=true` and a paired bounded joint target while held, or
 `arm_tracking_enabled=false` and the exact authenticated PICO arm HOME while

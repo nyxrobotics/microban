@@ -1,6 +1,8 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright 2026 Marc Duclusaud
 
+import math
+
 import onnxruntime as ort
 
 from constants import KP_DEFAULT, KP_RL, MOTOR_TO_ID, NEUTRAL_POSE, OBSERVATION_DOF_ORDER
@@ -18,6 +20,8 @@ AGENT_NAME = "getup.onnx"
 _RECOVERY_SLEW_RATE_RAD_S = 0.5
 _RECOVERY_MIN_DT_S = 0.001
 _RECOVERY_MAX_DT_S = 0.1
+_POLICY_MAX_TARGET_SPEED_RAD_S = 0.5
+_POLICY_MAX_RAW_ACTION = 120.0
 
 
 class GetupMove(Move):
@@ -62,6 +66,9 @@ class GetupMove(Move):
         self._last_torque_enabled: bool | None = None
         self._recovery_targets: dict[str, float] | None = None
         self._recovery_last_time_s: float | None = None
+        self._policy_targets: dict[str, float] | None = None
+        self._policy_last_time_s: float | None = None
+        self.policy_faulted = False
 
     def on_start(self, obs: Observation, command: MotorCommand) -> None:
         if self._controller is not None:
@@ -80,6 +87,9 @@ class GetupMove(Move):
         # (re)activation instead of trusting a previous activation's state.
         self._last_torque_enabled = None
         self._recovery_targets = None
+        self._policy_targets = None
+        self._policy_last_time_s = None
+        self.policy_faulted = False
         self.state = MoveState.ACTIVE
 
     def step(self, obs: Observation, command: MotorCommand) -> None:
@@ -111,22 +121,62 @@ class GetupMove(Move):
         if not getup_armed:
             self._step_recover_to_neutral(obs, command)
             self._last_action = [0.0] * len(OBSERVATION_DOF_ORDER)
+            self._policy_targets = None
+            self._policy_last_time_s = None
+            return
+
+        if self.policy_faulted:
+            self._hold_policy_targets(obs, command)
             return
 
         input_obs = self.build_observation(obs)
         ort_inputs = {self._ort_session.get_inputs()[0].name: [input_obs]}
         ort_outs = self._ort_session.run(None, ort_inputs)
         action = ort_outs[0][0]
-        self._last_action = action.tolist()
+        if len(action) != len(OBSERVATION_DOF_ORDER) or any(
+            not math.isfinite(float(value)) or abs(float(value)) > _POLICY_MAX_RAW_ACTION
+            for value in action
+        ):
+            self.policy_faulted = True
+            self._hold_policy_targets(obs, command)
+            return
+        self._last_action = [float(value) for value in action]
 
         lo, hi = self._action_clip
+        if self._policy_targets is None:
+            self._policy_targets = {
+                name: obs.robot_state.motor_positions[name]
+                for name in OBSERVATION_DOF_ORDER
+            }
+            self._policy_last_time_s = obs.robot_state.time_s
+        now = obs.robot_state.time_s
+        previous = self._policy_last_time_s if self._policy_last_time_s is not None else now
+        dt = max(_RECOVERY_MIN_DT_S, min(_RECOVERY_MAX_DT_S, now - previous))
+        self._policy_last_time_s = now
+        max_step = _POLICY_MAX_TARGET_SPEED_RAD_S * dt
         for i, name in enumerate(OBSERVATION_DOF_ORDER):
-            target = self._default_pose[name] + action[i] * self.action_scale
-            command.target_angles[name] = max(lo, min(hi, target))
+            target = max(lo, min(hi, self._default_pose[name] + self._last_action[i] * self.action_scale))
+            current = self._policy_targets[name]
+            updated = current + max(-max_step, min(max_step, target - current))
+            self._policy_targets[name] = updated
+            command.target_angles[name] = updated
 
         # Not in the policy's action space (see class docstring): hold steady
         # at the continuously-measured position rather than a stale snapshot,
         # so a soft/compliant gain here does not accumulate drift.
+        for name in self._neck_joint_names:
+            command.target_angles[name] = obs.robot_state.motor_positions.get(
+                name, NEUTRAL_POSE[name]
+            )
+
+    def _hold_policy_targets(self, obs: Observation, command: MotorCommand) -> None:
+        """Keep the most recent bounded target when the actor output is unusable."""
+        for name in OBSERVATION_DOF_ORDER:
+            command.target_angles[name] = (
+                self._policy_targets[name]
+                if self._policy_targets is not None
+                else obs.robot_state.motor_positions[name]
+            )
         for name in self._neck_joint_names:
             command.target_angles[name] = obs.robot_state.motor_positions.get(
                 name, NEUTRAL_POSE[name]
@@ -205,5 +255,8 @@ class GetupMove(Move):
         self._last_action = [0.0] * len(OBSERVATION_DOF_ORDER)
         self._last_torque_enabled = None
         self._recovery_targets = None
+        self._policy_targets = None
+        self._policy_last_time_s = None
+        self.policy_faulted = False
         if self.state != MoveState.INACTIVE:
             self.state = MoveState.STARTING

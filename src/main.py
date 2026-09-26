@@ -35,9 +35,8 @@ def _another_session_running() -> bool:
     return True
 
 # Which moves can be toggled from the gamepad / keyboard. "getup" is also switched
-# automatically by the scheduler on a sustained fall (see Scheduler._update_getup_override,
-# currently disabled -- see Scheduler._getup_auto_trigger_enabled); the key/button here
-# is a manual override for testing. A/B/R3 are reserved for get-up policy testing
+# automatically by the scheduler on a sustained fall (see Scheduler._update_getup_override);
+# the key/button here is a manual override for testing. A/B/R3 are reserved for get-up policy testing
 # (see GamepadInputSource) and cannot be reassigned here.
 MOVE_KEYS = {"h": "head", "s": "squat", "v": "walk", "g": "getup"}
 GAMEPAD_BUTTON_MOVES = {"X": "walk"}
@@ -57,10 +56,12 @@ def build_input_source() -> InputSource:
         port = int(os.environ.get("MICROBAN_NETWORK_PORT", "5555"))
         stale_after_s = float(os.environ.get("MICROBAN_NETWORK_STALE_S", "0.3"))
         allowed_remote = os.environ.get("MICROBAN_NETWORK_ALLOWED_IP") or None
+        allowed_remote_file = os.environ.get("MICROBAN_NETWORK_ALLOWED_IP_FILE") or None
         return NetworkInputSource(
             port=port,
             stale_after_s=stale_after_s,
             allowed_remote=allowed_remote,
+            allowed_remote_file=allowed_remote_file,
         )
 
     if requested not in ("auto", "keyboard", "gamepad"):
@@ -127,6 +128,15 @@ def main() -> None:
                 "MICROBAN_START_TORQUE_OFF requires an input source with the "
                 "B/A/R3 hardware-power gate (use MICROBAN_INPUT=network or gamepad)"
             )
+        serial_hold_value = os.environ.get(
+            "MICROBAN_SERIAL_HOLD_LAST_ON_ERROR", "0"
+        ).strip().lower()
+        if serial_hold_value not in {"0", "1", "false", "true", "no", "yes"}:
+            raise ValueError(
+                "MICROBAN_SERIAL_HOLD_LAST_ON_ERROR must be 0/1, "
+                "false/true, or no/yes"
+            )
+        serial_hold_on_error = serial_hold_value in {"1", "true", "yes"}
 
         controller = RobotController()
         motor_ids = list(MOTOR_TO_ID.values())
@@ -157,6 +167,7 @@ def main() -> None:
             controller=controller,
             input_source=input_source,
             hardware_power_control=controls_motor_power,
+            serial_hold_on_error=serial_hold_on_error,
             moves={
                 "head": RotateHeadMove(),
                 "squat": SquatMove(),

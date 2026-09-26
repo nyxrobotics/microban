@@ -26,7 +26,7 @@ from constants import (
 )
 from controller import ControllerProtocol
 from imu_reader import imu_quat_to_body
-from observer import Observer, Observation
+from observer import Observer, Observation, RobotState
 from input.input_source import InputSource, UserInput, scale_velocity
 from moves.move import MotorCommand, Move, MoveState
 from moves.rotate_head import RotateHeadMove
@@ -61,6 +61,7 @@ class Scheduler:
         imu_max_age_s: float = 0.1,
         imu_shutdown_after_s: float = 0.75,
         hardware_power_control: bool | None = None,
+        serial_hold_on_error: bool = False,
     ):
         if not math.isfinite(imu_max_age_s) or imu_max_age_s <= 0.0:
             raise ValueError("imu_max_age_s must be finite and positive")
@@ -76,6 +77,7 @@ class Scheduler:
             if hardware_power_control is None
             else bool(hardware_power_control)
         )
+        self._serial_hold_on_error = serial_hold_on_error
 
         self.observer = Observer(self.controller)
 
@@ -88,6 +90,15 @@ class Scheduler:
 
         self.loop_start_time = time.perf_counter()
         self._serial_errors = 0
+        self._last_serial_warn_s = 0.0
+        self._serial_hold_since_s: float | None = None
+        self._serial_hold_extended = False
+        self._last_good_robot_state: RobotState | None = None
+        self._last_sent_targets: dict[str, float] | None = None
+        self._serial_write_errors = 0
+        self._serial_write_hold_pending = False
+        self._serial_write_hold_since_s: float | None = None
+        self._network_hold_active = False
         self._last_imu_print_s: float = 0.0
         self._last_imu_stale_warn_s: float = 0.0
         self._imu_max_age_s = imu_max_age_s
@@ -116,22 +127,14 @@ class Scheduler:
         self._fallen_tick_count = 0
         self._standing_tick_count = 0
         self._getup_active_override = False
-        # getup.onnx (as of 2026-09-26) trains a stable-but-garbage attractor:
-        # its "last action" observation term recorded the un-clipped raw
-        # network output during training instead of the +-1.57rad value
-        # actually applied, corrupting that term's running normalizer.
-        # Confirmed independently by two separate replays (open-loop numpy
-        # and this deploy code): saturated ~20-90rad/s raw output across
-        # standing, fallen, and randomized poses alike, not just an
-        # out-of-distribution edge case. Auto-triggering this on a real fall
-        # would drive the robot's own motors at that same policy's command,
-        # which is not "recovers awkwardly" but "thrashes" -- worse than not
-        # getting up at all. Leave the manual "g" toggle available (a human
-        # choosing to test it, presumably spotting the robot), but do not
-        # let a real fall autonomously invoke a policy validated to be this
-        # broken. Flip back to True once getup.onnx is retrained with the
-        # fixed observation term and re-validated.
-        self._getup_auto_trigger_enabled = False
+        # The shipped get-up actor has shown saturated outputs in offline
+        # replays. Allow a bounded attempt only: GetupMove limits each joint's
+        # target speed and rejects extreme raw actions; this scheduler stops
+        # the attempt on a policy fault, poor progress, or an eight-second cap.
+        self._getup_auto_trigger_enabled = True
+        self._getup_auto_started_s: float | None = None
+        self._getup_auto_best_gravity_z = 1.0
+        self._getup_auto_failed = False
         # History of sent target_angles, to align the current proxy with the delayed feedback:
         # the oldest entry is the command issued OVERCURRENT_PROXY_DELAY_TICKS ticks ago.
         self._cmd_history: deque[dict[str, float]] = deque(maxlen=OVERCURRENT_PROXY_DELAY_TICKS + 1)
@@ -157,16 +160,80 @@ class Scheduler:
                     robot_state = self.observer.read_state(self.dt)
                 except RuntimeError as e:
                     self._serial_errors += 1
+                    if self._serial_hold_on_error:
+                        if self._serial_hold_since_s is None:
+                            self._serial_hold_since_s = start_time
+                        held_for_s = start_time - self._serial_hold_since_s
+                        if start_time - self._last_serial_warn_s >= 1.0:
+                            print(
+                                f"Warning: serial read error ({self._serial_errors} "
+                                f"missed ticks); holding the previous motor goals: {e}",
+                                end="\r\n",
+                                flush=True,
+                            )
+                            self._last_serial_warn_s = start_time
+                        # Keep the operator's B button and the network deadman
+                        # effective even while all feedback reads are failing.
+                        if self.input_source is not None:
+                            if held_for_s >= 0.3:
+                                self.input_source.set_motion_inhibited(True)
+                                self._serial_hold_extended = True
+                            snapshot = self.input_source.read()
+                            if snapshot.hold_last_targets:
+                                self.input_source.set_motion_inhibited(True)
+                                self._safety_hold_active = True
+                            if (
+                                self._hardware_power_control
+                                and snapshot.torque_enabled is False
+                            ):
+                                try:
+                                    self._disable_hardware_torque()
+                                except RuntimeError as off_error:
+                                    # Leave the gate armed to retry the OFF write
+                                    # on the next tick; do not claim it succeeded.
+                                    print(
+                                        f"Warning: torque-off retry needed: {off_error}",
+                                        end="\r\n",
+                                        flush=True,
+                                    )
+                        if self._last_sent_targets is not None:
+                            self._cmd_history.append(dict(self._last_sent_targets))
+                        self._pace_tick(start_time)
+                        continue
                     if self._serial_errors >= 3:
                         print(f"Serial communication error: {e}", end="\r\n", flush=True)
                         break
                     print(f"Warning: serial read error (attempt {self._serial_errors}/3): {e}", end="\r\n", flush=True)
                     continue
+                if self._serial_hold_on_error and self._serial_errors:
+                    if self._serial_hold_extended:
+                        self._safety_hold_active = True
+                    self._serial_hold_since_s = None
+                    self._serial_hold_extended = False
                 self._serial_errors = 0
 
                 robot_state.time_s = start_time - self.loop_start_time
+                self._last_good_robot_state = robot_state
                 user_input = self.input_source.read() if self.input_source else UserInput()
                 user_input.velocity = scale_velocity(user_input.velocity)
+                if user_input.hold_last_targets:
+                    if not self._network_hold_active:
+                        print(
+                            "Network input unavailable; holding last motor goals and torque",
+                            end="\r\n",
+                            flush=True,
+                        )
+                        self._network_hold_active = True
+                    if self.input_source is not None:
+                        self.input_source.set_motion_inhibited(True)
+                    self._safety_hold_active = True
+                    if self._last_sent_targets is not None:
+                        self._cmd_history.append(dict(self._last_sent_targets))
+                    self._pace_tick(start_time)
+                    continue
+                if self._network_hold_active:
+                    print("Network input resumed", end="\r\n", flush=True)
+                    self._network_hold_active = False
                 obs = Observation(robot_state=robot_state, user_input=user_input)
 
                 imu_status = None
@@ -186,10 +253,39 @@ class Scheduler:
                 else:
                     self._imu_unsafe_since_s = None
 
-                hardware_mode, hardware_command = self._apply_hardware_gate(
-                    obs,
-                    allow_initial_enable=imu_safe,
-                )
+                try:
+                    hardware_mode, hardware_command = self._apply_hardware_gate(
+                        obs,
+                        allow_initial_enable=imu_safe,
+                    )
+                except RuntimeError as e:
+                    if not self._serial_hold_on_error:
+                        raise
+                    if self._serial_write_hold_since_s is None:
+                        self._serial_write_hold_since_s = start_time
+                    if start_time - self._last_serial_warn_s >= 1.0:
+                        print(
+                            f"Warning: serial hardware-gate write error; holding "
+                            f"previous motor goals and retrying: {e}",
+                            end="\r\n",
+                            flush=True,
+                        )
+                        self._last_serial_warn_s = start_time
+                    if (
+                        self.input_source is not None
+                        and start_time - self._serial_write_hold_since_s >= 0.3
+                    ):
+                        self.input_source.set_motion_inhibited(True)
+                        self._serial_hold_extended = True
+                    if self._last_sent_targets is not None:
+                        self._cmd_history.append(dict(self._last_sent_targets))
+                    self._pace_tick(start_time)
+                    continue
+                if self._serial_write_hold_since_s is not None and not self._serial_write_hold_pending:
+                    if self._serial_hold_extended:
+                        self._safety_hold_active = True
+                    self._serial_write_hold_since_s = None
+                    self._serial_hold_extended = False
 
                 # Fall / getup auto-switch: forces "getup" on (and "walk" off) after a
                 # sustained fall, and hands back to the user's own "walk" toggle once
@@ -202,8 +298,28 @@ class Scheduler:
                         )
                     if self._getup_active_override:
                         obs.user_input.active_moves = (obs.user_input.active_moves | {"getup"}) - {"walk"}
+                        can_attempt = imu_safe and hardware_mode == "policy"
+                        if can_attempt and self._getup_auto_started_s is None:
+                            self._getup_auto_started_s = start_time
+                            self._getup_auto_best_gravity_z = float(
+                                obs.robot_state.projected_gravity[2]
+                            )
+                            print("Automatic get-up attempt started", end="\r\n", flush=True)
+                        if can_attempt and self._getup_auto_started_s is not None:
+                            self._getup_auto_best_gravity_z = min(
+                                self._getup_auto_best_gravity_z,
+                                float(obs.robot_state.projected_gravity[2]),
+                            )
+                            elapsed_s = start_time - self._getup_auto_started_s
+                            if elapsed_s >= 8.0 or (
+                                elapsed_s >= 4.0 and self._getup_auto_best_gravity_z > -0.65
+                            ):
+                                self._stop_auto_getup("time limit or no upright progress")
+                        obs.user_input.getup_armed = can_attempt and not self._getup_auto_failed
+                        fall_pending = fall_pending or self._getup_auto_failed
                     else:
-                        obs.user_input.active_moves = obs.user_input.active_moves - {"getup"}
+                        self._getup_auto_started_s = None
+                        self._getup_auto_failed = False
 
                 # Keep the network deadman disarmed for the complete fault/fall/get-up
                 # interval. Removing the inhibit does not arm it: a later released
@@ -213,6 +329,7 @@ class Scheduler:
                     or fall_pending
                     or self._getup_active_override
                     or hardware_mode != "policy"
+                    or (self._serial_write_hold_pending and self._serial_hold_extended)
                 )
                 if self.input_source:
                     self.input_source.set_motion_inhibited(motion_inhibited)
@@ -254,6 +371,8 @@ class Scheduler:
                     # off and no goal position is written.
                     command = MotorCommand(target_angles={})
                     self._safety_hold_active = False
+                    self._serial_write_hold_pending = False
+                    self._serial_write_hold_since_s = None
                 elif hold_for_safety:
                     command = self._measured_hold_command(robot_state)
                     if command is None:
@@ -265,6 +384,10 @@ class Scheduler:
                         )
                         break
                     self._safety_hold_active = True
+                elif self._serial_write_hold_pending:
+                    # A failed sync write has an uncertain bus outcome. Reissue
+                    # the last successful write and keep policy state frozen.
+                    command = MotorCommand(target_angles=dict(self._last_sent_targets or {}))
                 elif hardware_mode == "neutral":
                     # A, or R3 toggled back off: the global gate already built
                     # a bounded all-joint neutral-return command.
@@ -300,6 +423,18 @@ class Scheduler:
                         elif move.state == MoveState.STOPPING:
                             move.on_stop(obs, command)
 
+                    getup_move = self.registered_moves.get("getup")
+                    if (
+                        self._getup_active_override
+                        and getup_move is not None
+                        and getattr(getup_move, "policy_faulted", False)
+                    ):
+                        self._stop_auto_getup("get-up actor output exceeded bounds")
+                        held = self._measured_hold_command(robot_state)
+                        if held is not None:
+                            command = held
+                        self._safety_hold_active = True
+
                 # Overcurrent safety: estimate the current from the command that was actually
                 # active when the (delayed) position/velocity feedback was sampled — the oldest
                 # buffered command (== DELAY_TICKS old once full). This reconstructs the real
@@ -323,8 +458,46 @@ class Scheduler:
                         break
 
                     # Send command to motors
-                    self._cmd_history.append(dict(command.target_angles))
-                    self._send_to_motors(command)
+                    try:
+                        self._send_to_motors(command)
+                    except RuntimeError as e:
+                        if not self._serial_hold_on_error:
+                            raise
+                        self._serial_write_errors += 1
+                        self._serial_write_hold_pending = True
+                        if hardware_mode == "neutral" and self._last_sent_targets is not None:
+                            # The neutral slew must not advance past a failed
+                            # goal write while a previous goal is held.
+                            self._hardware_neutral_targets = dict(self._last_sent_targets)
+                            self._hardware_neutral_last_time_s = robot_state.time_s
+                        if self._serial_write_hold_since_s is None:
+                            self._serial_write_hold_since_s = start_time
+                        if start_time - self._serial_write_hold_since_s >= 0.3:
+                            self._serial_hold_extended = True
+                            if self.input_source is not None:
+                                self.input_source.set_motion_inhibited(True)
+                        if start_time - self._last_serial_warn_s >= 1.0:
+                            print(
+                                f"Warning: serial goal write error; holding the "
+                                f"previous motor goals: {e}",
+                                end="\r\n",
+                                flush=True,
+                            )
+                            self._last_serial_warn_s = start_time
+                        if self._last_sent_targets is not None:
+                            self._cmd_history.append(dict(self._last_sent_targets))
+                    else:
+                        self._serial_write_errors = 0
+                        if command.target_angles:
+                            self._remember_goal_write(command.target_angles)
+                        if self._last_sent_targets is not None:
+                            self._cmd_history.append(dict(self._last_sent_targets))
+                        if self._serial_write_hold_pending:
+                            self._serial_write_hold_pending = False
+                            self._serial_write_hold_since_s = None
+                            if self._serial_hold_extended:
+                                self._safety_hold_active = True
+                            self._serial_hold_extended = False
 
                 # IMU / gyro terminal display
                 if obs.user_input.show_imu and (start_time - self._last_imu_print_s) >= 0.5:
@@ -419,6 +592,7 @@ class Scheduler:
             self.controller.sync_write_goal_position(
                 motor_ids, [measured[name] for name in MOTOR_TO_ID]
             )
+            self._remember_goal_write(measured)
             self.controller.sync_write_torque_enable(
                 motor_ids, [True] * len(motor_ids)
             )
@@ -469,6 +643,7 @@ class Scheduler:
             self.controller.sync_write_goal_position(
                 motor_ids, [measured[name] for name in MOTOR_TO_ID]
             )
+            self._remember_goal_write(measured)
             self.controller.sync_write_kp(
                 motor_ids, [KP_DEFAULT] * len(motor_ids)
             )
@@ -488,7 +663,11 @@ class Scheduler:
 
         self._hardware_policy_enabled = False
         self._reset_moves_for_hardware_gate()
-        command = self._step_hardware_neutral(obs.robot_state)
+        command = (
+            MotorCommand(target_angles=dict(self._last_sent_targets or {}))
+            if self._serial_write_hold_pending
+            else self._step_hardware_neutral(obs.robot_state)
+        )
         if command is None:
             self._disable_hardware_torque()
             return "limp", MotorCommand(target_angles={})
@@ -558,7 +737,21 @@ class Scheduler:
         self._hardware_neutral_targets = None
         self._hardware_neutral_last_time_s = None
         self._cmd_history.clear()
+        self._last_sent_targets = None
+        self._serial_write_hold_pending = False
+        self._serial_write_hold_since_s = None
         self._overcurrent_ticks = 0
+
+    def _remember_goal_write(self, targets: dict[str, float]) -> None:
+        """Track the last goal register value for every joint written so far."""
+        if self._last_sent_targets is None:
+            self._last_sent_targets = {}
+        self._last_sent_targets.update(targets)
+
+    def _pace_tick(self, start_time: float) -> None:
+        remaining_s = self.dt - (time.perf_counter() - start_time)
+        if remaining_s > 0:
+            time.sleep(remaining_s)
 
     @staticmethod
     def _finite_vector(value, length: int) -> bool:
@@ -637,6 +830,12 @@ class Scheduler:
         elif self._getup_active_override and self._standing_tick_count >= self._stand_debounce_ticks:
             self._getup_active_override = False
         return not self._getup_active_override and self._fallen_tick_count > 0
+
+    def _stop_auto_getup(self, reason: str) -> None:
+        """Stop this attempt while retaining torque and measured-pose hold."""
+        if not self._getup_auto_failed:
+            print(f"Automatic get-up stopped: {reason}", end="\r\n", flush=True)
+        self._getup_auto_failed = True
 
     def _cleanup(self) -> None:
         """Disable torque, stop input source, and clear stop artifacts."""

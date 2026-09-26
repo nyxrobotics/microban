@@ -20,12 +20,14 @@ Wire format: one complete JSON snapshot per UDP packet —
       "arm_tracking_enabled": false,
       "arm_joint_target": {"left": [pitch, roll, elbow], "right": [...]},
       "torque_enabled": false,
+      "torque_off_requested": false,
       "policy_enabled": false
     }
 
-Every packet replaces the previous state; omitted fields are neutral. If no packet
-arrives within `stale_after_s`, read() returns a fully-neutral UserInput. After start
-or a timeout, walking stays disarmed until at least one released-trigger snapshot
+Every packet replaces the previous motion state; omitted fields are neutral. If no
+packet arrives within `stale_after_s`, read() requests a hold of the last motor
+goals and torque state. After start or a timeout, walking stays disarmed until
+at least one released-trigger snapshot
 (``"walk"`` absent) arrives. A dead/reconnecting link therefore cannot resume walking
 from a trigger that was held before the interruption.
 Hybrid ``pico_teleop`` walk snapshots use fixed policy-session calibration
@@ -54,7 +56,9 @@ Telemetry fields are omitted entirely if none has been supplied yet.
 """
 
 import json
+import ipaddress
 import math
+from pathlib import Path
 import socket
 import threading
 import time
@@ -209,6 +213,7 @@ class NetworkInputSource(InputSource):
         port: int = 5555,
         stale_after_s: float = 0.3,
         allowed_remote: str | None = None,
+        allowed_remote_file: str | None = None,
     ) -> None:
         if (
             not isinstance(port, int)
@@ -225,9 +230,14 @@ class NetworkInputSource(InputSource):
         self._allowed_remote = (
             socket.gethostbyname(allowed_remote) if allowed_remote else None
         )
+        self._allowed_remote_file = Path(allowed_remote_file) if allowed_remote_file else None
+        if self._allowed_remote_file is not None and not self._allowed_remote_file.is_absolute():
+            raise ValueError("allowed_remote_file must be an absolute path")
+        self._allowed_remote_file_error = False
 
         self._state = UserInput()
         self._last_recv_s = 0.0
+        self._hold_once = False
         self._lock = threading.Lock()
         self._head_telemetry: dict[str, float] | None = None
 
@@ -244,6 +254,8 @@ class NetworkInputSource(InputSource):
         self._retired_sessions: list[str] = []
 
     def start(self) -> None:
+        if self._allowed_remote_file is not None:
+            self._reload_allowed_remote()
         self._sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self._sock.bind(("0.0.0.0", self._port))
         self._sock.settimeout(0.1)
@@ -268,22 +280,31 @@ class NetworkInputSource(InputSource):
 
     def read(self) -> UserInput:
         with self._lock:
-            if (time.monotonic() - self._last_recv_s) > self._stale_after_s:
+            # Force one scheduler tick to retain the physical goal when the
+            # allowed sender changes, even if a new UDP packet arrives first.
+            # An explicit B request from the new sender still takes priority.
+            force_hold = self._hold_once
+            self._hold_once = False
+            if force_hold and self._state.torque_enabled is False and not self._state.hold_last_targets:
+                force_hold = False
+            if force_hold or (time.monotonic() - self._last_recv_s) > self._stale_after_s:
                 self._state = UserInput()
                 self._walk_armed = False
                 self._arm_armed = False
-                # A dropped connection is lost operator intent exactly like a
-                # dropped gamepad or PICO transport: the
-                # bare UserInput() dataclass default (torque_enabled=True) is
-                # deliberately permissive for callers that never touch this
-                # feature, so it must be overridden here, not trusted as-is.
-                return UserInput(torque_enabled=False, policy_enabled=False)
+                # A transport gap freezes the last physical goal/torque state.
+                # The scheduler does not run any move on this snapshot.
+                return UserInput(
+                    torque_enabled=None,
+                    policy_enabled=None,
+                    hold_last_targets=True,
+                )
             return UserInput(
                 active_moves=set(self._state.active_moves),
                 velocity=dict(self._state.velocity),
                 show_imu=self._state.show_imu,
                 locomotion_policy=self._state.locomotion_policy,
                 learned_policy_degraded=self._state.learned_policy_degraded,
+                balance_only=self._state.balance_only,
                 head_orientation=dict(self._state.head_orientation)
                 if self._state.head_orientation
                 else None,
@@ -300,6 +321,7 @@ class NetworkInputSource(InputSource):
                 else None,
                 torque_enabled=self._state.torque_enabled,
                 policy_enabled=self._state.policy_enabled,
+                hold_last_targets=self._state.hold_last_targets,
                 getup_armed=self._state.getup_armed,
             )
 
@@ -356,10 +378,67 @@ class NetworkInputSource(InputSource):
     # ------------------------------------------------------------------
     # Internal
 
+    def _reload_allowed_remote(self) -> None:
+        """Reload the single robot sender without interrupting motor power."""
+        path = self._allowed_remote_file
+        if path is None:
+            return
+        try:
+            if path.is_symlink() or not path.is_file():
+                raise ValueError("missing or linked allowlist file")
+            if path.stat().st_size > 8192:
+                raise ValueError("allowlist file is too large")
+            entries = [
+                line.removeprefix("MICROBAN_NETWORK_ALLOWED_IP=").strip()
+                for line in path.read_text(encoding="utf-8").splitlines()
+                if line.startswith("MICROBAN_NETWORK_ALLOWED_IP=")
+            ]
+            if len(entries) != 1:
+                raise ValueError("expected exactly one allowed IP entry")
+            address = entries[0]
+            parsed = ipaddress.IPv4Address(address)
+            if (
+                str(parsed) != address
+                or parsed.is_unspecified
+                or parsed.is_loopback
+                or parsed.is_multicast
+            ):
+                raise ValueError("allowed IP is not a usable canonical IPv4 address")
+        except (OSError, UnicodeError, ValueError) as exc:
+            if not self._allowed_remote_file_error:
+                print(
+                    f"Warning: retaining prior allowed sender; cannot reload {path}: {exc}",
+                    end="\r\n",
+                    flush=True,
+                )
+                self._allowed_remote_file_error = True
+            return
+
+        self._allowed_remote_file_error = False
+        with self._lock:
+            previous = self._allowed_remote
+            if address == previous:
+                return
+            self._allowed_remote = address
+            self._state = UserInput()
+            self._last_recv_s = 0.0
+            self._hold_once = True
+            self._walk_armed = False
+            self._arm_armed = False
+        print(
+            f"NetworkInputSource allowed sender changed: {previous or 'any sender'} -> {address}; holding motor goals",
+            end="\r\n",
+            flush=True,
+        )
+
     def _read_loop(self) -> None:
         sock = self._sock
         assert sock is not None
+        next_allowlist_check_s = 0.0
         while self._running:
+            if self._allowed_remote_file is not None and time.monotonic() >= next_allowlist_check_s:
+                self._reload_allowed_remote()
+                next_allowlist_check_s = time.monotonic() + 0.25
             try:
                 data, addr = sock.recvfrom(16384)
             except (TimeoutError, OSError):
@@ -462,17 +541,27 @@ class NetworkInputSource(InputSource):
         if not isinstance(head_yaw_front, bool):
             raise TypeError("head_yaw_front must be boolean")
 
-        # Real-hardware master gate. Missing fields are fail-closed so an old,
-        # malformed or partially restarted bridge cannot energize the robot.
-        # B sends false/false; A sends true/false; R3 toggles policy_enabled
-        # only while torque is on.
+        # Only an explicit B event requests torque OFF. A bridge restart or
+        # missing tracking frame emits false/false, which holds the current
+        # physical goal and torque state instead of collapsing the robot.
         torque_enabled = packet.get("torque_enabled", False)
         if not isinstance(torque_enabled, bool):
             raise TypeError("torque_enabled must be boolean")
+        torque_off_requested = packet.get("torque_off_requested", False)
+        if not isinstance(torque_off_requested, bool):
+            raise TypeError("torque_off_requested must be boolean")
         policy_enabled = packet.get("policy_enabled", False)
         if not isinstance(policy_enabled, bool):
             raise TypeError("policy_enabled must be boolean")
-        policy_enabled = policy_enabled and torque_enabled
+        hold_last_targets = not torque_enabled and not torque_off_requested
+        if torque_off_requested:
+            torque_enabled = False
+            policy_enabled = False
+        elif hold_last_targets:
+            torque_enabled = None
+            policy_enabled = None
+        else:
+            policy_enabled = policy_enabled and torque_enabled
 
         # Defence in depth: the bridge also sends neutral motion fields while
         # gated, but the robot independently discards them before any deadman
@@ -620,6 +709,16 @@ class NetworkInputSource(InputSource):
             pico_arm_requested = False
             pico_arm_snapshot_valid = False
 
+        # R3 keeps the standing actor active at zero velocity even while the
+        # left trigger is released. PICO arm authentication remains independent.
+        balance_only = bool(policy_enabled and "walk" not in requested_moves)
+        if balance_only:
+            requested_moves.add("walk")
+            locomotion_policy = "walk"
+            parsed_velocity = {"vx": 0.0, "vy": 0.0, "vtheta": 0.0}
+            parsed_foot_target = None
+            parsed_hand_target = None
+
         with self._lock:
             if session_id != self._session_id:
                 if session_id in self._retired_sessions:
@@ -642,8 +741,8 @@ class NetworkInputSource(InputSource):
                 return
             self._last_seq = seq
 
-            learned_policy_degraded = (
-                policy_enabled and incoming_pico_packet and not pico_body_target_valid
+            learned_policy_degraded = bool(
+                policy_enabled and pico_walk_requested and not pico_body_target_valid
             )
             if learned_policy_degraded:
                 # Body tracking is an enhancement, not the locomotion deadman.
@@ -663,6 +762,10 @@ class NetworkInputSource(InputSource):
                 parsed_velocity = {"vx": 0.0, "vy": 0.0, "vtheta": 0.0}
                 arm_tracking_enabled = False
                 parsed_arm_joint_target = None
+            elif balance_only:
+                # R3 is an edge-authorized request and the left trigger is
+                # released here, satisfying its rearm boundary.
+                self._walk_armed = True
             elif "walk" not in requested_moves:
                 self._walk_armed = True
             elif not self._walk_armed:
@@ -699,6 +802,7 @@ class NetworkInputSource(InputSource):
                 velocity=parsed_velocity,
                 locomotion_policy=locomotion_policy,
                 learned_policy_degraded=learned_policy_degraded,
+                balance_only=balance_only,
                 head_orientation=parsed_orientation,
                 head_yaw_front=head_yaw_front,
                 foot_target=parsed_foot_target,
@@ -707,6 +811,7 @@ class NetworkInputSource(InputSource):
                 arm_joint_target=parsed_arm_joint_target,
                 torque_enabled=torque_enabled,
                 policy_enabled=policy_enabled,
+                hold_last_targets=hold_last_targets,
                 getup_armed=False,
             )
             self._last_recv_s = time.monotonic()
