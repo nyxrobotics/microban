@@ -189,9 +189,6 @@ class Scheduler:
                                 self.input_source.set_motion_inhibited(True)
                                 self._serial_hold_extended = True
                             snapshot = self.input_source.read()
-                            if snapshot.hold_last_targets:
-                                self.input_source.set_motion_inhibited(True)
-                                self._safety_hold_active = True
                             if (
                                 self._hardware_power_control
                                 and snapshot.torque_enabled is False
@@ -226,6 +223,21 @@ class Scheduler:
                 self._last_good_robot_state = robot_state
                 user_input = self.input_source.read() if self.input_source else UserInput()
                 user_input.velocity = scale_velocity(user_input.velocity)
+                if self.input_source:
+                    set_head_telemetry = getattr(
+                        self.input_source, "set_head_telemetry", None
+                    )
+                    if callable(set_head_telemetry):
+                        trunk_angles = _trunk_roll_pitch(robot_state.body_quat)
+                        if trunk_angles is not None:
+                            positions = robot_state.motor_positions
+                            set_head_telemetry(
+                                head=float(positions.get("head", 0.0)),
+                                neck_roll=float(positions.get("neck_roll", 0.0)),
+                                neck_pitch=float(positions.get("neck_pitch", 0.0)),
+                                trunk_roll=trunk_angles[0],
+                                trunk_pitch=trunk_angles[1],
+                            )
                 if user_input.hold_last_targets:
                     if not self._network_hold_active:
                         print(
@@ -234,9 +246,6 @@ class Scheduler:
                             flush=True,
                         )
                         self._network_hold_active = True
-                    if self.input_source is not None:
-                        self.input_source.set_motion_inhibited(True)
-                    self._safety_hold_active = True
                     if self._last_sent_targets is not None:
                         self._cmd_history.append(dict(self._last_sent_targets))
                     self._pace_tick(start_time)
@@ -343,20 +352,6 @@ class Scheduler:
                 )
                 if self.input_source:
                     self.input_source.set_motion_inhibited(motion_inhibited)
-                    set_head_telemetry = getattr(
-                        self.input_source, "set_head_telemetry", None
-                    )
-                    if callable(set_head_telemetry):
-                        trunk_angles = _trunk_roll_pitch(obs.robot_state.body_quat)
-                        if trunk_angles is not None:
-                            positions = obs.robot_state.motor_positions
-                            set_head_telemetry(
-                                head=float(positions.get("head", 0.0)),
-                                neck_roll=float(positions.get("neck_roll", 0.0)),
-                                neck_pitch=float(positions.get("neck_pitch", 0.0)),
-                                trunk_roll=trunk_angles[0],
-                                trunk_pitch=trunk_angles[1],
-                            )
 
                 hold_for_safety = (
                     hardware_mode != "limp" and (not imu_safe or fall_pending)

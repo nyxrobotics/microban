@@ -24,12 +24,11 @@ Wire format: one complete JSON snapshot per UDP packet —
       "policy_enabled": false
     }
 
-Every packet replaces the previous motion state; omitted fields are neutral. If no
-packet arrives within `stale_after_s`, read() requests a hold of the last motor
-goals and torque state. After start or a timeout, walking stays disarmed until
-at least one released-trigger snapshot
-(``"walk"`` absent) arrives. A dead/reconnecting link therefore cannot resume walking
-from a trigger that was held before the interruption.
+Every packet replaces the previous motion state; omitted fields are neutral. Before
+the first authenticated packet, read() leaves the startup hardware gate disabled.
+During a UDP gap, it replays the last accepted operator input so the policy keeps
+its feedback loop running. A new bridge session still requires a released-trigger
+snapshot (``"walk"`` absent) before walking can arm.
 Hybrid ``pico_teleop`` walk snapshots use fixed policy-session calibration
 offsets in the robot trunk frame (+X forward, +Y left, +Z up), in metres. They
 must declare the exact contract and 0.8 safety margin above, provide complete
@@ -287,12 +286,19 @@ class NetworkInputSource(InputSource):
             self._hold_once = False
             if force_hold and self._state.torque_enabled is False and not self._state.hold_last_targets:
                 force_hold = False
-            if force_hold or (time.monotonic() - self._last_recv_s) > self._stale_after_s:
+            if force_hold:
+                # A new allowed sender must begin with released triggers.  A
+                # temporary packet gap from the same sender is different: it
+                # preserves the operator's deadman latches and motion state.
                 self._state = UserInput()
+                self._last_recv_s = 0.0
                 self._walk_armed = False
                 self._arm_armed = False
-                # A transport gap freezes the last physical goal/torque state.
-                # The scheduler does not run any move on this snapshot.
+            if force_hold or self._last_recv_s == 0.0:
+                # Before the first authenticated packet (or after authority
+                # changes), leave the startup hardware gate alone. Once a
+                # packet has arrived, read() replays its operator input during
+                # UDP loss so the feedback policy keeps running.
                 return UserInput(
                     torque_enabled=None,
                     policy_enabled=None,
