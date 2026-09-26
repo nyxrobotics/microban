@@ -236,6 +236,7 @@ class NetworkInputSource(InputSource):
 
         self._state = UserInput()
         self._last_recv_s = 0.0
+        self._has_operator_state = False
         self._hold_once = False
         self._lock = threading.Lock()
         self._head_telemetry: dict[str, float] | None = None
@@ -292,6 +293,7 @@ class NetworkInputSource(InputSource):
                 # preserves the operator's deadman latches and motion state.
                 self._state = UserInput()
                 self._last_recv_s = 0.0
+                self._has_operator_state = False
                 self._walk_armed = False
                 self._arm_armed = False
             if force_hold or self._last_recv_s == 0.0:
@@ -428,6 +430,7 @@ class NetworkInputSource(InputSource):
             self._allowed_remote = address
             self._state = UserInput()
             self._last_recv_s = 0.0
+            self._has_operator_state = False
             self._hold_once = True
             self._walk_armed = False
             self._arm_armed = False
@@ -748,6 +751,24 @@ class NetworkInputSource(InputSource):
             parsed_hand_target = None
 
         with self._lock:
+            if hold_last_targets and self._has_operator_state:
+                # An empty bridge snapshot means its PICO input is temporarily
+                # unavailable. Preserve the last authenticated operator state,
+                # including policy feedback, across UDP and bridge restarts.
+                # An explicit B packet still takes the normal path below.
+                if session_id != self._session_id:
+                    if session_id in self._retired_sessions:
+                        return
+                    if self._session_id is not None:
+                        self._retired_sessions.append(self._session_id)
+                        del self._retired_sessions[:-16]
+                    self._session_id = session_id
+                    self._last_seq = -1
+                if seq <= self._last_seq:
+                    return
+                self._last_seq = seq
+                self._last_recv_s = time.monotonic()
+                return
             if session_id != self._session_id:
                 if session_id in self._retired_sessions:
                     return
@@ -847,3 +868,5 @@ class NetworkInputSource(InputSource):
                 getup_armed=False,
             )
             self._last_recv_s = time.monotonic()
+            if not hold_last_targets:
+                self._has_operator_state = True
