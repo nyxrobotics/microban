@@ -11,7 +11,7 @@ Wire format: one complete JSON snapshot per UDP packet —
       "velocity": {"vx": 0.3, "vy": 0.0, "vtheta": 0.0},
       "active_moves": ["walk"],
       "locomotion_policy": "walk" | "pico_teleop",
-      "head_orientation": {"roll": 0.0, "pitch": -0.2, "yaw": 0.3} | null,
+      "head_orientation": {"roll": 0.0, "pitch": -0.2, "yaw": 0.3} | null,  # gated by the right-trigger deadman below, same as hand_target/arm_joint_target
       "head_yaw_front": false,
       "body_target_contract": "microban_pico_offsets_v2_both_feet_stationary",
       "body_target_safety_margin": 0.8,
@@ -713,7 +713,10 @@ class NetworkInputSource(InputSource):
                 velocity=parsed_velocity,
                 locomotion_policy=locomotion_policy,
                 learned_policy_degraded=learned_policy_degraded,
-                head_orientation=parsed_orientation,
+                # Head tracking shares the arm/hand deadman: both only take effect
+                # while the right trigger is held (arm_tracking_enabled reflects its
+                # latched, re-arm-safe state at this point).
+                head_orientation=parsed_orientation if arm_tracking_enabled else None,
                 head_yaw_front=head_yaw_front,
                 foot_target=parsed_foot_target,
                 hand_target=parsed_hand_target,

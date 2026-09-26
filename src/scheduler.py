@@ -127,22 +127,15 @@ class Scheduler:
         self._fallen_tick_count = 0
         self._standing_tick_count = 0
         self._getup_active_override = False
-        # getup.onnx (as of 2026-09-26) trains a stable-but-garbage attractor:
-        # its "last action" observation term recorded the un-clipped raw
-        # network output during training instead of the +-1.57rad value
-        # actually applied, corrupting that term's running normalizer.
-        # Confirmed independently by two separate replays (open-loop numpy
-        # and this deploy code): saturated ~20-90rad/s raw output across
-        # standing, fallen, and randomized poses alike, not just an
-        # out-of-distribution edge case. Auto-triggering this on a real fall
-        # would drive the robot's own motors at that same policy's command,
-        # which is not "recovers awkwardly" but "thrashes" -- worse than not
-        # getting up at all. Leave the manual "g" toggle available (a human
-        # choosing to test it, presumably spotting the robot), but do not
-        # let a real fall autonomously invoke a policy validated to be this
-        # broken. Flip back to True once getup.onnx is retrained with the
-        # fixed observation term and re-validated.
-        self._getup_auto_trigger_enabled = False
+        # getup.onnx was retrained with the raw/pre-clip observation bug fixed
+        # (the "last action" term now records the actually-applied, clipped
+        # target instead of the raw un-clipped network output) and redeployed
+        # 2026-09-26. Auto-trigger is on again: while the normal policy is
+        # active (hardware_mode == "policy"), a sustained fall switches to
+        # "getup" automatically and hands back to "walk" once stood up and
+        # stable. The manual "g" toggle remains available for testing outside
+        # that mode.
+        self._getup_auto_trigger_enabled = True
         # History of sent target_angles, to align the current proxy with the delayed feedback:
         # the oldest entry is the command issued OVERCURRENT_PROXY_DELAY_TICKS ticks ago.
         self._cmd_history: deque[dict[str, float]] = deque(maxlen=OVERCURRENT_PROXY_DELAY_TICKS + 1)
@@ -481,6 +474,7 @@ class Scheduler:
                     gyro = obs.robot_state.gyro
                     quat = obs.robot_state.quat
                     print("--------------------------------------------", end="\r\n", flush=True)
+                    print(f"Policy: {'ON' if hardware_mode == 'policy' else 'OFF'}", end="\r\n", flush=True)
                     if gyro:
                         gx, gy, gz = gyro
                         print(f"Gyro: gx={gx:+.3f}  gy={gy:+.3f}  gz={gz:+.3f} rad/s", end="\r\n", flush=True)
