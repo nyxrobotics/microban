@@ -99,6 +99,14 @@ class Scheduler:
         self._serial_write_hold_pending = False
         self._serial_write_hold_since_s: float | None = None
         self._network_hold_active = False
+        self._last_goal_write_ms = 0.0
+        self._timing_window_start = time.perf_counter()
+        self._timing_ticks = 0
+        self._timing_overruns = 0
+        self._timing_max_overrun_ms = 0.0
+        self._timing_position_ms = 0.0
+        self._timing_velocity_ms = 0.0
+        self._timing_write_ms = 0.0
         self._last_imu_print_s: float = 0.0
         self._last_imu_stale_warn_s: float = 0.0
         self._imu_max_age_s = imu_max_age_s
@@ -155,6 +163,7 @@ class Scheduler:
                     break
 
                 start_time = time.perf_counter()
+                self._last_goal_write_ms = 0.0
 
                 # Read robot observations and user input
                 try:
@@ -526,15 +535,7 @@ class Scheduler:
                         print(f"Body: roll={b_roll:+.1f}°  pitch={b_pitch:+.1f}°  yaw={b_yaw:+.1f}°", end="\r\n", flush=True)
                     self._last_imu_print_s = start_time
 
-                # Sleep to keep a fixed control frequency
-                elapsed_time = time.perf_counter() - start_time
-                sleep_time = self.dt - elapsed_time
-
-                if sleep_time > 0:
-                    time.sleep(sleep_time)
-                else:
-                    ms_late = -sleep_time * 1000
-                    print(f"Warning: control loop overrun by {ms_late:.2f} ms", end="\r\n", flush=True)
+                self._pace_tick(start_time)
 
         except KeyboardInterrupt:
             print("Control loop interrupted by user", end="\r\n", flush=True)
@@ -755,6 +756,36 @@ class Scheduler:
         self._last_sent_targets.update(targets)
 
     def _pace_tick(self, start_time: float) -> None:
+        now = time.perf_counter()
+        elapsed_s = now - start_time
+        self._timing_ticks += 1
+        self._timing_position_ms += self.observer.last_position_ms
+        self._timing_velocity_ms += self.observer.last_velocity_ms
+        self._timing_write_ms += self._last_goal_write_ms
+        if elapsed_s > self.dt:
+            self._timing_overruns += 1
+            self._timing_max_overrun_ms = max(
+                self._timing_max_overrun_ms, (elapsed_s - self.dt) * 1000.0
+            )
+        if now - self._timing_window_start >= 1.0:
+            ticks = self._timing_ticks
+            print(
+                f"Control timing: ticks={ticks} overruns={self._timing_overruns} "
+                f"max_late={self._timing_max_overrun_ms:.2f} ms "
+                f"position_avg={self._timing_position_ms / ticks:.2f} ms "
+                f"velocity_avg={self._timing_velocity_ms / ticks:.2f} ms "
+                f"write_avg={self._timing_write_ms / ticks:.2f} ms "
+                f"groups={getattr(self.controller, 'state_group_count', '?')} "
+                f"stale={len(getattr(self.controller, 'stale_motor_names', ()))}",
+                end="\r\n", flush=True,
+            )
+            self._timing_window_start = now
+            self._timing_ticks = 0
+            self._timing_overruns = 0
+            self._timing_max_overrun_ms = 0.0
+            self._timing_position_ms = 0.0
+            self._timing_velocity_ms = 0.0
+            self._timing_write_ms = 0.0
         remaining_s = self.dt - (time.perf_counter() - start_time)
         if remaining_s > 0:
             time.sleep(remaining_s)
@@ -932,4 +963,8 @@ class Scheduler:
         motor_ids = [MOTOR_TO_ID[name] for name in command.target_angles]
         target_positions = list(command.target_angles.values())
 
-        self.controller.sync_write_goal_position(motor_ids, target_positions)
+        write_start = time.perf_counter()
+        try:
+            self.controller.sync_write_goal_position(motor_ids, target_positions)
+        finally:
+            self._last_goal_write_ms = (time.perf_counter() - write_start) * 1000.0

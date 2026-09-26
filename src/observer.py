@@ -47,6 +47,8 @@ class Observer:
         self.controller = controller
         self._last_imu_warn_s: float = 0.0
         self._imu_warn_interval_s: float = 1.0
+        self.last_position_ms = 0.0
+        self.last_velocity_ms = 0.0
 
         self.observe_voltage: bool = False
         
@@ -57,18 +59,24 @@ class Observer:
 
     def read_state(self, dt: float) -> RobotState:
         """Read current motor positions from the controller."""
+        self.last_position_ms = 0.0
+        self.last_velocity_ms = 0.0
         state = RobotState(time_s=time.perf_counter())
 
         motor_names = list(MOTOR_TO_ID.keys())
         motor_ids = list(MOTOR_TO_ID.values())
+        read_start = time.perf_counter()
         angles = self._complete_motor_read(
             "position", self.controller.sync_read_present_position(motor_ids), len(motor_ids)
         )
+        self.last_position_ms = (time.perf_counter() - read_start) * 1000.0
         state.motor_positions = dict(zip(motor_names, angles))
 
+        read_start = time.perf_counter()
         velocities = self._complete_motor_read(
             "velocity", self.controller.sync_read_present_velocity(motor_ids), len(motor_ids)
         )
+        self.last_velocity_ms = (time.perf_counter() - read_start) * 1000.0
         state.motor_velocities = dict(zip(motor_names, velocities))
 
         if self.observe_current:
