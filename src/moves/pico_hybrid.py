@@ -2776,7 +2776,14 @@ class PicoHybridMove(Move):
         self._controller = controller
         self._neutral_return_duration_s = neutral_return_duration_s
         self._gyro_transform = gyro_transform
-        self._session = session or ort.InferenceSession(str(policy_path))
+        if session is None:
+            session_options = ort.SessionOptions()
+            session_options.intra_op_num_threads = 1
+            session_options.inter_op_num_threads = 1
+            session = ort.InferenceSession(
+                str(policy_path), sess_options=session_options
+            )
+        self._session = session
         self._contract = _parse_contract(self._session)
         _validate_physical_motor_target_contract(self._contract)
         if (

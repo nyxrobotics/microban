@@ -52,7 +52,12 @@ class WalkMove(Move):
         self._last_action = [0.0] * len(OBSERVATION_DOF_ORDER)
 
         # Load ONNX policy
-        self._ort_session = ort.InferenceSession(f"src/agents/{AGENT_NAME}")
+        session_options = ort.SessionOptions()
+        session_options.intra_op_num_threads = 1
+        session_options.inter_op_num_threads = 1
+        self._ort_session = ort.InferenceSession(
+            f"src/agents/{AGENT_NAME}", sess_options=session_options
+        )
 
         self.action_scale = 1.0
 

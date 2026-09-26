@@ -42,7 +42,12 @@ class GetupMove(Move):
         super().__init__()
         self._controller = controller
 
-        self._ort_session = ort.InferenceSession(f"src/agents/{AGENT_NAME}")
+        session_options = ort.SessionOptions()
+        session_options.intra_op_num_threads = 1
+        session_options.inter_op_num_threads = 1
+        self._ort_session = ort.InferenceSession(
+            f"src/agents/{AGENT_NAME}", sess_options=session_options
+        )
 
         meta = self._ort_session.get_modelmeta().custom_metadata_map
         self._joint_names: list[str] = meta["joint_names"].split(",")
