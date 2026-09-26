@@ -13,7 +13,7 @@ from imu_reader import ThreadedIMUReader
 class RobotController:
     """Wraps Xl330PyController."""
 
-    def __init__(self, serial_port: str = "/dev/ttyAMA0", baudrate: int = 1_000_000, timeout: float = 0.003) -> None:
+    def __init__(self, serial_port: str = "/dev/ttyAMA0", baudrate: int = 1_000_000, timeout: float = 0.001) -> None:
         self._controller = Xl330PyController(serial_port=serial_port, baudrate=baudrate, timeout=timeout)
         self._id_to_sign: dict[int, float] = {MOTOR_TO_ID[name]: MOTOR_SIGN[name] for name in MOTOR_TO_ID}
         self._id_to_name = {motor_id: name for name, motor_id in MOTOR_TO_ID.items()}
