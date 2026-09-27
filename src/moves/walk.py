@@ -32,6 +32,8 @@ _POLICY_MAX_TARGET_ABS_RAD = 2.0 * math.pi
 # below clips to these so a large trunk tilt can't request an out-of-range neck target.
 NECK_ROLL_RANGE = (-0.436332, 0.436332)
 NECK_PITCH_RANGE = (-1.570796, 0.436332)
+_ANKLE_PITCH_JOINTS = frozenset({"left_ankle_pitch", "right_ankle_pitch"})
+_ANKLE_BIAS_RAMP_S = 0.5
 
 
 def _body_roll_pitch(body_quat: list[float]) -> tuple[float, float]:
@@ -50,9 +52,14 @@ class WalkMove(Move):
         self,
         controller: ControllerProtocol | None = None,
         neutral_return_duration_s: float = 0.8,
+        ankle_pitch_bias_rad: float = 0.0,
     ) -> None:
         super().__init__()
+        if not math.isfinite(ankle_pitch_bias_rad):
+            raise ValueError("ankle_pitch_bias_rad must be finite")
         self._controller = controller
+        self._ankle_pitch_bias_rad = ankle_pitch_bias_rad
+        self._ankle_bias_start_time_s: float | None = None
         self._last_action = [0.0] * len(OBSERVATION_DOF_ORDER)
         self._last_safe_targets: dict[str, float] = {}
         self._last_invalid_action_warn_s = -math.inf
@@ -143,6 +150,7 @@ class WalkMove(Move):
         # activation into that emergency handoff.
         self._last_action = [0.0] * len(OBSERVATION_DOF_ORDER)
         self._phase_step = 0
+        self._ankle_bias_start_time_s = float(obs.robot_state.time_s)
         if self._controller is not None:
             ids = [MOTOR_TO_ID[name] for name in OBSERVATION_DOF_ORDER]
             self._controller.sync_write_kp(ids, [KP_RL] * len(ids))
@@ -205,10 +213,22 @@ class WalkMove(Move):
                 )
             return
 
+        bias_start = self._ankle_bias_start_time_s
+        elapsed_s = (
+            max(0.0, float(obs.robot_state.time_s) - bias_start)
+            if bias_start is not None else 0.0
+        )
+        ankle_bias = self._ankle_pitch_bias_rad * min(
+            1.0, elapsed_s / _ANKLE_BIAS_RAMP_S
+        )
         invalid_names = []
         next_action = list(self._last_action)
         for i, name in enumerate(OBSERVATION_DOF_ORDER):
             target = self._default_pose[name] + action[i] * self.action_scale
+            if name in _ANKLE_PITCH_JOINTS:
+                # Apply only to fresh actor output. Fallback paths already
+                # hold the previously sent, biased target and must not add it again.
+                target += ankle_bias
             if not math.isfinite(target) or abs(target) > _POLICY_MAX_TARGET_ABS_RAD:
                 previous = self._last_safe_targets.get(
                     name, obs.robot_state.motor_positions.get(name, NEUTRAL_POSE[name])

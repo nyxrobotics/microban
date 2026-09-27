@@ -29,8 +29,11 @@ _FACE_SEARCH_PITCH_RAD = math.radians(-40.0)
 # project the sight line onto the ground before allowing forward motion.
 _FX_PER_IMAGE_WIDTH = 233.8976224959923 / 640.0
 _ASSUMED_FACE_WIDTH_M = 0.12
-_STOP_HORIZONTAL_DISTANCE_M = 0.9
-_MAX_APPROACH_ELEVATION_RAD = math.radians(55.0)
+_STOP_HORIZONTAL_DISTANCE_M = 0.6
+# With the camera 32 cm off the floor, an adult face is seen at roughly
+# 60-67 degrees from 0.6 m away.  Keep the requested elevation stop at 75
+# degrees; the head goal itself remains limited separately to 1.2 rad.
+_MAX_APPROACH_ELEVATION_RAD = math.radians(75.0)
 _POSE_MATCH_MAX_AGE_NS = 120_000_000
 _LOST_FACE_HEAD_HOLD_NS = 1_000_000_000
 
@@ -220,7 +223,7 @@ class PersonFollower:
         turn = _clamp(0.4 * bearing, -0.22, 0.22) if abs(bearing) > 0.06 else 0.0
         # Face width alone underestimates how close the feet are when the low
         # camera looks steeply up.  The projected range is approximate because
-        # real face sizes vary, so keep a margin and stop on steep elevation.
+        # real face sizes vary, so also stop at the elevation limit.
         forward = _clamp(
             (self._horizontal_distance_m - _STOP_HORIZONTAL_DISTANCE_M) * 0.24,
             0.0, 0.16,
