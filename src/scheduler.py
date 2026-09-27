@@ -28,6 +28,11 @@ from controller import ControllerProtocol
 from imu_reader import imu_quat_to_body
 from observer import Observer, Observation, RobotState
 from input.input_source import InputSource, UserInput, scale_velocity
+from moves.getup import (
+    _RECOVERY_MAX_DT_S,
+    _RECOVERY_MIN_DT_S,
+    _RECOVERY_SLEW_RATE_RAD_S,
+)
 from moves.move import MotorCommand, Move, MoveState
 from moves.rotate_head import RotateHeadMove
 from moves.squat import SquatMove
@@ -783,9 +788,12 @@ class Scheduler:
             return None
         previous = self._hardware_neutral_last_time_s
         raw_dt = self.dt if previous is None else now - previous
-        dt = max(0.001, min(0.1, raw_dt if math.isfinite(raw_dt) else self.dt))
+        dt = max(
+            _RECOVERY_MIN_DT_S,
+            min(_RECOVERY_MAX_DT_S, raw_dt if math.isfinite(raw_dt) else self.dt),
+        )
         self._hardware_neutral_last_time_s = now
-        max_step = 0.5 * dt
+        max_step = _RECOVERY_SLEW_RATE_RAD_S * dt
 
         updated: dict[str, float] = {}
         for name in MOTOR_TO_ID:
@@ -961,9 +969,12 @@ class Scheduler:
 
         previous = self._getup_failed_hold_last_time_s
         raw_dt = self.dt if previous is None else now - previous
-        dt = max(0.001, min(0.1, raw_dt if math.isfinite(raw_dt) else self.dt))
+        dt = max(
+            _RECOVERY_MIN_DT_S,
+            min(_RECOVERY_MAX_DT_S, raw_dt if math.isfinite(raw_dt) else self.dt),
+        )
         self._getup_failed_hold_last_time_s = now
-        max_step = 0.5 * dt
+        max_step = _RECOVERY_SLEW_RATE_RAD_S * dt
         stale_names = set(getattr(self.controller, "stale_motor_names", ()))
         stale_names.update(getattr(self.controller, "proxy_ignored_motor_names", ()))
         for name, current in self._getup_failed_hold_targets.items():
