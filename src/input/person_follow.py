@@ -7,6 +7,7 @@ walking and head targets.  Missing detection affects this mode alone.
 
 from __future__ import annotations
 
+from collections import deque
 from dataclasses import dataclass
 import json
 import math
@@ -23,7 +24,15 @@ _VERTICAL_HALF_FOV_RAD = math.atan(math.tan(_HORIZONTAL_HALF_FOV_RAD) * 3.0 / 4.
 # nearby adult's face; an upward aim of 40 degrees covers useful person heights
 # throughout the near field without moving the head between detector updates.
 _FACE_SEARCH_PITCH_RAD = math.radians(-40.0)
-_STOP_FACE_WIDTH = 0.055
+# Face width measures depth along the camera ray, not ground distance.  Use the
+# measured focal length and a deliberately small face-size assumption, then
+# project the sight line onto the ground before allowing forward motion.
+_FX_PER_IMAGE_WIDTH = 233.8976224959923 / 640.0
+_ASSUMED_FACE_WIDTH_M = 0.12
+_STOP_HORIZONTAL_DISTANCE_M = 1.1
+_MAX_APPROACH_ELEVATION_RAD = math.radians(55.0)
+_POSE_MATCH_MAX_AGE_NS = 120_000_000
+_LOST_FACE_HEAD_HOLD_NS = 1_000_000_000
 
 
 def _clamp(value: float, minimum: float, maximum: float) -> float:
@@ -45,6 +54,14 @@ class FollowCommand:
     target_visible: bool
 
 
+@dataclass(frozen=True)
+class HeadPose:
+    measured_monotonic_ns: int
+    head: float
+    neck_pitch: float
+    trunk_pitch: float
+
+
 class PersonFollower:
     def __init__(self, path: Path = DEFAULT_TARGET_PATH) -> None:
         self._path = path
@@ -53,15 +70,22 @@ class PersonFollower:
         self._last_applied_capture_ns: int | None = None
         self._head_yaw = 0.0
         self._head_pitch = _FACE_SEARCH_PITCH_RAD
+        self._face_elevation_rad = 0.0
+        self._horizontal_distance_m = 0.0
         self._measured_head_yaw = 0.0
         self._measured_neck_pitch = 0.0
         self._trunk_pitch = 0.0
+        self._pose_history: deque[HeadPose] = deque(maxlen=128)
+        self._last_face_seen_ns: int | None = None
         self._last_logged_visible: bool | None = None
 
     def reset(self) -> None:
         self._last_applied_capture_ns = None
         self._head_yaw = 0.0
         self._head_pitch = _FACE_SEARCH_PITCH_RAD
+        self._face_elevation_rad = 0.0
+        self._horizontal_distance_m = 0.0
+        self._last_face_seen_ns = None
         self._last_logged_visible = None
 
     def set_head_telemetry(
@@ -73,6 +97,25 @@ class PersonFollower:
             self._measured_neck_pitch = neck_pitch
         if math.isfinite(trunk_pitch):
             self._trunk_pitch = trunk_pitch
+        self._pose_history.append(
+            HeadPose(
+                time.monotonic_ns(),
+                self._measured_head_yaw,
+                self._measured_neck_pitch,
+                self._trunk_pitch,
+            )
+        )
+
+    def _pose_at_capture(self, captured_ns: int) -> HeadPose | None:
+        if not self._pose_history:
+            return None
+        closest = min(
+            self._pose_history,
+            key=lambda pose: abs(pose.measured_monotonic_ns - captured_ns),
+        )
+        if abs(closest.measured_monotonic_ns - captured_ns) > _POSE_MATCH_MAX_AGE_NS:
+            return None
+        return closest
 
     def _load_latest(self) -> None:
         try:
@@ -98,7 +141,10 @@ class PersonFollower:
             if isinstance(timestamp, bool) or not isinstance(timestamp, int):
                 raise ValueError("invalid capture timestamp")
             values = [float(payload[key]) for key in ("center_x", "center_y", "face_width")]
-            if not all(math.isfinite(value) and 0.0 <= value <= 1.0 for value in values):
+            if (
+                not all(math.isfinite(value) and 0.0 <= value <= 1.0 for value in values)
+                or values[2] < 0.01
+            ):
                 raise ValueError("invalid face location")
             self._latest = FaceTarget(timestamp, *values)
         except (OSError, ValueError, TypeError, KeyError, OverflowError):
@@ -113,13 +159,32 @@ class PersonFollower:
             target is not None
             and 0 <= now_ns - target.captured_monotonic_ns <= TARGET_MAX_AGE_NS
         )
+        capture_pose = None
+        if visible and target is not None and target.captured_monotonic_ns != self._last_applied_capture_ns:
+            capture_pose = self._pose_at_capture(target.captured_monotonic_ns)
+            visible = capture_pose is not None
         if visible != self._last_logged_visible:
             print("GC300 follow: face visible" if visible else "GC300 follow: waiting for face", flush=True)
             self._last_logged_visible = visible
         if not visible:
             self._last_applied_capture_ns = None
+            if (
+                self._last_face_seen_ns is not None
+                and now_ns - self._last_face_seen_ns <= _LOST_FACE_HEAD_HOLD_NS
+            ):
+                return FollowCommand(
+                    velocity={"vx": 0.0, "vy": 0.0, "vtheta": 0.0},
+                    head_orientation={
+                        "roll": 0.0,
+                        "pitch": self._head_pitch,
+                        "yaw": self._head_yaw,
+                    },
+                    target_visible=False,
+                )
             self._head_yaw = 0.0
             self._head_pitch = _FACE_SEARCH_PITCH_RAD
+            self._face_elevation_rad = 0.0
+            self._horizontal_distance_m = 0.0
             return FollowCommand(
                 velocity={"vx": 0.0, "vy": 0.0, "vtheta": 0.0},
                 head_orientation={"roll": 0.0, "pitch": self._head_pitch, "yaw": 0.0},
@@ -128,23 +193,40 @@ class PersonFollower:
 
         assert target is not None
         if target.captured_monotonic_ns != self._last_applied_capture_ns:
+            assert capture_pose is not None
             # Positive robot yaw points left.  The image x axis points right.
             pixel_yaw = -math.atan((2.0 * target.center_x - 1.0) * math.tan(_HORIZONTAL_HALF_FOV_RAD))
             pixel_pitch = math.atan((2.0 * target.center_y - 1.0) * math.tan(_VERTICAL_HALF_FOV_RAD))
-            self._head_yaw = _clamp(self._measured_head_yaw + pixel_yaw, -1.2, 1.2)
+            self._head_yaw = _clamp(capture_pose.head + pixel_yaw, -1.2, 1.2)
+            face_pitch = capture_pose.trunk_pitch + capture_pose.neck_pitch + pixel_pitch
             self._head_pitch = _clamp(
-                self._trunk_pitch + self._measured_neck_pitch + pixel_pitch,
+                face_pitch,
                 -1.2, 0.35,
             )
+            optical_depth_m = (
+                _FX_PER_IMAGE_WIDTH * _ASSUMED_FACE_WIDTH_M / target.face_width
+            )
+            ray_scale = math.sqrt(
+                1.0 + math.tan(pixel_yaw) ** 2 + math.tan(pixel_pitch) ** 2
+            )
+            self._face_elevation_rad = -face_pitch
+            self._horizontal_distance_m = max(
+                0.0, optical_depth_m * ray_scale * math.cos(face_pitch)
+            )
             self._last_applied_capture_ns = target.captured_monotonic_ns
+        self._last_face_seen_ns = now_ns
 
         bearing = self._head_yaw
         turn = _clamp(0.4 * bearing, -0.22, 0.22) if abs(bearing) > 0.06 else 0.0
-        # Face width is only a proximity proxy, not calibrated distance.  A
-        # 15 cm face reaches about 0.055 of the 640 px left eye at 1 m with
-        # the measured fx=234 px.  Stop there, while turning before advancing.
-        size_error = _STOP_FACE_WIDTH - target.face_width
-        forward = _clamp(size_error * 5.0, 0.0, 0.16)
+        # Face width alone underestimates how close the feet are when the low
+        # camera looks steeply up.  The projected range is approximate because
+        # real face sizes vary, so keep a margin and stop on steep elevation.
+        forward = _clamp(
+            (self._horizontal_distance_m - _STOP_HORIZONTAL_DISTANCE_M) * 0.24,
+            0.0, 0.16,
+        )
+        if self._face_elevation_rad >= _MAX_APPROACH_ELEVATION_RAD:
+            forward = 0.0
         forward *= _clamp(1.0 - abs(bearing) / 0.30, 0.0, 1.0)
         return FollowCommand(
             velocity={"vx": forward, "vy": 0.0, "vtheta": turn},
