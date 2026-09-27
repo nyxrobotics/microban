@@ -19,6 +19,11 @@ TARGET_MAX_AGE_NS = 1_500_000_000
 _MAX_TARGET_BYTES = 512
 _HORIZONTAL_HALF_FOV_RAD = math.radians(56.0)
 _VERTICAL_HALF_FOV_RAD = math.atan(math.tan(_HORIZONTAL_HALF_FOV_RAD) * 3.0 / 4.0)
+# The camera sits about 32 cm above the floor.  A level view cannot see a
+# nearby adult's face; an upward aim of 40 degrees covers useful person heights
+# throughout the near field without moving the head between detector updates.
+_FACE_SEARCH_PITCH_RAD = math.radians(-40.0)
+_STOP_FACE_WIDTH = 0.055
 
 
 def _clamp(value: float, minimum: float, maximum: float) -> float:
@@ -47,7 +52,7 @@ class PersonFollower:
         self._latest: FaceTarget | None = None
         self._last_applied_capture_ns: int | None = None
         self._head_yaw = 0.0
-        self._head_pitch = 0.0
+        self._head_pitch = _FACE_SEARCH_PITCH_RAD
         self._measured_head_yaw = 0.0
         self._measured_neck_pitch = 0.0
         self._trunk_pitch = 0.0
@@ -56,7 +61,7 @@ class PersonFollower:
     def reset(self) -> None:
         self._last_applied_capture_ns = None
         self._head_yaw = 0.0
-        self._head_pitch = 0.0
+        self._head_pitch = _FACE_SEARCH_PITCH_RAD
         self._last_logged_visible = None
 
     def set_head_telemetry(
@@ -114,10 +119,10 @@ class PersonFollower:
         if not visible:
             self._last_applied_capture_ns = None
             self._head_yaw = 0.0
-            self._head_pitch = 0.0
+            self._head_pitch = _FACE_SEARCH_PITCH_RAD
             return FollowCommand(
                 velocity={"vx": 0.0, "vy": 0.0, "vtheta": 0.0},
-                head_orientation={"roll": 0.0, "pitch": 0.0, "yaw": 0.0},
+                head_orientation={"roll": 0.0, "pitch": self._head_pitch, "yaw": 0.0},
                 target_visible=False,
             )
 
@@ -135,10 +140,11 @@ class PersonFollower:
 
         bearing = self._head_yaw
         turn = _clamp(0.4 * bearing, -0.22, 0.22) if abs(bearing) > 0.06 else 0.0
-        # Face width is only a proximity proxy, not calibrated distance.  Stop
-        # before a face fills much of the image, and rotate before advancing.
-        size_error = 0.10 - target.face_width
-        forward = _clamp((size_error - 0.02) * 2.5, 0.0, 0.16)
+        # Face width is only a proximity proxy, not calibrated distance.  A
+        # 15 cm face reaches about 0.055 of the 640 px left eye at 1 m with
+        # the measured fx=234 px.  Stop there, while turning before advancing.
+        size_error = _STOP_FACE_WIDTH - target.face_width
+        forward = _clamp(size_error * 5.0, 0.0, 0.16)
         forward *= _clamp(1.0 - abs(bearing) / 0.30, 0.0, 1.0)
         return FollowCommand(
             velocity={"vx": forward, "vy": 0.0, "vtheta": turn},
