@@ -72,11 +72,14 @@ class Scheduler:
         imu_shutdown_after_s: float = 0.75,
         hardware_power_control: bool | None = None,
         serial_hold_on_error: bool = False,
+        neutral_ankle_pitch_bias_rad: float = 0.0,
     ):
         if not math.isfinite(imu_max_age_s) or imu_max_age_s <= 0.0:
             raise ValueError("imu_max_age_s must be finite and positive")
         if not math.isfinite(imu_shutdown_after_s) or imu_shutdown_after_s <= 0.0:
             raise ValueError("imu_shutdown_after_s must be finite and positive")
+        if not math.isfinite(neutral_ankle_pitch_bias_rad):
+            raise ValueError("neutral_ankle_pitch_bias_rad must be finite")
         self.dt = 1.0 / frequency_hz
         self.controller = controller
         self.stop_flag_path = Path(stop_flag_path)
@@ -88,6 +91,11 @@ class Scheduler:
             else bool(hardware_power_control)
         )
         self._serial_hold_on_error = serial_hold_on_error
+        # GC300 may bias the physical A/R3-off stance without changing the
+        # training HOME or the neutral targets used by other input sources.
+        self._hardware_neutral_pose = dict(NEUTRAL_POSE)
+        for name in ("left_ankle_pitch", "right_ankle_pitch"):
+            self._hardware_neutral_pose[name] += neutral_ankle_pitch_bias_rad
 
         self.observer = Observer(self.controller)
 
@@ -343,6 +351,14 @@ class Scheduler:
                         )
                     if self._getup_active_override:
                         obs.user_input.active_moves = (obs.user_input.active_moves | {"getup"}) - {"walk"}
+                        # Get-up can preempt the A->R3 handoff before walk's
+                        # first on_start, so clear its neutral-pose offset here.
+                        walk_move = self.registered_moves.get("walk")
+                        seed_from_getup = getattr(
+                            walk_move, "seed_next_start_from_getup", None
+                        )
+                        if callable(seed_from_getup):
+                            seed_from_getup()
                         getup_move = self.registered_moves["getup"]
                         model_ready = getattr(getup_move, "model_ready", True)
                         if not model_ready and hardware_mode == "policy":
@@ -652,7 +668,7 @@ class Scheduler:
             neutral_seed = dict(measured)
             for name in getattr(self.controller, "stale_motor_names", ()):
                 if name in neutral_seed:
-                    neutral_seed[name] = NEUTRAL_POSE[name]
+                    neutral_seed[name] = self._hardware_neutral_pose[name]
 
             motor_ids = list(MOTOR_TO_ID.values())
             self.controller.sync_write_kp(
@@ -698,6 +714,12 @@ class Scheduler:
 
         if effective_policy:
             if not self._hardware_policy_enabled:
+                walk_move = self.registered_moves.get("walk")
+                seed_from_neutral = getattr(
+                    walk_move, "seed_next_start_from_hardware_neutral", None
+                )
+                if callable(seed_from_neutral):
+                    seed_from_neutral()
                 print(
                     "Hardware gate: normal policy output enabled",
                     end="\r\n",
@@ -798,7 +820,7 @@ class Scheduler:
         updated: dict[str, float] = {}
         for name in MOTOR_TO_ID:
             current = targets[name]
-            neutral = NEUTRAL_POSE[name]
+            neutral = self._hardware_neutral_pose[name]
             delta = max(-max_step, min(max_step, neutral - current))
             value = current + delta
             if not math.isfinite(value):
@@ -993,7 +1015,7 @@ class Scheduler:
                 self._getup_failed_hold_targets[name] = measured
                 self._getup_failed_stale_names.discard(name)
                 continue
-            neutral = NEUTRAL_POSE[name]
+            neutral = self._hardware_neutral_pose[name]
             delta = max(-max_step, min(max_step, neutral - current))
             self._getup_failed_hold_targets[name] = current + delta
         if self._hardware_policy_enabled:

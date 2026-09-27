@@ -33,7 +33,6 @@ _POLICY_MAX_TARGET_ABS_RAD = 2.0 * math.pi
 NECK_ROLL_RANGE = (-0.436332, 0.436332)
 NECK_PITCH_RANGE = (-1.570796, 0.436332)
 _ANKLE_PITCH_JOINTS = frozenset({"left_ankle_pitch", "right_ankle_pitch"})
-_ANKLE_BIAS_RAMP_S = 0.5
 
 
 def _body_roll_pitch(body_quat: list[float]) -> tuple[float, float]:
@@ -59,7 +58,7 @@ class WalkMove(Move):
             raise ValueError("ankle_pitch_bias_rad must be finite")
         self._controller = controller
         self._ankle_pitch_bias_rad = ankle_pitch_bias_rad
-        self._ankle_bias_start_time_s: float | None = None
+        self._next_start_ankle_bias_rad = 0.0
         self._last_commanded_ankle_bias_rad = {
             name: 0.0 for name in _ANKLE_PITCH_JOINTS
         }
@@ -153,9 +152,8 @@ class WalkMove(Move):
         # activation into that emergency handoff.
         self._last_action = [0.0] * len(OBSERVATION_DOF_ORDER)
         self._phase_step = 0
-        self._ankle_bias_start_time_s = float(obs.robot_state.time_s)
         for name in _ANKLE_PITCH_JOINTS:
-            self._last_commanded_ankle_bias_rad[name] = 0.0
+            self._last_commanded_ankle_bias_rad[name] = self._next_start_ankle_bias_rad
         if self._controller is not None:
             ids = [MOTOR_TO_ID[name] for name in OBSERVATION_DOF_ORDER]
             self._controller.sync_write_kp(ids, [KP_RL] * len(ids))
@@ -171,6 +169,14 @@ class WalkMove(Move):
         self._stop_start_time_s = None
         self._stop_start_angles = {}
         self.state = MoveState.ACTIVE
+
+    def seed_next_start_from_hardware_neutral(self) -> None:
+        """A/R3-off already holds the physically biased neutral ankle goals."""
+        self._next_start_ankle_bias_rad = self._ankle_pitch_bias_rad
+
+    def seed_next_start_from_getup(self) -> None:
+        """Get-up owns unshifted ankle goals until walk takes over again."""
+        self._next_start_ankle_bias_rad = 0.0
 
     def step(self, obs: Observation, command: MotorCommand) -> None:
         # Update reference phase
@@ -220,14 +226,9 @@ class WalkMove(Move):
                 )
             return
 
-        bias_start = self._ankle_bias_start_time_s
-        elapsed_s = (
-            max(0.0, float(obs.robot_state.time_s) - bias_start)
-            if bias_start is not None else 0.0
-        )
-        ankle_bias = self._ankle_pitch_bias_rad * min(
-            1.0, elapsed_s / _ANKLE_BIAS_RAMP_S
-        )
+        # The GC300 A gate has already reached this offset. Keep it through
+        # R3 handoff instead of briefly undoing the physical neutral posture.
+        ankle_bias = self._ankle_pitch_bias_rad
         invalid_names = []
         next_action = list(self._last_action)
         next_ankle_bias = dict(self._last_commanded_ankle_bias_rad)
@@ -327,6 +328,9 @@ class WalkMove(Move):
         if "getup" in obs.user_input.active_moves:
             # Get-up is exclusive and owns both commands and gains. Do not finish the
             # normal return later and raise KP halfway through fall recovery.
+            # Its own goals use unshifted coordinates, so a later walk restart
+            # must not subtract the GC300 A-gate offset from its first feedback.
+            self.seed_next_start_from_getup()
             self._last_action = [0.0] * len(OBSERVATION_DOF_ORDER)
             self._phase_step = 0
             self._stop_start_time_s = None
@@ -350,9 +354,13 @@ class WalkMove(Move):
         blend = u * u * (3.0 - 2.0 * u)
         for name in OBSERVATION_DOF_ORDER:
             start = self._stop_start_angles[name]
-            command.target_angles[name] = start + (NEUTRAL_POSE[name] - start) * blend
+            neutral = NEUTRAL_POSE[name]
+            if name in _ANKLE_PITCH_JOINTS:
+                neutral += self._ankle_pitch_bias_rad
+            command.target_angles[name] = start + (neutral - start) * blend
 
         if u >= 1.0:
+            self.seed_next_start_from_hardware_neutral()
             if self._controller is not None:
                 ids = [MOTOR_TO_ID[name] for name in OBSERVATION_DOF_ORDER]
                 self._controller.sync_write_kp(ids, [KP_DEFAULT] * len(ids))

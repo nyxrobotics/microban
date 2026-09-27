@@ -17,7 +17,7 @@ GC300_AGENT_NAME = "gc300_walk.onnx"
 # In model joint coordinates both ankles use the same sign.  With soles planted,
 # negative ankle pitch leans the trunk forward; servo mirror signs are applied
 # later by RobotController.
-GC300_FORWARD_ANKLE_BIAS_RAD = -math.radians(2.0)
+GC300_FORWARD_ANKLE_BIAS_RAD = -math.radians(1.0)
 
 
 def main() -> None:
@@ -26,7 +26,11 @@ def main() -> None:
     robot_main.PolicySelectableWalkMove = partial(
         WalkMove, ankle_pitch_bias_rad=GC300_FORWARD_ANKLE_BIAS_RAD
     )
-    print("GC300 active-policy ankle pitch bias: -2 degrees (forward)", flush=True)
+    robot_main.Scheduler = partial(
+        robot_main.Scheduler,
+        neutral_ankle_pitch_bias_rad=GC300_FORWARD_ANKLE_BIAS_RAD,
+    )
+    print("GC300 neutral/policy ankle pitch bias: -1 degree (forward)", flush=True)
     robot_main.main()
 
 
