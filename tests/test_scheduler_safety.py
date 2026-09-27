@@ -43,6 +43,8 @@ class FakeController:
 class FakeObserver:
     def __init__(self, state):
         self.state = state
+        self.last_position_ms = 0.0
+        self.last_velocity_ms = 0.0
 
     def read_state(self, _dt):
         return self.state

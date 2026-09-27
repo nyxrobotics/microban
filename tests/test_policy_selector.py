@@ -114,8 +114,15 @@ class PolicySelectorTest(unittest.TestCase):
         self.assertNotIn("primary_button", released_packet)
         source._apply(released_packet)
         released = source.read()
-        self.assertEqual(released.locomotion_policy, "pico_teleop")
-        self.assertNotIn("walk", released.active_moves)
+        # Released (no walk requested) with policy_enabled still true engages
+        # the R3 standing-balance actor: it reports the baseline "walk"
+        # policy it is actually running, with "walk" present at zero
+        # velocity, rather than the previously selected wire policy (see
+        # NetworkInputSource's balance_only).
+        self.assertEqual(released.locomotion_policy, "walk")
+        self.assertTrue(released.balance_only)
+        self.assertIn("walk", released.active_moves)
+        self.assertEqual(released.velocity, {"vx": 0.0, "vy": 0.0, "vtheta": 0.0})
 
         source._apply(bridge_pico_packet(1, trigger_held=True))
         held = source.read()

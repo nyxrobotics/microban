@@ -32,6 +32,8 @@ class ScriptedObserver:
         self.stop_path = Path(stop_path)
         self.events = events
         self.reads = 0
+        self.last_position_ms = 0.0
+        self.last_velocity_ms = 0.0
 
     def read_state(self, _dt):
         if self.reads >= len(self.results):

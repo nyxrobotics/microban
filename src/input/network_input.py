@@ -26,9 +26,15 @@ Wire format: one complete JSON snapshot per UDP packet —
 
 Every packet replaces the previous motion state; omitted fields are neutral. Before
 the first authenticated packet, read() leaves the startup hardware gate disabled.
-During a UDP gap, it replays the last accepted operator input so the policy keeps
-its feedback loop running. A new bridge session still requires a released-trigger
-snapshot (``"walk"`` absent) before walking can arm.
+While a live sender reports a brief tracking/input dropout (torque_enabled and
+torque_off_requested both false), read() replays the last accepted operator input
+so the policy keeps its feedback loop running. If no datagram at all arrives for
+longer than ``stale_after_s`` -- the transport itself, not just the operator's
+tracking, is down -- read() instead freezes the hardware gate (holding the last
+physical goal and torque state) and requires a fresh authenticated packet before
+resuming, the same as before the first packet ever arrived. A new bridge session
+still requires a released-trigger snapshot (``"walk"`` absent) before walking can
+arm.
 Hybrid ``pico_teleop`` walk snapshots use fixed policy-session calibration
 offsets in the robot trunk frame (+X forward, +Y left, +Z up), in metres. They
 must declare the exact contract and 0.8 safety margin above, provide complete
@@ -296,11 +302,28 @@ class NetworkInputSource(InputSource):
                 self._has_operator_state = False
                 self._walk_armed = False
                 self._arm_armed = False
-            if force_hold or self._last_recv_s == 0.0:
-                # Before the first authenticated packet (or after authority
-                # changes), leave the startup hardware gate alone. Once a
-                # packet has arrived, read() replays its operator input during
-                # UDP loss so the feedback policy keeps running.
+            # A sustained gap with no datagram at all -- the bridge, process or
+            # link is actually down, not just a live sender reporting a brief
+            # tracking dropout via hold_last_targets packets (see _apply) --
+            # is not the "replay through a gap" case. Nothing has proven the
+            # operator is still there, so this is treated the same as never
+            # having received a packet: freeze and require a fresh
+            # authenticated packet before resuming.
+            stale = (
+                self._last_recv_s != 0.0
+                and (time.monotonic() - self._last_recv_s) > self._stale_after_s
+            )
+            if stale:
+                self._state = UserInput()
+                self._has_operator_state = False
+                self._walk_armed = False
+                self._arm_armed = False
+            if force_hold or stale or self._last_recv_s == 0.0:
+                # Before the first authenticated packet, after authority
+                # changes, or once the transport has gone stale, leave the
+                # hardware gate alone. Once a packet has arrived (and the link
+                # remains live), read() replays its operator input during a
+                # brief UDP loss so the feedback policy keeps running.
                 return UserInput(
                     torque_enabled=None,
                     policy_enabled=None,

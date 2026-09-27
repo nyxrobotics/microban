@@ -163,7 +163,12 @@ class NetworkInputTest(unittest.TestCase):
         source._apply(packet(2, ["hmd_head"]))
         state = source.read()
         self.assertEqual(state.velocity, {"vx": 0.0, "vy": 0.0, "vtheta": 0.0})
-        self.assertNotIn("walk", state.active_moves)
+        # "walk" absent from the wire request with policy_enabled still true
+        # is the R3 standing-balance actor (see balance_only), not a leftover
+        # locomotion command: it is expected back in active_moves at zero
+        # velocity, which is the real property this test pins down.
+        self.assertIn("walk", state.active_moves)
+        self.assertTrue(state.balance_only)
 
     def test_getup_is_not_accepted_via_network_active_moves(self):
         source = NetworkInputSource(stale_after_s=0.5)
@@ -207,7 +212,11 @@ class NetworkInputTest(unittest.TestCase):
 
         # The PC can briefly report its own torque state as false while the
         # authenticated link is recovering. Only a separate B event may make
-        # the robot's physical torque state false.
+        # the robot's physical torque state false. From a live, already-
+        # authenticated session this now replays the prior operator state
+        # (including its balance/walk actor) instead of freezing outright, so
+        # the policy's feedback loop keeps running through the gap -- this
+        # packet's own "walk"/vx=1.0 payload must be discarded either way.
         interrupted = packet(
             2,
             ["walk", "hmd_head"],
@@ -218,9 +227,10 @@ class NetworkInputTest(unittest.TestCase):
         del interrupted["torque_off_requested"]  # old bridge: no explicit B bit
         source._apply(interrupted)
         held = source.read()
-        self.assertIsNone(held.torque_enabled)
-        self.assertTrue(held.hold_last_targets)
-        self.assertEqual(held.active_moves, set())
+        self.assertTrue(held.torque_enabled)
+        self.assertFalse(held.hold_last_targets)
+        self.assertEqual(held.active_moves, {"walk"})
+        self.assertTrue(held.balance_only)
         self.assertEqual(held.velocity, {"vx": 0.0, "vy": 0.0, "vtheta": 0.0})
         self.assertIsNone(held.arm_joint_target)
 
@@ -308,7 +318,11 @@ class NetworkInputTest(unittest.TestCase):
     def test_out_of_order_snapshot_is_ignored(self):
         source = NetworkInputSource(stale_after_s=0.5)
         source._apply(packet(5, [], session="same"))
-        source._apply(packet(6, ["hmd_head"], {"vy": 0.5}, session="same"))
+        # "walk" must be explicitly requested (and armed) here so the
+        # velocity carried by this packet is a real locomotion command, not
+        # zeroed by the independent R3 balance_only actor (which would mask
+        # the sequence-ordering property this test actually checks).
+        source._apply(packet(6, ["walk", "hmd_head"], {"vy": 0.5}, session="same"))
         source._apply(packet(4, [], {"vy": -1.0}, session="same"))
         self.assertEqual(source.read().velocity["vy"], 0.5)
 
@@ -365,7 +379,12 @@ class NetworkInputTest(unittest.TestCase):
         self.assertIn("pico_arms", held.active_moves)
         self.assertTrue(held.arm_tracking_enabled)
         self.assertEqual(held.arm_joint_target["left"], tuple(ARM_TARGET["left"]))
-        self.assertNotIn("walk", held.active_moves)
+        # The arm overlay is independent from locomotion: since this packet
+        # never requests "walk", the R3 standing-balance actor still engages
+        # it at zero velocity alongside pico_arms (see balance_only).
+        self.assertIn("walk", held.active_moves)
+        self.assertTrue(held.balance_only)
+        self.assertEqual(held.velocity, {"vx": 0.0, "vy": 0.0, "vtheta": 0.0})
 
         source._apply(pico_arm_packet(2, enabled=False))
         released_again = source.read()
@@ -492,9 +511,15 @@ class NetworkInputTest(unittest.TestCase):
         self.assertEqual(state.locomotion_policy, "pico_teleop")
         self.assertFalse(state.learned_policy_degraded)
 
-        # Release is the activation boundary; the next press may use the new policy.
+        # Release is the activation boundary; the next press may use the new
+        # policy. While released, the R3 standing actor reports the baseline
+        # "walk" policy it is actually running (see balance_only) rather than
+        # the previously selected wire policy, which only resumes on a fresh
+        # valid press below.
         source._apply(pico_release_packet(3))
-        self.assertEqual(source.read().locomotion_policy, "pico_teleop")
+        released = source.read()
+        self.assertEqual(released.locomotion_policy, "walk")
+        self.assertTrue(released.balance_only)
         source._apply(pico_walk_packet(4, {"vx": 0.5}))
         state = source.read()
         self.assertIn("walk", state.active_moves)
@@ -773,17 +798,21 @@ class NetworkInputTest(unittest.TestCase):
                 source._apply(pico_walk_packet(2, {"vx": 0.8}))
                 self.assertIn("walk", source.read().active_moves)
 
-                # It is still a released deadman snapshot: targets are discarded,
-                # the policy is downgraded, and the following press may walk.
+                # It is still a released deadman snapshot: targets are
+                # discarded, the R3 standing-balance actor takes over (walk
+                # present at zero velocity, not "degraded" -- there was no
+                # walk request here to degrade), and the following press may
+                # walk.
                 source._apply(invalid_release)
                 released = source.read()
-                self.assertNotIn("walk", released.active_moves)
+                self.assertIn("walk", released.active_moves)
+                self.assertTrue(released.balance_only)
                 self.assertEqual(
                     released.velocity,
                     {"vx": 0.0, "vy": 0.0, "vtheta": 0.0},
                 )
                 self.assertEqual(released.locomotion_policy, "walk")
-                self.assertTrue(released.learned_policy_degraded)
+                self.assertFalse(released.learned_policy_degraded)
                 self.assertIsNone(released.foot_target)
                 self.assertIsNone(released.hand_target)
                 self.assertTrue(source._walk_armed)
@@ -1043,6 +1072,8 @@ class NetworkDisconnectSchedulerTest(unittest.TestCase):
 
             class Observer:
                 reads = 0
+                last_position_ms = 0.0
+                last_velocity_ms = 0.0
 
                 def read_state(self, _dt):
                     self.reads += 1

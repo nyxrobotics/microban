@@ -1,6 +1,6 @@
 import unittest
 
-from constants import KP_DEFAULT, MOTOR_TO_ID, NEUTRAL_POSE
+from constants import KP_HARDWARE_NEUTRAL, MOTOR_TO_ID, NEUTRAL_POSE
 from input.gamepad_input import GamepadInputSource, XBOX_BUTTONS
 from input.input_source import UserInput
 from moves.move import Move, MoveState
@@ -99,7 +99,11 @@ class HardwarePolicyGateTest(unittest.TestCase):
         self.assertEqual(set(command.target_angles), set(MOTOR_TO_ID))
         self.assertEqual(move.state, MoveState.INACTIVE)
         self.assertEqual(controller.torque_writes[-1][1], [True] * len(MOTOR_TO_ID))
-        self.assertEqual(controller.kp_writes[-1][1], [KP_DEFAULT] * len(MOTOR_TO_ID))
+        # A enables torque with policy withheld: hold at the real hardware's
+        # factory neutral-hold P gain (KP_HARDWARE_NEUTRAL), not the legacy
+        # simulation-only KP_DEFAULT (see the KP_DEFAULT/KP_HARDWARE_NEUTRAL
+        # split in constants.py and scheduler._apply_hardware_gate).
+        self.assertEqual(controller.kp_writes[-1][1], [KP_HARDWARE_NEUTRAL] * len(MOTOR_TO_ID))
         self.assertEqual(
             controller.goal_writes[0][1],
             [obs.robot_state.motor_positions[name] for name in MOTOR_TO_ID],
