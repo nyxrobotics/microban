@@ -13,7 +13,6 @@ from input.input_source import InputSource
 from input.keyboard_input import KeyboardInputSource
 from moves.hmd_head import HmdHeadTrackingMove
 from moves.getup import GetupMove
-from moves.pico_hybrid import sensor_gyro_to_body
 from moves.pico_arms import PicoArmTrackingMove
 from moves.policy_selector import PolicySelectableWalkMove
 from moves.rotate_head import RotateHeadMove
@@ -177,9 +176,7 @@ def main() -> None:
                 # only the six arm joints in both standing and walking modes.
                 "pico_arms": PicoArmTrackingMove(controller=controller),
                 "hmd_head": HmdHeadTrackingMove(),
-                "getup": GetupMove(
-                    controller=controller, gyro_transform=sensor_gyro_to_body
-                ),
+                "getup": GetupMove(controller=controller),
             },
         )
 
