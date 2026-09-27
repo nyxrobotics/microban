@@ -15,6 +15,10 @@ from constants import (
 )
 from controller import ControllerProtocol
 from moves.move import MotorCommand, Move, MoveState
+from moves.pico_hybrid import (
+    EXPECTED_SOFT_JOINT_POS_LOWER,
+    EXPECTED_SOFT_JOINT_POS_UPPER,
+)
 from observer import Observation
 
 # Set to True to log motor positions and voltages during the walk move
@@ -24,9 +28,17 @@ LOGGING = False
 # Policy name
 AGENT_NAME = "walk.onnx"
 
-# Reject gross actor corruption before a position target reaches the servo bus.
-# Valid policy outputs are passed through unchanged; this is not a joint clamp.
-_POLICY_MAX_TARGET_ABS_RAD = 2.0 * math.pi
+# Use the same model-derived physical soft limits as the PICO locomotion actor.
+# Finite walk targets beyond a joint's range are sent at that joint's limit.
+WALK_SOFT_JOINT_LIMITS = {
+    name: (lower, upper)
+    for name, lower, upper in zip(
+        OBSERVATION_DOF_ORDER,
+        EXPECTED_SOFT_JOINT_POS_LOWER,
+        EXPECTED_SOFT_JOINT_POS_UPPER,
+        strict=True,
+    )
+}
 
 # Neck roll/pitch joint ranges (rad), from src/model/mjcf/robot.xml. The stabilization
 # below clips to these so a large trunk tilt can't request an out-of-range neck target.
@@ -56,6 +68,7 @@ class WalkMove(Move):
         self._last_action = [0.0] * len(OBSERVATION_DOF_ORDER)
         self._last_safe_targets: dict[str, float] = {}
         self._last_invalid_action_warn_s = -math.inf
+        self._last_clipped_action_warn_s = -math.inf
 
         # Load ONNX policy
         session_options = ort.SessionOptions()
@@ -190,17 +203,6 @@ class WalkMove(Move):
             action = [float(value) for value in ort_outs[0][0]]
             if len(action) != len(OBSERVATION_DOF_ORDER):
                 raise ValueError(f"actor returned {len(action)} actions")
-            if not all(math.isfinite(value) for value in action):
-                raise ValueError("actor returned a non-finite action")
-            targets = {
-                name: self._default_pose[name] + action[i] * self.action_scale
-                for i, name in enumerate(OBSERVATION_DOF_ORDER)
-            }
-            if not all(
-                math.isfinite(target) and abs(target) <= _POLICY_MAX_TARGET_ABS_RAD
-                for target in targets.values()
-            ):
-                raise ValueError("actor target exceeded the gross position bound")
         except Exception as exc:
             now = float(obs.robot_state.time_s)
             if now - self._last_invalid_action_warn_s >= 1.0:
@@ -216,9 +218,50 @@ class WalkMove(Move):
                 )
             return
 
-        self._last_action = action
-        command.target_angles.update(targets)
-        self._last_safe_targets = targets
+        clipped_names = []
+        invalid_names = []
+        next_action = list(self._last_action)
+        for i, name in enumerate(OBSERVATION_DOF_ORDER):
+            target = self._default_pose[name] + action[i] * self.action_scale
+            if not math.isfinite(target):
+                previous = self._last_safe_targets.get(
+                    name, obs.robot_state.motor_positions.get(name, NEUTRAL_POSE[name])
+                )
+                command.target_angles[name] = (
+                    previous if math.isfinite(previous) else NEUTRAL_POSE[name]
+                )
+                invalid_names.append(name)
+                continue
+            lower, upper = WALK_SOFT_JOINT_LIMITS[name]
+            bounded = max(lower, min(upper, target))
+            if bounded != target:
+                clipped_names.append(name)
+            command.target_angles[name] = bounded
+            next_action[i] = action[i]
+        if invalid_names:
+            now = float(obs.robot_state.time_s)
+            if now - self._last_invalid_action_warn_s >= 1.0:
+                print(
+                    "Walk policy non-finite output; holding previous targets: "
+                    + ", ".join(invalid_names),
+                    flush=True,
+                )
+                self._last_invalid_action_warn_s = now
+        if clipped_names:
+            now = float(obs.robot_state.time_s)
+            if now - self._last_clipped_action_warn_s >= 1.0:
+                print(
+                    "Walk policy targets clamped to physical soft limits: "
+                    + ", ".join(clipped_names),
+                    flush=True,
+                )
+                self._last_clipped_action_warn_s = now
+        # Preserve raw-action recurrence for valid outputs. An invalid joint
+        # keeps both its previous target and previous action observation.
+        self._last_action = next_action
+        self._last_safe_targets = {
+            name: command.target_angles[name] for name in OBSERVATION_DOF_ORDER
+        }
 
         # Head stabilization: hold the neck level (or, with VR teleop active, at the
         # commanded head_orientation) against trunk roll/pitch. Independent of the RL policy
