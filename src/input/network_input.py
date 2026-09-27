@@ -35,14 +35,15 @@ A new bridge session still requires a released-trigger snapshot (``"walk"``
 absent) before walking can arm.
 Hybrid ``pico_teleop`` walk snapshots use fixed policy-session calibration
 offsets in the robot trunk frame (+X forward, +Y left, +Z up), in metres. They
-must declare the exact contract and 0.8 safety margin above, provide complete
-paired feet and hands, and stay inside the bridge's 80% training envelope.
+must declare the exact contract and 0.8 safety margin above. Supplied feet
+must form a complete pair; either hand may be inactive. Missing or invalid
+optional targets become inactive independently and do not stop walking.
 After the bridge projects a support foot into its floor band, two active foot
 offsets use the narrower simultaneous-foot envelope and require an exactly zero
 twist command.
-Any mismatch clears both optional target pairs while retaining the
-``pico_teleop`` policy, trigger and joystick command. The actor receives zero
-offsets for missing tracking instead of switching to the old walk policy.
+An invalid optional target is dropped without clearing the other target or
+the ``pico_teleop`` policy, trigger and joystick command. Missing feet become
+zero offsets; missing hands are inactive.
 
 A second, unrelated packet shape is a stateless bridge-side latency probe,
 handled before session/sequence validation and never touching UserInput:
@@ -635,54 +636,45 @@ class NetworkInputSource(InputSource):
             arm_tracking_enabled = False
             parsed_arm_joint_target = None
 
-        target_payload_valid = True
+        # Each optional tracking channel is parsed independently. A missing
+        # hand must not discard a valid foot target or the joystick command.
         try:
             foot_target = packet.get("foot_target")
             if foot_target is not None:
-                if not isinstance(foot_target, dict):
+                if not isinstance(foot_target, dict) or set(foot_target) != {
+                    "left", "right"
+                }:
                     raise TypeError("foot_target must be an object or null")
                 left_foot_target = _tuple3(foot_target.get("left"))
                 right_foot_target = _tuple3(foot_target.get("right"))
-                complete_foot_target = (
-                    set(foot_target) == {"left", "right"}
-                    and left_foot_target is not None
-                    and right_foot_target is not None
+                parsed_foot_target = (
+                    {"left": left_foot_target, "right": right_foot_target}
+                    if left_foot_target is not None and right_foot_target is not None
+                    else None
                 )
-                parsed_foot_target = {
-                    "left": left_foot_target or (0.0, 0.0, 0.0),
-                    "right": right_foot_target or (0.0, 0.0, 0.0),
-                }
             else:
-                complete_foot_target = False
                 parsed_foot_target = None
+        except (IndexError, TypeError, ValueError, OverflowError):
+            if not incoming_pico_packet:
+                raise
+            parsed_foot_target = None
 
+        try:
             hand_target = packet.get("hand_target")
             if hand_target is not None:
-                if not isinstance(hand_target, dict):
+                if not isinstance(hand_target, dict) or set(hand_target) != {
+                    "left", "right"
+                }:
                     raise TypeError("hand_target must be an object or null")
-                left_hand_target = _tuple3(hand_target.get("left"))
-                right_hand_target = _tuple3(hand_target.get("right"))
-                complete_hand_target = (
-                    set(hand_target) == {"left", "right"}
-                    and left_hand_target is not None
-                    and right_hand_target is not None
-                )
                 parsed_hand_target = {
-                    "left": left_hand_target,
-                    "right": right_hand_target,
+                    side: _tuple3(hand_target.get(side))
+                    for side in ("left", "right")
                 }
             else:
-                complete_hand_target = False
                 parsed_hand_target = None
         except (IndexError, TypeError, ValueError, OverflowError):
             if not incoming_pico_packet:
                 raise
-            # Optional body targets are dropped independently of buttons and
-            # joystick input; rejecting the packet would retain an older pose.
-            target_payload_valid = False
-            complete_foot_target = False
-            complete_hand_target = False
-            parsed_foot_target = None
             parsed_hand_target = None
 
         pico_metadata_valid = packet.get(
@@ -699,13 +691,12 @@ class NetworkInputSource(InputSource):
             and arm_payload_valid
             and parsed_arm_joint_target is not None
         )
-        if pico_walk_requested:
-            pico_body_target_valid = (
-                pico_metadata_valid
-                and target_payload_valid
-                and complete_foot_target
-                and complete_hand_target
-                and _target_pair_in_bounds(
+        if not pico_walk_requested or not pico_metadata_valid:
+            parsed_foot_target = None
+            parsed_hand_target = None
+        else:
+            if parsed_foot_target is not None and not (
+                _target_pair_in_bounds(
                     parsed_foot_target,
                     _PICO_FOOT_TARGET_LOWER,
                     _PICO_FOOT_TARGET_UPPER,
@@ -715,22 +706,16 @@ class NetworkInputSource(InputSource):
                     parsed_foot_target,
                     parsed_velocity,
                 )
-                and _target_pair_in_bounds(
-                    parsed_hand_target,
-                    _PICO_HAND_TARGET_LOWER,
-                    _PICO_HAND_TARGET_UPPER,
-                )
-            )
-        else:
-            # The native bridge sends target-null snapshots while the deadman is
-            # released. Requiring the same metadata keeps release/re-arm packets
-            # inside the negotiated contract without requiring impossible pairs.
-            pico_body_target_valid = (
-                pico_metadata_valid
-                and target_payload_valid
-                and parsed_foot_target is None
-                and parsed_hand_target is None
-            )
+            ):
+                parsed_foot_target = None
+            if parsed_hand_target is not None:
+                for side, vector in parsed_hand_target.items():
+                    if vector is not None and any(
+                        component < _PICO_HAND_TARGET_LOWER[index]
+                        or component > _PICO_HAND_TARGET_UPPER[index]
+                        for index, component in enumerate(vector)
+                    ):
+                        parsed_hand_target[side] = None
 
         if not policy_enabled:
             # Keep a disabled-policy snapshot completely inert even if a
@@ -796,13 +781,6 @@ class NetworkInputSource(InputSource):
             self._last_seq = seq
 
             learned_policy_degraded = False
-            if policy_enabled and pico_walk_requested and not pico_body_target_valid:
-                # The v12 actor accepts zero optional body/hand offsets. Keep
-                # its velocity and feedback running when tracking is absent or
-                # malformed, without activating the old walk policy.
-                parsed_foot_target = None
-                parsed_hand_target = None
-
             if self._motion_inhibited:
                 self._walk_armed = False
                 self._arm_armed = False

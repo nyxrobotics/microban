@@ -10,7 +10,7 @@ still checked by the v12 deployment validator as an artifact dependency.
 | Condition | Same-cycle result | Recovery |
 |---|---|---|
 | Camera stale/missing, calibration/FOV/IPD invalid | View may fall back to passthrough; locomotion is unchanged | Camera can recover independently |
-| Optional body/hand targets missing, malformed, stale, or outside the wire envelope | Feed zero body targets to PICO v12; preserve left trigger and joystick velocity | Valid tracking can resume without restarting the gait |
+| Optional body/hand targets missing, malformed, stale, or outside the wire envelope | Use zero offsets for missing feet and mark missing hands inactive; preserve left trigger and joystick velocity | Valid tracking can resume without restarting the gait |
 | Head tracking unavailable | Ignore that head pose; keep buttons, sticks, arms, and locomotion independent | Head tracking resumes when a valid pose arrives |
 | PICO ONNX absent, rejected, or unable to start | Hold the last complete joint goals, or the measured pose if none were produced | Atomic replacement is loaded in the background and can be selected on a later activation |
 | PICO inference fails or produces an unusable target | Hold the last complete PICO goals in the faulting control cycle; do not start the old walk actor | Keep the hold latched until locomotion is released and activated again |
