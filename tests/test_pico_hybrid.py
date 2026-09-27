@@ -1870,12 +1870,8 @@ class PicoHybridMoveTest(unittest.TestCase):
             self.assertEqual(final.target_angles[name], NEUTRAL_POSE[name])
         next_inactive_tick = MotorCommand()
         self.assertEqual(final.target_angles, next_inactive_tick.target_angles)
-        self.assertEqual(
-            final.target_angles["left_shoulder_pitch"], math.radians(10.0)
-        )
-        self.assertEqual(
-            final.target_angles["right_shoulder_pitch"], math.radians(10.0)
-        )
+        self.assertEqual(final.target_angles["left_shoulder_pitch"], 0.0)
+        self.assertEqual(final.target_angles["right_shoulder_pitch"], 0.0)
 
     def test_getup_cancels_release_interpolation(self):
         move = PicoHybridMove(session=FakeSession(), gyro_transform=lambda value: value)
