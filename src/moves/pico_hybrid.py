@@ -215,12 +215,10 @@ EXPECTED_V12_ACTION_DISTRIBUTION_SEMANTICS = "unbounded_gaussian_deterministic_m
 EXPECTED_V12_RUNTIME_ACTION_SEMANTICS = (
     "raw_unbounded_default_plus_scale_no_target_clip_v1"
 )
-# This guard is deliberately outside the learned-policy/recurrence contract
-# above.  V12 still observes its exact raw actor output on the next tick, while
-# the actuator-facing MotorCommand is the continuous saturation of the derived
-# absolute target to Microban's compiled physical soft limits.
+# V12 uses the same unbounded finite target as its training action.  The
+# authenticated raw-action amplitude guard and non-finite check remain active.
 PHYSICAL_MOTOR_TARGET_GUARD_SEMANTICS = (
-    "compiled_soft_limit_continuous_clamp_preserve_policy_recurrence_v1"
+    "finite_target_no_software_clip_v1"
 )
 EXPECTED_V12_FINAL_CHECKPOINT_ITERATION = 14_999
 EXPECTED_V12_FINAL_COMPLETED_UPDATES = 15_000
@@ -249,7 +247,7 @@ EXPECTED_V12_RAW_ACTION_GUARD_FORMULA = (
 )
 EXPECTED_V12_RAW_ACTION_GUARD_MULTIPLIER = 6.0
 EXPECTED_V12_RAW_ACTION_GUARD_SEMANTICS = (
-    "finite_float32_then_per_joint_absmax_else_same_cycle_legacy_fallback_v1"
+    "finite_float32_then_per_joint_absmax_else_hold_previous_targets_v1"
 )
 EXPECTED_V12_PARITY_SEED = 20260925
 EXPECTED_V12_PARITY_SAMPLE_COUNT = 64
@@ -1458,6 +1456,12 @@ def sensor_gyro_to_body(
     return _quat_rotate_vector(mount_quat_wxyz, gyro_sensor_xyz)
 
 
+def _raw_imu_gyro(gyro_sensor_xyz: Sequence[float]) -> Sequence[float]:
+    """Preserve the IMU-site axes used by the v12 training observation."""
+
+    return gyro_sensor_xyz
+
+
 @dataclass(frozen=True)
 class _PolicyContract:
     input_name: str
@@ -2417,8 +2421,8 @@ def _parse_v12_contract(session: Any) -> _PolicyContract:
         v12_runtime_raw_action_guard_absolute_maximum,
     ) = _parse_v12_raw_action_envelope(metadata, action_joints)
 
-    if metadata.get("base_ang_vel_frame") != "robot_body_xyz":
-        raise PicoHybridPolicyContractError("base_ang_vel_frame must be robot_body_xyz")
+    if metadata.get("base_ang_vel_frame") != "imu_sensor_xyz":
+        raise PicoHybridPolicyContractError("base_ang_vel_frame must be imu_sensor_xyz")
     if metadata.get("base_ang_vel_units") != "rad_s":
         raise PicoHybridPolicyContractError("base_ang_vel_units must be rad_s")
     if _split_csv(
@@ -2460,6 +2464,11 @@ def _parse_v12_contract(session: Any) -> _PolicyContract:
         metadata,
         "runtime_action_semantics",
         EXPECTED_V12_RUNTIME_ACTION_SEMANTICS,
+    )
+    _require_exact_metadata(
+        metadata,
+        "physical_motor_target_guard_semantics",
+        PHYSICAL_MOTOR_TARGET_GUARD_SEMANTICS,
     )
     _require_exact_finite_scalar(metadata, "control_hz", 50.0)
 
@@ -2680,12 +2689,10 @@ def _parse_contract(session: Any) -> _PolicyContract:
 
 
 def _validate_physical_motor_target_contract(contract: _PolicyContract) -> None:
-    """Fail closed before inference if the actuator clamp is not well-defined.
+    """Validate the calibrated joint geometry before inference begins.
 
-    Contract v10 authenticates exporter-provided soft-limit metadata.  Contract
-    v12 authenticates it when present and otherwise uses the robot-local
-    constants.  This final constructor check is deliberately common to both so
-    no live target can encounter malformed geometry after torque is active.
+    V10 still uses the software soft limits. V12 sends its finite raw target,
+    matching its training action without a software position clip.
     """
 
     vectors = {
@@ -2770,12 +2777,11 @@ class PicoHybridMove(Move):
         session: Any | None = None,
         gyro_transform: Callable[
             [Sequence[float]], Sequence[float]
-        ] = sensor_gyro_to_body,
+        ] | None = None,
     ) -> None:
         super().__init__()
         self._controller = controller
         self._neutral_return_duration_s = neutral_return_duration_s
-        self._gyro_transform = gyro_transform
         if session is None:
             session_options = ort.SessionOptions()
             session_options.intra_op_num_threads = 1
@@ -2785,6 +2791,12 @@ class PicoHybridMove(Move):
             )
         self._session = session
         self._contract = _parse_contract(self._session)
+        self._gyro_transform = gyro_transform or (
+            _raw_imu_gyro
+            if self._contract.training_contract_version
+            == EXPECTED_V12_TRAINING_CONTRACT_VERSION
+            else sensor_gyro_to_body
+        )
         _validate_physical_motor_target_contract(self._contract)
         if (
             self._contract.training_contract_version
@@ -2816,13 +2828,18 @@ class PicoHybridMove(Move):
         self._stop_start_angles: dict[str, float] = {}
 
     def _physical_target(self, index: int, value: float) -> float:
-        """Continuously saturate one finite actuator target to compiled limits."""
+        """Reject non-finite targets; only the historical v10 path clips."""
 
         numeric = float(value)
         if not math.isfinite(numeric):
             raise PicoHybridPolicyRuntimeError(
-                "physical motor target became non-finite before clamping"
+                "physical motor target became non-finite"
             )
+        if (
+            self._contract.training_contract_version
+            == EXPECTED_V12_TRAINING_CONTRACT_VERSION
+        ):
+            return numeric
         return max(
             self._contract.soft_lower[index],
             min(self._contract.soft_upper[index], numeric),
@@ -2927,20 +2944,20 @@ class PicoHybridMove(Move):
 
     def build_observation(self, obs: Observation) -> list[float]:
         try:
-            gyro_body = [
+            gyro_policy = [
                 float(value) for value in self._gyro_transform(obs.robot_state.gyro)
             ]
         except (TypeError, ValueError, OverflowError) as exc:
             raise PicoHybridPolicyRuntimeError(
-                "failed to transform gyro to body frame"
+                "failed to map gyro to the policy frame"
             ) from exc
         gravity = [float(value) for value in obs.robot_state.projected_gravity]
-        if len(gyro_body) != 3 or len(gravity) != 3:
+        if len(gyro_policy) != 3 or len(gravity) != 3:
             raise PicoHybridPolicyRuntimeError(
                 "gyro and projected gravity must be 3-vectors"
             )
 
-        values: list[float] = gyro_body + gravity
+        values: list[float] = gyro_policy + gravity
         for name, default in zip(
             self._contract.observation_joint_names,
             self._contract.observation_default_joint_pos,
@@ -3006,9 +3023,8 @@ class PicoHybridMove(Move):
         ):
             # Preserve the source locomotion MDP recurrence exactly: no actor
             # transform and the same raw float32 action recurs in the next
-            # observation.  The separate actuator boundary continuously clamps
-            # finite absolute MotorCommand targets to compiled physical limits;
-            # saturation is not fed back into the actor recurrence.
+            # observation.  Finite absolute MotorCommand targets pass through
+            # without a software clip, matching the training action.
             with np.errstate(over="ignore", invalid="ignore"):
                 raw_action_float32 = raw_action.astype(np.float32)
             if not np.isfinite(raw_action_float32).all():

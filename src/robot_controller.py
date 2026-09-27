@@ -38,6 +38,7 @@ class RobotController:
         self._torque_unconfirmed_ids: set[int] = set()
         self._torque_check_ids = tuple(MOTOR_TO_ID.values())
         self._torque_check_cursor = 0
+        self._torque_recovery_cursor = 0
         self._torque_check_next_s = time.monotonic() + 0.1
         self._torque_warn_after_s: dict[int, float] = {}
         # A servo that reappears after losing torque must join a moving target
@@ -330,8 +331,25 @@ class RobotController:
         if now < self._torque_check_next_s:
             return
         self._torque_check_next_s = now + 0.1
+        # A failed recovery check must not leave a joint without goal writes
+        # until a complete 21-servo round robin finishes. Keep checking the
+        # recovering joint on each 100 ms poll while retaining the normal scan.
+        recovering = [
+            motor_id for motor_id in self._torque_check_ids
+            if motor_id in self._torque_unconfirmed_ids
+            and motor_id in self._requested_torque_ids
+        ]
+        recovery_id = None
+        if recovering:
+            recovery_id = recovering[self._torque_recovery_cursor % len(recovering)]
+            self._torque_recovery_cursor += 1
+            self._check_torque_state(recovery_id)
         motor_id = self._torque_check_ids[self._torque_check_cursor]
         self._torque_check_cursor = (self._torque_check_cursor + 1) % len(self._torque_check_ids)
+        if motor_id != recovery_id:
+            self._check_torque_state(motor_id)
+
+    def _check_torque_state(self, motor_id: int) -> None:
         if motor_id not in self._requested_torque_ids:
             return
 
@@ -359,23 +377,35 @@ class RobotController:
             hardware_error = self._scalar(
                 self._controller.read_hardware_error_status(motor_id)
             )
-            if hardware_error != 0.0:
-                self._torque_warn(
-                    motor_id,
-                    f"OFF, hardware error={hardware_error}; enable deferred",
-                )
-                return
-            # Never revive a servo against an old goal register.  The next
-            # scheduler command is slew-limited from this fresh pose.
+        except (RuntimeError, OSError, TypeError, ValueError) as exc:
+            self._torque_warn(motor_id, f"OFF, hardware error read failed: {exc}")
+            return
+        if hardware_error != 0.0:
+            self._torque_warn(
+                motor_id,
+                f"OFF, hardware error={hardware_error}; enable deferred",
+            )
+            return
+        # Never revive a servo against an old goal register.  The next
+        # scheduler command is slew-limited from this fresh pose.
+        try:
             measured = self._seed_rejoin_goal(motor_id)
-            if motor_id not in self._requested_torque_ids:
-                return
+        except (RuntimeError, OSError, TypeError, ValueError) as exc:
+            self._torque_warn(motor_id, f"OFF, measured-goal seed failed: {exc}")
+            return
+        if motor_id not in self._requested_torque_ids:
+            return
+        try:
             self._controller.sync_write_torque_enable([motor_id], [True])
+        except (RuntimeError, OSError, TypeError, ValueError) as exc:
+            self._torque_warn(motor_id, f"OFF, torque-enable write failed: {exc}")
+            return
+        try:
             verified = self._scalar(
                 self._controller.read_torque_enable(motor_id)
             )
         except (RuntimeError, OSError, TypeError, ValueError) as exc:
-            self._torque_warn(motor_id, f"OFF, recovery deferred: {exc}")
+            self._torque_warn(motor_id, f"OFF, torque-enable verify failed: {exc}")
             return
         if verified != 1.0:
             self._torque_warn(

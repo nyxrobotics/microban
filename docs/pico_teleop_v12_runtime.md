@@ -1,8 +1,9 @@
 # Contract-v12 PICO policy runtime
 
-The cross-policy IMU observation audit is tracked in
-[the deferred TODO](policy_imu_frame_todo.md). This milestone keeps the
-currently deployed PICO model and observation path unchanged.
+The v12 gyro input now uses the raw BMI088 IMU-site axes, matching the
+`robot/imu_ang_vel` observation used in training and the ONNX metadata
+`base_ang_vel_frame=imu_sensor_xyz`. Broader cross-policy IMU unification remains
+in [the deferred TODO](policy_imu_frame_todo.md).
 
 The robot uses contract-v12 PICO for walking and R3 zero-velocity balance.
 The `walk` move name routes through `PolicySelectableWalkMove`. In production,
@@ -43,15 +44,15 @@ Contract v12 is intentionally different from contract v10:
 - no bounded-distribution transform, raw-action clamp, or effective-action
   reconstruction is applied to the policy state;
 - the exact float32 raw output becomes observation columns `48:66` on the next
-  tick, even if its derived physical target saturates;
-- separately, the actuator-facing `MotorCommand` is the continuous clamp of the
-  finite derived absolute target to the compiled Microban soft limits.
+  tick;
+- each finite derived absolute target passes to `MotorCommand` without a
+  software soft-limit clip, matching the training action.
 
 The runtime validates all 18 values and derived targets for finiteness before
 writing any target. It also applies the final-evaluation finite-amplitude guard
-described below. A finite target outside a soft limit is not an exception or a
-stop: that joint commands the nearest limit while all joints and the raw actor
-recurrence continue in the same tick. A numerical failure or an escape from the
+described below. A finite target outside a compiled software soft limit is not
+clipped or rejected by the v12 action path; all joints and the raw actor
+recurrence continue in that tick. A numerical failure or an escape from the
 separate authenticated gross-amplitude guard holds the last complete PICO body
 goals; the old walk actor is not started.
 
@@ -59,16 +60,17 @@ The v10 exporter supplies soft-limit metadata and the existing parser requires
 it to match the robot constants. The current v12 exporter does not supply those
 fields because its learned action contract is `action_clip_semantics=none`. If a
 v12 artifact does contain both soft-limit vectors, the parser requires the same
-exact match; if neither is present, the robot uses its compiled vectors. In both
-cases construction fails before ONNX inference unless every bound/default/scale
-and the global inactive neutral form a finite, ordered 18-joint clamp contract.
+exact match; if neither is present, the robot uses its compiled vectors to
+validate the default and neutral geometry. In both cases construction fails
+before ONNX inference unless every bound/default/scale and the global inactive
+neutral form a finite, ordered 18-joint geometry. These checks do not clip a
+v12 action target.
 
 The allowed **5-degree measured-joint overshoot** is only an offline simulator
 stage-gate tolerance: the evaluator may observe a simulated measured joint up to
-5 degrees beyond a soft limit. It is not a physical-robot encoder acceptance
-tolerance and grants no runtime permission. It never expands a commanded soft
-limit: the physical runtime clamps every actuator target to the compiled limit,
-without `soft_limit +/- 5 degrees` headroom.
+5 degrees beyond a soft limit. It is not a runtime clipping or rejection
+threshold. The v12 action path sends guard-accepted finite targets without
+software clipping to the compiled soft limits.
 
 ## Trigger-only selection
 
@@ -224,8 +226,8 @@ Finiteness alone cannot classify an abnormally large finite actor result. A
 soft-limit or MJCF hard-limit **reject** is not compatible with the source policy:
 its accepted 9-by-300 probe contains hypothetical raw targets as much as
 2.327371 rad beyond a soft limit while the simulated measured joints remain
-within every soft limit. The actuator-facing continuous clamp handles those
-finite soft-limit excursions without rejecting the tick; the evidence-derived
+within every soft limit. The v12 runtime sends guard-accepted finite targets
+without a software soft-limit clip or tick rejection. The evidence-derived
 guard below remains only a gross numeric-anomaly detector.
 
 The final tracking report therefore records, over every acceptance scenario and
@@ -258,7 +260,8 @@ v12_learned_source_delta_{min,max,absmax}_json
 runtime_raw_action_guard_formula=max(v12_absmax,source_absmax+delta_absmax)*multiplier
 runtime_raw_action_guard_multiplier=6.0
 runtime_raw_action_guard_absmax_json
-runtime_raw_action_guard_semantics=finite_float32_then_per_joint_absmax_else_same_cycle_legacy_fallback_v1
+runtime_raw_action_guard_semantics=finite_float32_then_per_joint_absmax_else_hold_previous_targets_v1
+physical_motor_target_guard_semantics=finite_target_no_software_clip_v1
 ```
 
 `v12_tracking_report_sha256` binds the evidence source, and
