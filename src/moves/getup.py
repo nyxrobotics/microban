@@ -13,16 +13,26 @@ from moves.move import MotorCommand, Move, MoveState
 
 # Policy name
 AGENT_NAME = "getup.onnx"
-GETUP_CONTRACT_VERSION = "v2"
+GETUP_CONTRACT_VERSION = "v3"
 
-# "Slowly" for the torque-on-but-unarmed recovery slew (see step()): far
-# below hmd_head.py's 2.5 rad/s, since this is a deliberately gentle return
-# to neutral after a limp/fallen state, not a tracking response.
+# "Slowly" for the torque-on-but-unarmed recovery slew (see
+# _step_recover_to_neutral): far below hmd_head.py's 2.5 rad/s, since this is
+# a deliberately gentle return to neutral after a limp/fallen state, not a
+# tracking response. This is UNRELATED to the active get-up policy's own
+# commanded target (see step()): once armed, the policy's clipped target is
+# written directly, every tick, with no rate limit at all. An earlier version
+# of this file mistakenly reused this same 0.5 rad/s figure for that too
+# (a removed _POLICY_MAX_TARGET_SPEED_RAD_S constant), which made the actual
+# recovery motion look passive/unable to stand rather than merely imperfect.
 _RECOVERY_SLEW_RATE_RAD_S = 0.5
 _RECOVERY_MIN_DT_S = 0.001
 _RECOVERY_MAX_DT_S = 0.1
-_POLICY_STEP_S = 0.02
-_POLICY_MAX_TARGET_SPEED_RAD_S = 0.5
+# Rough sanity ceiling on the actor's raw (pre-clip) output, independent of
+# any joint's actual range of motion -- that's already 100% enforced by
+# _action_clip below no matter how large the raw value is. This just catches
+# a badly-behaving/out-of-distribution model and holds the last good target
+# instead of trusting it; the specific number isn't load-bearing for
+# range-of-motion safety, just a loose "does this look sane" gate.
 _POLICY_MAX_RAW_ACTION = 120.0
 
 
@@ -120,10 +130,9 @@ class GetupMove(Move):
         outputs = self._ort_session.get_outputs()
         self.model_ready = (
             meta.get("microban_getup_contract") == GETUP_CONTRACT_VERSION
-            and meta.get("microban_getup_target_slew_rad_s") == "0.5"
             and meta.get("microban_getup_angular_velocity_frame") == "imu_sensor_xyz"
             and meta.get("microban_getup_previous_action_semantics")
-            == "post_slew_applied_target_delta_from_default"
+            == "applied_target_delta_from_default"
             and joints_valid
             and action_joint_names == OBSERVATION_DOF_ORDER
             and observation_names == [
@@ -140,8 +149,8 @@ class GetupMove(Move):
         )
         if not self.model_ready:
             print(
-                "Get-up actor disabled: deployed model lacks the v2 action, "
-                "IMU-frame, or 0.5 rad/s target-slew contract; falls return toward neutral",
+                "Get-up actor disabled: deployed model lacks the v3 action or "
+                "IMU-frame contract; falls return toward neutral",
                 end="\r\n", flush=True,
             )
         self._neck_joint_names = [
@@ -163,7 +172,6 @@ class GetupMove(Move):
         self._recovery_targets: dict[str, float] | None = None
         self._recovery_last_time_s: float | None = None
         self._policy_targets: dict[str, float] | None = None
-        self._policy_last_time_s: float | None = None
         self.policy_faulted = False
 
     def on_start(self, obs: Observation, command: MotorCommand) -> None:
@@ -196,7 +204,6 @@ class GetupMove(Move):
         self._last_torque_enabled = None
         self._recovery_targets = None
         self._policy_targets = None
-        self._policy_last_time_s = None
         self.policy_faulted = False
         self.state = MoveState.ACTIVE
 
@@ -230,7 +237,6 @@ class GetupMove(Move):
             self._step_recover_to_neutral(obs, command)
             self._last_action = [0.0] * len(OBSERVATION_DOF_ORDER)
             self._policy_targets = None
-            self._policy_last_time_s = None
             return
 
         if self.policy_faulted:
@@ -272,29 +278,15 @@ class GetupMove(Move):
             self._hold_policy_targets(obs, command)
             return
         lo, hi = self._action_clip
-        if self._policy_targets is None:
-            self._policy_targets = {
-                name: obs.robot_state.motor_positions[name]
-                for name in OBSERVATION_DOF_ORDER
-            }
-        now = obs.robot_state.time_s
-        previous = self._policy_last_time_s
-        dt = (
-            _POLICY_STEP_S if previous is None
-            else max(_RECOVERY_MIN_DT_S, min(_RECOVERY_MAX_DT_S, now - previous))
-        )
-        self._policy_last_time_s = now
-        max_step = _POLICY_MAX_TARGET_SPEED_RAD_S * dt
+        self._policy_targets = {}
         self._last_action = []
         for i, name in enumerate(OBSERVATION_DOF_ORDER):
             target = max(lo, min(hi, self._default_pose[name] + action_values[i] * self.action_scale))
-            current = self._policy_targets[name]
-            updated = current + max(-max_step, min(max_step, target - current))
-            self._policy_targets[name] = updated
-            # The v2 training observation is the target actually applied after
-            # both the absolute clip and the per-tick slew.
-            self._last_action.append((updated - self._default_pose[name]) / self.action_scale)
-            command.target_angles[name] = updated
+            self._policy_targets[name] = target
+            # The v3 training observation is the actual applied (clipped)
+            # target -- no per-tick rate limit on the active policy.
+            self._last_action.append((target - self._default_pose[name]) / self.action_scale)
+            command.target_angles[name] = target
 
         # Not in the policy's action space (see class docstring): hold steady
         # at the continuously-measured position rather than a stale snapshot,
@@ -394,7 +386,6 @@ class GetupMove(Move):
         self._last_torque_enabled = None
         self._recovery_targets = None
         self._policy_targets = None
-        self._policy_last_time_s = None
         self.policy_faulted = False
         if self.state != MoveState.INACTIVE:
             self.state = MoveState.STARTING
