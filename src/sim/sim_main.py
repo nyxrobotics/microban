@@ -13,6 +13,7 @@ import argparse
 from input.gamepad_input import GamepadInputSource
 from input.network_input import NetworkInputSource
 from moves.getup import GetupMove
+from moves.pico_hybrid import sensor_gyro_to_body
 from moves.hmd_head import HmdHeadTrackingMove
 from moves.pico_arms import PicoArmTrackingMove
 from moves.policy_selector import PolicySelectableWalkMove
@@ -85,7 +86,9 @@ def main() -> None:
             # the six arm joints emitted by the locomotion actor.
             "pico_arms": PicoArmTrackingMove(controller=controller),
             "hmd_head": HmdHeadTrackingMove(),
-            "getup": GetupMove(controller=controller),
+            "getup": GetupMove(
+                controller=controller, gyro_transform=sensor_gyro_to_body
+            ),
         },
     )
     for move in scheduler.registered_moves.values():

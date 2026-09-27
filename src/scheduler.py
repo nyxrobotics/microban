@@ -138,15 +138,18 @@ class Scheduler:
         self._fallen_tick_count = 0
         self._standing_tick_count = 0
         self._getup_active_override = False
-        # getup.onnx was retrained with the raw/pre-clip observation bug fixed
-        # (the "last action" term now records the actually-applied, clipped
-        # target instead of the raw un-clipped network output) and redeployed
-        # 2026-09-26. Auto-trigger uses bounded target speed, progress, and
-        # time limits. The manual "g" toggle remains available.
+        # Keep detecting falls even if the installed get-up actor lacks the
+        # current training/deployment contract. Such a fall returns toward
+        # neutral instead of running the incompatible actor.
         self._getup_auto_trigger_enabled = True
         self._getup_auto_started_s: float | None = None
         self._getup_auto_best_gravity_z = 1.0
         self._getup_auto_failed = False
+        self._getup_failed_hold_targets: dict[str, float] | None = None
+        self._getup_failed_hold_last_time_s: float | None = None
+        self._getup_failed_gain_restored: set[str] = set()
+        self._getup_failed_stale_names: set[str] = set()
+        self._fall_pending_hold_targets: dict[str, float] | None = None
         # History of sent target_angles, to align the current proxy with the delayed feedback:
         # the oldest entry is the command issued OVERCURRENT_PROXY_DELAY_TICKS ticks ago.
         self._cmd_history: deque[dict[str, float]] = deque(maxlen=OVERCURRENT_PROXY_DELAY_TICKS + 1)
@@ -310,6 +313,17 @@ class Scheduler:
                     self._serial_write_hold_since_s = None
                     self._serial_hold_extended = False
 
+                # R3-off hands control to the A neutral gate and explicitly
+                # clears a latched get-up fault. Otherwise keep the fault
+                # latched even after the IMU reports upright, so policy cannot
+                # resume while the neutral return is still in progress.
+                if hardware_mode == "neutral" and self._getup_auto_failed:
+                    self._getup_auto_failed = False
+                    self._getup_failed_hold_targets = None
+                    self._getup_failed_hold_last_time_s = None
+                    self._getup_failed_gain_restored.clear()
+                    self._getup_failed_stale_names.clear()
+
                 # Fall / getup auto-switch: forces "getup" on (and "walk" off) after a
                 # sustained fall, and hands back to the user's own "walk" toggle once
                 # stood up (and stable) again. No-op if "getup" isn't registered.
@@ -321,7 +335,11 @@ class Scheduler:
                         )
                     if self._getup_active_override:
                         obs.user_input.active_moves = (obs.user_input.active_moves | {"getup"}) - {"walk"}
-                        can_attempt = imu_safe and hardware_mode == "policy"
+                        getup_move = self.registered_moves["getup"]
+                        model_ready = getattr(getup_move, "model_ready", True)
+                        if not model_ready and hardware_mode == "policy":
+                            self._stop_auto_getup("get-up model contract unavailable; returning to neutral")
+                        can_attempt = imu_safe and hardware_mode == "policy" and model_ready
                         if can_attempt and self._getup_auto_started_s is None:
                             self._getup_auto_started_s = start_time
                             self._getup_auto_best_gravity_z = float(
@@ -339,10 +357,13 @@ class Scheduler:
                             ):
                                 self._stop_auto_getup("time limit or no upright progress")
                         obs.user_input.getup_armed = can_attempt and not self._getup_auto_failed
-                        fall_pending = fall_pending or self._getup_auto_failed
                     else:
                         self._getup_auto_started_s = None
-                        self._getup_auto_failed = False
+                    # Keep an actor fault latched until R3 is switched off or
+                    # B turns torque off, including after the robot is upright.
+                    fall_pending = fall_pending or self._getup_auto_failed
+                    if not fall_pending:
+                        self._fall_pending_hold_targets = None
 
                 # Keep the network deadman disarmed for the complete fault/fall/get-up
                 # interval. Removing the inhibit does not arm it: a later released
@@ -402,6 +423,26 @@ class Scheduler:
                         if hardware_mode == "neutral":
                             self._hardware_neutral_targets = dict(self._last_sent_targets)
                             self._hardware_neutral_last_time_s = robot_state.time_s
+                    elif fall_pending and self._getup_auto_failed:
+                        # A failed get-up returns toward neutral at a bounded
+                        # speed. Following measured position every tick would
+                        # make torque-on joints compliant while still fallen.
+                        if hardware_mode == "neutral":
+                            # The A/R3-off gate owns neutral return in this mode.
+                            # A later R3-on must seed from the current pose.
+                            self._getup_failed_hold_targets = None
+                            self._getup_failed_hold_last_time_s = None
+                            self._getup_failed_gain_restored.clear()
+                            self._getup_failed_stale_names.clear()
+                            command = hardware_command
+                        else:
+                            command = self._failed_getup_hold_command(robot_state)
+                    elif fall_pending:
+                        if hardware_mode == "neutral":
+                            self._fall_pending_hold_targets = None
+                            command = hardware_command
+                        else:
+                            command = self._fall_pending_hold_command(robot_state)
                     else:
                         command = self._measured_hold_command(robot_state)
                     if command is None:
@@ -454,12 +495,12 @@ class Scheduler:
 
                     getup_move = self.registered_moves.get("getup")
                     if (
-                        self._getup_active_override
-                        and getup_move is not None
+                        getup_move is not None
+                        and getup_move.state == MoveState.ACTIVE
                         and getattr(getup_move, "policy_faulted", False)
                     ):
                         self._stop_auto_getup("get-up actor output exceeded bounds")
-                        held = self._measured_hold_command(robot_state)
+                        held = self._failed_getup_hold_command(robot_state)
                         if held is not None:
                             command = held
                         self._safety_hold_active = True
@@ -758,6 +799,14 @@ class Scheduler:
         self._hardware_policy_eligible = False
         self._hardware_neutral_targets = None
         self._hardware_neutral_last_time_s = None
+        self._getup_failed_hold_targets = None
+        self._getup_failed_hold_last_time_s = None
+        self._getup_failed_gain_restored.clear()
+        self._getup_failed_stale_names.clear()
+        self._fall_pending_hold_targets = None
+        self._getup_auto_started_s = None
+        self._getup_auto_best_gravity_z = 1.0
+        self._getup_auto_failed = False
         self._cmd_history.clear()
         self._last_sent_targets = None
         self._serial_write_hold_pending = False
@@ -865,6 +914,117 @@ class Scheduler:
             targets[name] = numeric
         return MotorCommand(target_angles=targets)
 
+    def _failed_getup_hold_command(self, robot_state) -> MotorCommand | None:
+        """Return toward neutral after an actor fault without a target jump."""
+        try:
+            now = float(robot_state.time_s)
+        except (TypeError, ValueError, OverflowError):
+            return None
+        if not math.isfinite(now):
+            return None
+
+        if self._getup_failed_hold_targets is None:
+            measured = self._measured_hold_command(robot_state)
+            if measured is None:
+                return None
+            self._getup_failed_hold_targets = dict(measured.target_angles)
+            self._getup_failed_hold_last_time_s = now
+            self._getup_failed_stale_names = set(
+                getattr(self.controller, "stale_motor_names", ())
+            ) | set(getattr(self.controller, "proxy_ignored_motor_names", ()))
+            # The actor reduced the 18 policy joints to P=125. Seed the freshly
+            # measured goal before raising their holding gain to P=900.
+            if self._hardware_policy_enabled:
+                self._restore_failed_getup_gain(self._getup_failed_hold_targets)
+            return measured
+
+        previous = self._getup_failed_hold_last_time_s
+        raw_dt = self.dt if previous is None else now - previous
+        dt = max(0.001, min(0.1, raw_dt if math.isfinite(raw_dt) else self.dt))
+        self._getup_failed_hold_last_time_s = now
+        max_step = 0.5 * dt
+        stale_names = set(getattr(self.controller, "stale_motor_names", ()))
+        stale_names.update(getattr(self.controller, "proxy_ignored_motor_names", ()))
+        for name, current in self._getup_failed_hold_targets.items():
+            if name in stale_names:
+                # No command reaches an unresponsive servo. Keep its last goal
+                # instead of accumulating a large unsent neutral movement.
+                self._getup_failed_stale_names.add(name)
+                continue
+            if name in self._getup_failed_stale_names:
+                try:
+                    measured = float(robot_state.motor_positions[name])
+                except (KeyError, TypeError, ValueError, OverflowError):
+                    return None
+                if not math.isfinite(measured):
+                    return None
+                self._getup_failed_hold_targets[name] = measured
+                self._getup_failed_stale_names.discard(name)
+                continue
+            neutral = NEUTRAL_POSE[name]
+            delta = max(-max_step, min(max_step, neutral - current))
+            self._getup_failed_hold_targets[name] = current + delta
+        if self._hardware_policy_enabled:
+            # A servo excluded during the initial failure may recover later.
+            # Restore its gain only after its current goal has been seeded.
+            self._restore_failed_getup_gain(self._getup_failed_hold_targets)
+        return MotorCommand(target_angles=dict(self._getup_failed_hold_targets))
+
+    def _restore_failed_getup_gain(self, targets: dict[str, float]) -> None:
+        """Seed responsive joints, then restore neutral holding gain once."""
+        ignored = set(getattr(self.controller, "stale_motor_names", ()))
+        ignored.update(getattr(self.controller, "proxy_ignored_motor_names", ()))
+        names = [
+            name for name in MOTOR_TO_ID
+            if name not in ignored and name not in self._getup_failed_gain_restored
+        ]
+        if not names:
+            return
+        try:
+            ids = [MOTOR_TO_ID[name] for name in names]
+            self.controller.sync_write_goal_position(
+                ids, [targets[name] for name in names]
+            )
+            self._remember_goal_write(targets)
+
+            # RobotController can defer a goal write for a recovering joint.
+            # Never raise its gain against a goal older than this measured pose.
+            actual_goals = getattr(self.controller, "last_goal_targets", None)
+            if actual_goals is not None:
+                ready = []
+                for name in names:
+                    try:
+                        actual = float(actual_goals[name])
+                    except (KeyError, TypeError, ValueError, OverflowError):
+                        continue
+                    if math.isfinite(actual) and abs(actual - targets[name]) <= 0.03:
+                        ready.append(name)
+                names = ready
+            if names:
+                ids = [MOTOR_TO_ID[name] for name in names]
+                self.controller.sync_write_kp(
+                    ids, [KP_HARDWARE_NEUTRAL] * len(ids)
+                )
+                self._getup_failed_gain_restored.update(names)
+                print(
+                    f"Get-up fallback: neutral holding gain restored on {len(ids)} joints",
+                    end="\r\n", flush=True,
+                )
+        except (RuntimeError, OSError) as exc:
+            print(
+                f"Warning: get-up fallback gain restore failed; keeping current gain: {exc}",
+                end="\r\n", flush=True,
+            )
+
+    def _fall_pending_hold_command(self, robot_state) -> MotorCommand | None:
+        """Hold one measured pose during the fall debounce window."""
+        if self._fall_pending_hold_targets is None:
+            measured = self._measured_hold_command(robot_state)
+            if measured is None:
+                return None
+            self._fall_pending_hold_targets = dict(measured.target_angles)
+        return MotorCommand(target_angles=dict(self._fall_pending_hold_targets))
+
     def _update_getup_override(self, projected_gravity: list[float]) -> bool:
         """Update fall/stand debounce; return True during the pre-get-up hold."""
         if not self._finite_vector(projected_gravity, 3):
@@ -888,7 +1048,7 @@ class Scheduler:
         return not self._getup_active_override and self._fallen_tick_count > 0
 
     def _stop_auto_getup(self, reason: str) -> None:
-        """Stop this attempt while retaining torque and measured-pose hold."""
+        """Stop this attempt and keep torque on during neutral return."""
         if not self._getup_auto_failed:
             print(f"Automatic get-up stopped: {reason}", end="\r\n", flush=True)
         self._getup_auto_failed = True
