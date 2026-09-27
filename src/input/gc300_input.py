@@ -449,18 +449,23 @@ class Gc300InputSource(InputSource):
         if self._x_edge_pending:
             self._follow_enabled = False
             print("GC300 follow: OFF (X)", flush=True)
-        elif (
-            self._y_edge_pending
-            and self._torque
-            and self._policy
-            and not self._motion_inhibited
-        ):
-            if not self._follow_enabled:
-                self._follow_enabled = True
-                self._person_follower.reset()
-            print("GC300 follow: ON (Y)", flush=True)
         elif self._y_edge_pending:
-            print("GC300 follow: Y ignored until A then R3 enable policy", flush=True)
+            if not self._torque:
+                print("GC300 follow: Y ignored until A enables torque", flush=True)
+            elif self._a_edge_pending:
+                # The scheduler must observe A's policy-OFF snapshot before a
+                # later policy-ON request, even if both edges arrive in one tick.
+                print("GC300 follow: Y ignored during A; press Y again", flush=True)
+            elif self._r3_edge_pending and not self._policy:
+                print("GC300 follow: Y ignored while R3 turns policy OFF", flush=True)
+            else:
+                if not self._policy:
+                    self._policy = True
+                    print("GC300 follow: policy ON requested by Y", flush=True)
+                if not self._follow_enabled:
+                    self._follow_enabled = True
+                    self._person_follower.reset()
+                print("GC300 follow: ON (Y)", flush=True)
         if not self._follow_enabled:
             self._person_follower.reset()
         self._a_edge_pending = False
