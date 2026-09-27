@@ -1,5 +1,9 @@
 # Contract-v12 PICO policy runtime
 
+The cross-policy IMU observation audit is tracked in
+[the deferred TODO](policy_imu_frame_todo.md). This milestone keeps the
+currently deployed PICO model and observation path unchanged.
+
 The robot accepts contract-v12 only as an optional learned locomotion policy.
 The pinned `walk.onnx` policy remains the availability baseline. A missing
 artifact, rejected metadata, ONNX load error, or learned-policy start error

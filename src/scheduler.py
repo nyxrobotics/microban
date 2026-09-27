@@ -34,6 +34,9 @@ from moves.squat import SquatMove
 from moves.walk import WalkMove
 
 
+GETUP_AUTO_TIMEOUT_S = 20.0  # Match the get-up training episode length.
+
+
 def _trunk_roll_pitch(body_quat: list[float]) -> tuple[float, float] | None:
     """Same formula as walk.py/hmd_head.py's own private helpers (kept as a
     third small copy rather than a shared import, matching that existing
@@ -143,7 +146,6 @@ class Scheduler:
         # neutral instead of running the incompatible actor.
         self._getup_auto_trigger_enabled = True
         self._getup_auto_started_s: float | None = None
-        self._getup_auto_best_gravity_z = 1.0
         self._getup_auto_failed = False
         self._getup_failed_hold_targets: dict[str, float] | None = None
         self._getup_failed_hold_last_time_s: float | None = None
@@ -319,6 +321,7 @@ class Scheduler:
                 # resume while the neutral return is still in progress.
                 if hardware_mode == "neutral" and self._getup_auto_failed:
                     self._getup_auto_failed = False
+                    self._getup_auto_started_s = None
                     self._getup_failed_hold_targets = None
                     self._getup_failed_hold_last_time_s = None
                     self._getup_failed_gain_restored.clear()
@@ -342,20 +345,13 @@ class Scheduler:
                         can_attempt = imu_safe and hardware_mode == "policy" and model_ready
                         if can_attempt and self._getup_auto_started_s is None:
                             self._getup_auto_started_s = start_time
-                            self._getup_auto_best_gravity_z = float(
-                                obs.robot_state.projected_gravity[2]
-                            )
                             print("Automatic get-up attempt started", end="\r\n", flush=True)
                         if can_attempt and self._getup_auto_started_s is not None:
-                            self._getup_auto_best_gravity_z = min(
-                                self._getup_auto_best_gravity_z,
-                                float(obs.robot_state.projected_gravity[2]),
-                            )
                             elapsed_s = start_time - self._getup_auto_started_s
-                            if elapsed_s >= 8.0 or (
-                                elapsed_s >= 4.0 and self._getup_auto_best_gravity_z > -0.65
-                            ):
-                                self._stop_auto_getup("time limit or no upright progress")
+                            if elapsed_s >= GETUP_AUTO_TIMEOUT_S:
+                                self._stop_auto_getup(
+                                    f"{GETUP_AUTO_TIMEOUT_S:g}-second time limit"
+                                )
                         obs.user_input.getup_armed = can_attempt and not self._getup_auto_failed
                     else:
                         self._getup_auto_started_s = None
@@ -805,7 +801,6 @@ class Scheduler:
         self._getup_failed_stale_names.clear()
         self._fall_pending_hold_targets = None
         self._getup_auto_started_s = None
-        self._getup_auto_best_gravity_z = 1.0
         self._getup_auto_failed = False
         self._cmd_history.clear()
         self._last_sent_targets = None
