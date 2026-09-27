@@ -2,9 +2,14 @@
 
 > This file is retained as the contract-v10 metadata reference. New deployments
 > must use [the contract-v12 runtime and deployment procedure](pico_teleop_v12_runtime.md).
-> Do not use the v10 export commands below for the current Microban policy.
+> Do not use the v10 export commands below for the current Microban policy. In
+> current production, R3 uses PICO v12 for zero-velocity balance, optional
+> body tracking loss supplies zero targets, UDP gaps replay the last authenticated
+> operator state, and PICO actor faults hold prior body goals. The old walk actor
+> is not executed as the production fallback. Get-up remains unavailable with
+> the current artifact.
 
-The current PICO bridge always requests `pico_teleop`; the left-controller X
+The contract-v10 PICO bridge requested `pico_teleop`; the left-controller X
 (WebXR `primary_button`) is parsed for protocol compatibility but is ignored by
 both bridge mappers. The **left trigger is the only momentary locomotion and
 tracking enable**: released sends no `walk`/`hmd_head` activation, and held sends
@@ -12,7 +17,7 @@ both with `locomotion_policy=pico_teleop`. There is no controller policy toggle
 and no environment-variable switch. The receiver may internally downgrade a
 learned request to the pinned `walk` actor after a tracker/policy fault.
 
-The learned policy is optional. A missing/rejected ONNX, load/start/inference
+In the historical v10 runtime, the learned policy was optional. A missing/rejected ONNX, load/start/inference
 exception, non-finite output, or invalid body-target snapshot immediately uses the
 pinned `walk.onnx` actor with the current joystick command. A tracker/policy fault
 latches `walk` for the rest of that left-trigger activation; recovery is considered
@@ -186,22 +191,26 @@ needed:
 make teleop-run HOST=microban
 ```
 
-If `pico_teleop.onnx` is absent or rejected, holding the left trigger continues
-with normal walking and records the fallback reason in
-`PolicySelectableWalkMove.fallback_reason`.
+For the historical v10 runtime, an absent or rejected `pico_teleop.onnx` made
+the left trigger continue with the old walking actor and recorded the reason in
+`PolicySelectableWalkMove.fallback_reason`. Current v12 production holds prior
+body goals instead.
 An atomically replaced file is parsed in a background thread and becomes eligible
 on a later trigger activation; the process does not need to restart. Construction
 is behind the injected `LearnedMoveFactory`, so a future policy-contract parser can
 be added without changing the fallback state machine.
 
-Camera transport is deliberately outside this decision. A stale/missing frame,
-invalid calibration/FOV/IPD, or passthrough failure may degrade the HMD view, but
-does not remove `walk`, zero the joystick, or affect policy inference. Only loss of
-the controller/network command stream invokes the existing watchdog: it returns a
-neutral `UserInput`, releases locomotion, and requires a fresh trigger release
-before reconnection can move again.
+Camera transport is outside this decision. A stale/missing frame, invalid
+calibration/FOV/IPD, or passthrough failure may degrade the HMD view without
+changing locomotion. In current v12 production, temporary controller or UDP
+input gaps replay the last authenticated operator snapshot; they do not release
+locomotion or the torque gate.
 
-## Body-target reference
+## Historical v10 body-target reference
+
+The downgrade to the old walk actor described below belongs to v10. Current
+v12 production substitutes zero optional body offsets and continues the PICO
+actor with the joystick command.
 
 Training defines hand/foot commands as offsets from an episode-reset reference
 in the robot trunk frame (`+X` forward, `+Y` left, `+Z` up). The PICO bridge must

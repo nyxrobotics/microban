@@ -147,11 +147,11 @@ def pico_arm_packet(
 
 
 class NetworkInputTest(unittest.TestCase):
-    def assert_degraded_fallback(self, state, expected_velocity):
+    def assert_pico_with_optional_targets_dropped(self, state, expected_velocity):
         self.assertIn("walk", state.active_moves)
         self.assertEqual(state.velocity, expected_velocity)
-        self.assertEqual(state.locomotion_policy, "walk")
-        self.assertTrue(state.learned_policy_degraded)
+        self.assertEqual(state.locomotion_policy, "pico_teleop")
+        self.assertFalse(state.learned_policy_degraded)
         self.assertIsNone(state.foot_target)
         self.assertIsNone(state.hand_target)
 
@@ -251,8 +251,8 @@ class NetworkInputTest(unittest.TestCase):
         source._apply(packet(0, torque_enabled=True, policy_enabled=False))
         source._last_recv_s -= 1.0
         held = source.read()
-        self.assertIsNone(held.torque_enabled)
-        self.assertTrue(held.hold_last_targets)
+        self.assertIs(held.torque_enabled, True)
+        self.assertFalse(held.hold_last_targets)
 
         source._apply(
             packet(
@@ -287,14 +287,14 @@ class NetworkInputTest(unittest.TestCase):
         self.assertTrue(state.torque_enabled)
         self.assertFalse(state.policy_enabled)
 
-    def test_stale_timeout_holds_torque_and_last_goal(self):
+    def test_stale_timeout_replays_last_operator_state(self):
         source = NetworkInputSource(stale_after_s=0.05)
         source._apply(packet(0, torque_enabled=True, policy_enabled=False))
         self.assertTrue(source.read().torque_enabled)
         source._last_recv_s -= 0.1
         state = source.read()
-        self.assertIsNone(state.torque_enabled)
-        self.assertTrue(state.hold_last_targets)
+        self.assertIs(state.torque_enabled, True)
+        self.assertFalse(state.hold_last_targets)
         self.assertEqual(state.active_moves, set())
         self.assertEqual(state.velocity, {"vx": 0.0, "vy": 0.0, "vtheta": 0.0})
 
@@ -336,16 +336,17 @@ class NetworkInputTest(unittest.TestCase):
         source._apply(packet(11, [], {"vx": -1.0}, session="old"))
         self.assertEqual(source.read().velocity["vx"], 0.5)
 
-    def test_timeout_neutralizes_and_disarms(self):
+    def test_timeout_preserves_walk_and_arming(self):
         source = NetworkInputSource(stale_after_s=0.05)
         source._apply(packet(0))
         source._apply(packet(1, ["walk"], {"vx": 1.0}))
         source._last_recv_s -= 0.1
         stale = source.read()
-        self.assertEqual(stale.active_moves, set())
-        self.assertTrue(stale.hold_last_targets)
+        self.assertIn("walk", stale.active_moves)
+        self.assertEqual(stale.velocity["vx"], 1.0)
+        self.assertFalse(stale.hold_last_targets)
         source._apply(packet(2, ["walk"], {"vx": 1.0}))
-        self.assertNotIn("walk", source.read().active_moves)
+        self.assertIn("walk", source.read().active_moves)
 
     def test_robot_safety_inhibit_requires_release_after_recovery(self):
         source = NetworkInputSource(stale_after_s=0.5)
@@ -380,10 +381,11 @@ class NetworkInputTest(unittest.TestCase):
         self.assertTrue(held.arm_tracking_enabled)
         self.assertEqual(held.arm_joint_target["left"], tuple(ARM_TARGET["left"]))
         # The arm overlay is independent from locomotion: since this packet
-        # never requests "walk", the R3 standing-balance actor still engages
-        # it at zero velocity alongside pico_arms (see balance_only).
+        # never requests "walk", R3 keeps the selected PICO standing actor
+        # active at zero velocity alongside pico_arms (see balance_only).
         self.assertIn("walk", held.active_moves)
         self.assertTrue(held.balance_only)
+        self.assertEqual(held.locomotion_policy, "pico_teleop")
         self.assertEqual(held.velocity, {"vx": 0.0, "vy": 0.0, "vtheta": 0.0})
 
         source._apply(pico_arm_packet(2, enabled=False))
@@ -455,7 +457,7 @@ class NetworkInputTest(unittest.TestCase):
         self.assertFalse(rejected.arm_tracking_enabled)
         self.assertIsNone(rejected.arm_joint_target)
 
-    def test_body_policy_degradation_does_not_drop_valid_direct_arms(self):
+    def test_missing_body_targets_do_not_drop_valid_direct_arms(self):
         source = NetworkInputSource(stale_after_s=0.5)
         source._apply(pico_arm_packet(0, enabled=False))
         source._apply(
@@ -464,19 +466,19 @@ class NetworkInputTest(unittest.TestCase):
                 enabled=True,
                 target=ARM_TARGET,
                 extra_moves=["walk"],
-                # Missing learned-policy hands/feet intentionally degrades only
-                # locomotion to the proven actor.
+                # Missing optional hands/feet leave PICO locomotion and the
+                # separately authenticated direct arms active.
             )
         )
         state = source.read()
-        self.assertTrue(state.learned_policy_degraded)
-        self.assertEqual(state.locomotion_policy, "walk")
+        self.assertFalse(state.learned_policy_degraded)
+        self.assertEqual(state.locomotion_policy, "pico_teleop")
         self.assertIn("walk", state.active_moves)
         self.assertIn("pico_arms", state.active_moves)
         self.assertTrue(state.arm_tracking_enabled)
         self.assertEqual(state.arm_joint_target["right"], tuple(ARM_TARGET["right"]))
 
-    def test_timeout_and_safety_inhibit_clear_direct_arm_target(self):
+    def test_safety_inhibit_clears_direct_arm_but_timeout_preserves_it(self):
         source = NetworkInputSource(stale_after_s=0.05)
         source._apply(pico_arm_packet(0, enabled=False))
         source._apply(pico_arm_packet(1, enabled=True, target=ARM_TARGET))
@@ -491,9 +493,9 @@ class NetworkInputTest(unittest.TestCase):
         source._apply(pico_arm_packet(3, enabled=True, target=ARM_TARGET))
         source._last_recv_s -= 0.1
         timed_out = source.read()
-        self.assertNotIn("pico_arms", timed_out.active_moves)
-        self.assertFalse(timed_out.arm_tracking_enabled)
-        self.assertIsNone(timed_out.arm_joint_target)
+        self.assertIn("pico_arms", timed_out.active_moves)
+        self.assertTrue(timed_out.arm_tracking_enabled)
+        self.assertEqual(timed_out.arm_joint_target["right"], tuple(ARM_TARGET["right"]))
 
     def test_wire_policy_change_never_drops_held_deadman_or_joystick(self):
         source = NetworkInputSource(stale_after_s=0.5)
@@ -511,14 +513,11 @@ class NetworkInputTest(unittest.TestCase):
         self.assertEqual(state.locomotion_policy, "pico_teleop")
         self.assertFalse(state.learned_policy_degraded)
 
-        # Release is the activation boundary; the next press may use the new
-        # policy. While released, the R3 standing actor reports the baseline
-        # "walk" policy it is actually running (see balance_only) rather than
-        # the previously selected wire policy, which only resumes on a fresh
-        # valid press below.
+        # Releasing the left trigger leaves R3 active, so the selected PICO
+        # standing actor remains active at zero velocity (see balance_only).
         source._apply(pico_release_packet(3))
         released = source.read()
-        self.assertEqual(released.locomotion_policy, "walk")
+        self.assertEqual(released.locomotion_policy, "pico_teleop")
         self.assertTrue(released.balance_only)
         source._apply(pico_walk_packet(4, {"vx": 0.5}))
         state = source.read()
@@ -530,7 +529,7 @@ class NetworkInputTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             source._apply(packet(0, policy="unknown"))
 
-    def test_missing_foot_targets_fall_back_without_losing_joystick(self):
+    def test_missing_foot_targets_keep_pico_and_joystick(self):
         incomplete_targets = (
             None,
             {"left": COMPLETE_FEET["left"]},
@@ -549,17 +548,17 @@ class NetworkInputTest(unittest.TestCase):
                         foot_target=incomplete,
                     )
                 )
-                fallback = source.read()
-                self.assertIn("walk", fallback.active_moves)
-                self.assertEqual(fallback.velocity["vx"], 0.8)
-                self.assertEqual(fallback.locomotion_policy, "walk")
-                self.assertTrue(fallback.learned_policy_degraded)
+                continued = source.read()
+                self.assertIn("walk", continued.active_moves)
+                self.assertEqual(continued.velocity["vx"], 0.8)
+                self.assertEqual(continued.locomotion_policy, "pico_teleop")
+                self.assertFalse(continued.learned_policy_degraded)
                 self.assertTrue(source._walk_armed)
-                self.assertIsNone(fallback.foot_target)
-                self.assertIsNone(fallback.hand_target)
+                self.assertIsNone(continued.foot_target)
+                self.assertIsNone(continued.hand_target)
 
-                # Receiver recovery also does not drop the command. The selector
-                # independently keeps legacy latched until trigger release.
+                # Recovery restores the optional targets without changing the
+                # selected actor or losing the joystick command.
                 source._apply(pico_walk_packet(2, {"vx": 0.8}))
                 recovered = source.read()
                 self.assertIn("walk", recovered.active_moves)
@@ -620,9 +619,9 @@ class NetworkInputTest(unittest.TestCase):
                 source = NetworkInputSource(stale_after_s=0.5)
                 arm_pico(source)
                 source._apply(pico_walk_packet(2, velocity, foot_target=feet))
-                fallback = source.read()
-                self.assert_degraded_fallback(
-                    fallback,
+                continued = source.read()
+                self.assert_pico_with_optional_targets_dropped(
+                    continued,
                     {
                         "vx": velocity.get("vx", 0.0),
                         "vy": velocity.get("vy", 0.0),
@@ -631,7 +630,7 @@ class NetworkInputTest(unittest.TestCase):
                 )
                 self.assertTrue(source._walk_armed)
 
-    def test_pico_contract_rejects_unprojected_support_floor_band(self):
+    def test_pico_contract_drops_unprojected_support_floor_band(self):
         invalid_feet = (
             {
                 "left": [0.001, 0.0, 0.0],
@@ -651,14 +650,14 @@ class NetworkInputTest(unittest.TestCase):
                 source = NetworkInputSource(stale_after_s=0.5)
                 arm_pico(source)
                 source._apply(pico_walk_packet(2, foot_target=feet))
-                fallback = source.read()
-                self.assert_degraded_fallback(
-                    fallback,
+                continued = source.read()
+                self.assert_pico_with_optional_targets_dropped(
+                    continued,
                     {"vx": 0.0, "vy": 0.0, "vtheta": 0.0},
                 )
                 self.assertTrue(source._walk_armed)
 
-    def test_pico_contract_rejects_epsilon_outside_80_percent_bounds(self):
+    def test_pico_contract_drops_epsilon_outside_80_percent_bounds(self):
         invalid_targets = (
             (
                 "foot_xy",
@@ -694,14 +693,14 @@ class NetworkInputTest(unittest.TestCase):
                         hand_target=hands,
                     )
                 )
-                fallback = source.read()
-                self.assert_degraded_fallback(
-                    fallback,
+                continued = source.read()
+                self.assert_pico_with_optional_targets_dropped(
+                    continued,
                     {"vx": 0.8, "vy": 0.0, "vtheta": 0.0},
                 )
                 self.assertTrue(source._walk_armed)
 
-    def test_bad_pico_metadata_falls_back_without_stopping_current_walk(self):
+    def test_bad_pico_metadata_drops_targets_without_stopping_current_walk(self):
         mutations = (
             ("missing_contract", lambda value: value.pop("body_target_contract")),
             (
@@ -741,10 +740,10 @@ class NetworkInputTest(unittest.TestCase):
                 mutate(invalid)
 
                 source._apply(invalid)
-                fallback = source.read()
+                continued = source.read()
 
-                self.assert_degraded_fallback(
-                    fallback,
+                self.assert_pico_with_optional_targets_dropped(
+                    continued,
                     {"vx": 0.8, "vy": 0.0, "vtheta": 0.0},
                 )
                 self.assertTrue(source._walk_armed)
@@ -768,9 +767,9 @@ class NetworkInputTest(unittest.TestCase):
                 arm_pico(source)
                 source._apply(pico_walk_packet(2, {"vx": 0.8}))
                 source._apply(pico_walk_packet(3, {"vx": 0.8}, hand_target=hands))
-                fallback = source.read()
-                self.assert_degraded_fallback(
-                    fallback,
+                continued = source.read()
+                self.assert_pico_with_optional_targets_dropped(
+                    continued,
                     {"vx": 0.8, "vy": 0.0, "vtheta": 0.0},
                 )
                 self.assertTrue(source._walk_armed)
@@ -799,10 +798,9 @@ class NetworkInputTest(unittest.TestCase):
                 self.assertIn("walk", source.read().active_moves)
 
                 # It is still a released deadman snapshot: targets are
-                # discarded, the R3 standing-balance actor takes over (walk
-                # present at zero velocity, not "degraded" -- there was no
-                # walk request here to degrade), and the following press may
-                # walk.
+                # discarded, and R3 keeps the selected PICO standing actor
+                # at zero velocity (not "degraded" -- there was no walk
+                # request here to degrade). The following press may walk.
                 source._apply(invalid_release)
                 released = source.read()
                 self.assertIn("walk", released.active_moves)
@@ -811,7 +809,7 @@ class NetworkInputTest(unittest.TestCase):
                     released.velocity,
                     {"vx": 0.0, "vy": 0.0, "vtheta": 0.0},
                 )
-                self.assertEqual(released.locomotion_policy, "walk")
+                self.assertEqual(released.locomotion_policy, "pico_teleop")
                 self.assertFalse(released.learned_policy_degraded)
                 self.assertIsNone(released.foot_target)
                 self.assertIsNone(released.hand_target)
@@ -837,10 +835,10 @@ class NetworkInputTest(unittest.TestCase):
                 )
 
                 source._apply(invalid)
-                fallback = source.read()
+                continued = source.read()
 
-                self.assert_degraded_fallback(
-                    fallback,
+                self.assert_pico_with_optional_targets_dropped(
+                    continued,
                     {"vx": 0.8, "vy": 0.0, "vtheta": 0.0},
                 )
                 self.assertTrue(source._walk_armed)
@@ -858,10 +856,10 @@ class NetworkInputTest(unittest.TestCase):
                 body_target_contract="wrong",
             )
         )
-        fallback = source.read()
+        continued = source.read()
 
-        self.assert_degraded_fallback(
-            fallback,
+        self.assert_pico_with_optional_targets_dropped(
+            continued,
             {"vx": 0.8, "vy": 0.0, "vtheta": 0.0},
         )
         self.assertTrue(source._walk_armed)
@@ -879,9 +877,9 @@ class NetworkInputTest(unittest.TestCase):
                 body_target_contract="wrong",
             )
         )
-        degraded = source.read()
-        self.assert_degraded_fallback(
-            degraded,
+        continued = source.read()
+        self.assert_pico_with_optional_targets_dropped(
+            continued,
             {"vx": 0.8, "vy": 0.0, "vtheta": 0.0},
         )
         source._apply(pico_walk_packet(4, {"vx": 0.8}))
@@ -891,7 +889,7 @@ class NetworkInputTest(unittest.TestCase):
         self.assertEqual(recovered.locomotion_policy, "pico_teleop")
         self.assertFalse(recovered.learned_policy_degraded)
 
-        # Release/press remains the selector's policy-retry boundary.
+        # A later release and press still preserves the PICO selection.
         source._apply(pico_release_packet(5))
         source._apply(pico_walk_packet(6, {"vx": 0.8}))
         self.assertIn("walk", source.read().active_moves)
@@ -1045,7 +1043,7 @@ class ClockPingTest(unittest.TestCase):
 
 
 class NetworkDisconnectSchedulerTest(unittest.TestCase):
-    def test_timeout_holds_physical_goal_until_explicit_b(self):
+    def test_timeout_continues_last_operation_until_explicit_b(self):
         source = NetworkInputSource(stale_after_s=0.05)
         source._apply(packet(0, torque_enabled=True, policy_enabled=False))
 
@@ -1125,10 +1123,10 @@ class NetworkDisconnectSchedulerTest(unittest.TestCase):
                 for kind, tick, value in controller.events),
             "a UDP timeout must not write torque OFF",
         )
-        self.assertFalse(
+        self.assertTrue(
             any(kind == "goal" and tick == 2
                 for kind, tick, _value in controller.events),
-            "a UDP timeout must not advance the neutral or policy goal",
+            "a UDP timeout must continue the previous operation",
         )
         self.assertIn(("torque", 3, False), controller.events)
         shutdown_index = next(

@@ -58,13 +58,12 @@ class FakeMove(Move):
             self.state = MoveState.INACTIVE
 
 
-def observation(policy="walk", active=True, vx=0.0, degraded=False):
+def observation(policy="walk", active=True, vx=0.0):
     return Observation(
         robot_state=RobotState(time_s=0.0),
         user_input=UserInput(
             active_moves={"walk"} if active else set(),
             locomotion_policy=policy,
-            learned_policy_degraded=degraded,
             velocity={"vx": vx, "vy": 0.0, "vtheta": 0.0},
         ),
     )
@@ -114,30 +113,35 @@ class PolicySelectorTest(unittest.TestCase):
         self.assertNotIn("primary_button", released_packet)
         source._apply(released_packet)
         released = source.read()
-        # Released (no walk requested) with policy_enabled still true engages
-        # the R3 standing-balance actor: it reports the baseline "walk"
-        # policy it is actually running, with "walk" present at zero
-        # velocity, rather than the previously selected wire policy (see
+        # Released (no left-trigger walk request) with R3 still enabled keeps
+        # the selected PICO standing actor active at zero velocity (see
         # NetworkInputSource's balance_only).
-        self.assertEqual(released.locomotion_policy, "walk")
+        self.assertEqual(released.locomotion_policy, "pico_teleop")
         self.assertTrue(released.balance_only)
         self.assertIn("walk", released.active_moves)
         self.assertEqual(released.velocity, {"vx": 0.0, "vy": 0.0, "vtheta": 0.0})
-
-        source._apply(bridge_pico_packet(1, trigger_held=True))
-        held = source.read()
-        self.assertEqual(held.locomotion_policy, "pico_teleop")
-        self.assertIn("walk", held.active_moves)
 
         walk = FakeMove(marker=10.0)
         pico = FakeMove(marker=20.0)
         selector = PolicySelectableWalkMove(legacy_move=walk, pico_move=pico)
         selector.on_start(
-            Observation(robot_state=RobotState(time_s=0.0), user_input=held),
+            Observation(robot_state=RobotState(time_s=0.0), user_input=released),
             MotorCommand(),
         )
         self.assertEqual(selector.effective_policy, "pico_teleop")
         self.assertEqual(pico.start_count, 1)
+        self.assertEqual(walk.start_count, 0)
+
+        source._apply(bridge_pico_packet(1, trigger_held=True))
+        held = source.read()
+        self.assertEqual(held.locomotion_policy, "pico_teleop")
+        self.assertIn("walk", held.active_moves)
+        selector.step(
+            Observation(robot_state=RobotState(time_s=0.0), user_input=held),
+            MotorCommand(),
+        )
+        self.assertEqual(selector.effective_policy, "pico_teleop")
+        self.assertEqual(pico.step_count, 1)
         self.assertEqual(walk.start_count, 0)
 
     def test_selects_exactly_one_policy_per_activation(self):
@@ -288,46 +292,76 @@ class PolicySelectorTest(unittest.TestCase):
             self.assertAlmostEqual(command.target_angles[name], expected, places=7)
         self.assertIn("intentional learned failure", selector.fallback_reason)
 
-    def test_tracker_degradation_falls_back_then_latches_until_release(self):
+    def test_missing_optional_body_targets_keep_pico_actor_and_joystick(self):
+        source = NetworkInputSource(stale_after_s=0.5)
+        source._apply(bridge_pico_packet(0, trigger_held=False))
+        source._apply(bridge_pico_packet(1, trigger_held=True))
         walk = FakeMove(marker=10.0)
         pico = FakeMove(marker=20.0)
         selector = PolicySelectableWalkMove(legacy_move=walk, pico_move=pico)
-        selector.on_start(observation("pico_teleop", vx=0.2), MotorCommand())
+        selector.on_start(
+            Observation(robot_state=RobotState(time_s=0.0), user_input=source.read()),
+            MotorCommand(),
+        )
 
-        degraded_command = MotorCommand()
-        selector.step(observation("walk", vx=0.3, degraded=True), degraded_command)
-        selector.step(observation("pico_teleop", vx=0.4), MotorCommand())
+        missing_targets = bridge_pico_packet(2, trigger_held=True)
+        missing_targets["foot_target"] = None
+        source._apply(missing_targets)
+        continued = source.read()
+        self.assertEqual(continued.locomotion_policy, "pico_teleop")
+        self.assertFalse(continued.learned_policy_degraded)
+        self.assertIsNone(continued.foot_target)
+        self.assertIsNone(continued.hand_target)
+        command = MotorCommand()
+        selector.step(
+            Observation(robot_state=RobotState(time_s=0.0), user_input=continued),
+            command,
+        )
 
-        self.assertEqual(selector.effective_policy, "walk")
-        self.assertTrue(selector.fallback_latched)
-        self.assertEqual(walk.step_count, 2)
-        self.assertEqual(pico.step_count, 0)
-        self.assertEqual(degraded_command.target_angles["probe"], 10.3)
-
-        selector.on_stop(observation("pico_teleop", active=False), MotorCommand())
-        self.assertEqual(selector.state, MoveState.INACTIVE)
-        selector.on_start(observation("pico_teleop", vx=0.5), MotorCommand())
         self.assertEqual(selector.effective_policy, "pico_teleop")
-        self.assertEqual(pico.start_count, 2)
+        self.assertFalse(selector.fallback_latched)
+        self.assertEqual(walk.start_count, 0)
+        self.assertEqual(pico.step_count, 1)
+        self.assertEqual(pico.last_velocity["vx"], 0.4)
+        self.assertEqual(command.target_angles["probe"], 20.4)
 
-    def test_degraded_learned_request_latches_existing_walk_until_release(self):
+        source._apply(bridge_pico_packet(3, trigger_held=True))
+        selector.step(
+            Observation(robot_state=RobotState(time_s=0.0), user_input=source.read()),
+            MotorCommand(),
+        )
+        self.assertEqual(selector.effective_policy, "pico_teleop")
+        self.assertEqual(pico.step_count, 2)
+        self.assertEqual(walk.start_count, 0)
+
+    def test_bad_body_target_contract_does_not_latch_legacy_during_handoff(self):
+        source = NetworkInputSource(stale_after_s=0.5)
+        source._apply(bridge_pico_packet(0, trigger_held=False))
+        invalid = bridge_pico_packet(1, trigger_held=True)
+        invalid["body_target_contract"] = "wrong"
+        source._apply(invalid)
+        continued = source.read()
+        self.assertEqual(continued.locomotion_policy, "pico_teleop")
+        self.assertFalse(continued.learned_policy_degraded)
+        self.assertIsNone(continued.foot_target)
+        self.assertIsNone(continued.hand_target)
+
         walk = FakeMove(marker=10.0)
         pico = FakeMove(marker=20.0)
         selector = PolicySelectableWalkMove(legacy_move=walk, pico_move=pico)
         selector.on_start(observation("walk"), MotorCommand())
+        selector.step(
+            Observation(robot_state=RobotState(time_s=0.0), user_input=continued),
+            MotorCommand(),
+        )
 
-        selector.step(observation("walk", vx=0.3, degraded=True), MotorCommand())
-        selector.step(observation("pico_teleop", vx=0.4), MotorCommand())
-
-        self.assertTrue(selector.fallback_latched)
-        self.assertEqual(selector.effective_policy, "walk")
-        self.assertEqual(walk.step_count, 2)
-        self.assertEqual(pico.start_count, 0)
-
-        selector.on_stop(observation("pico_teleop", active=False), MotorCommand())
-        selector.on_start(observation("pico_teleop", vx=0.5), MotorCommand())
+        self.assertFalse(selector.fallback_latched)
         self.assertEqual(selector.effective_policy, "pico_teleop")
+        self.assertEqual(walk.start_count, 1)
+        self.assertEqual(walk.step_count, 0)
         self.assertEqual(pico.start_count, 1)
+        self.assertEqual(pico.step_count, 1)
+        self.assertEqual(pico.last_velocity["vx"], 0.4)
 
     def test_wire_policy_change_switches_without_stopping_joystick(self):
         walk = FakeMove()

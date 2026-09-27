@@ -4,17 +4,16 @@ The cross-policy IMU observation audit is tracked in
 [the deferred TODO](policy_imu_frame_todo.md). This milestone keeps the
 currently deployed PICO model and observation path unchanged.
 
-The robot accepts contract-v12 only as an optional learned locomotion policy.
-The pinned `walk.onnx` policy remains the availability baseline. A missing
-artifact, rejected metadata, ONNX load error, or learned-policy start error
-makes `PolicySelectableWalkMove` select and start `walk` in that activation's
-start cycle; the scheduler first calls `walk.step()` on its next control cycle.
-By contrast, an error during an active learned-policy step (including a
-malformed observation, non-finite inference result/target, or finite-amplitude
-guard violation) starts **and steps** `walk` in the faulting control cycle. The
-fallback remains latched until the left-trigger locomotion activation is fully
-released, so a repaired tracker or hot-reloaded file cannot switch the gait
-mid-stride.
+The robot uses contract-v12 PICO for walking and R3 zero-velocity balance.
+The `walk` move name routes through `PolicySelectableWalkMove`. In production,
+its fallback holds the last complete PICO body goals, or the measured pose when
+the learned actor has produced none; it does not execute the old `walk.onnx`
+actor. A missing artifact, rejected metadata, load/start error, or active actor
+fault selects this hold. A fault during an active step takes effect in that
+same control cycle. The hold stays latched until locomotion is released and
+activated again, so a repaired actor is not adopted mid-stride. The pinned
+`walk.onnx` remains an authenticated dependency of the deployment validator,
+as described below.
 
 ## 実機の全関節ゲート（右手 B / A / R3）
 
@@ -24,10 +23,10 @@ OFFから始まる。右手Bはいつでも全21関節のトルクをOFFにす�
 現在角を全servoのgoalへ書き、古いgoalへの跳ねを防いだうえで、policy
 出力を使わず0.5 rad/s以下で全関節を `NEUTRAL_POSE` へ移す。
 
-右スティック押し込み（R3）は、Aの状態を一度受信した後に限り、通常の
+右スティック押し込み（R3）は、Aの状態を一度受信した後に限り、PICO v12
 policy出力と初期姿勢復帰をトグルする。左トリガーを離していても、R3で
-policyを有効にすると既存の歩行policyへ速度ゼロを渡して立位を保つ。
-左トリガーを押すとPICO teleop policyに切り替わる。policy有効中にAを
+policyを有効にするとPICO v12へ速度ゼロ・身体目標ゼロを渡して立位を保つ。
+左トリガーを押すと同じPICO policyへスティック速度を渡す。policy有効中にAを
 押した場合もpolicyを止め、同じ低速初期姿勢復帰へ入る。R3はトルクOFF
 中には無視される。B、A、R3の処理は個別moveより上位のschedulerが所有
 するため、脚だけでなく腕・首を含む全関節へ一貫して適用される。
@@ -53,8 +52,8 @@ writing any target. It also applies the final-evaluation finite-amplitude guard
 described below. A finite target outside a soft limit is not an exception or a
 stop: that joint commands the nearest limit while all joints and the raw actor
 recurrence continue in the same tick. A numerical failure or an escape from the
-separate authenticated gross-amplitude guard remains an availability event
-handled by the legacy walk fallback.
+separate authenticated gross-amplitude guard holds the last complete PICO body
+goals; the old walk actor is not started.
 
 The v10 exporter supplies soft-limit metadata and the existing parser requires
 it to match the robot constants. The current v12 exporter does not supply those
@@ -75,9 +74,10 @@ without `soft_limit +/- 5 degrees` headroom.
 
 Both current bridge paths always serialize
 `locomotion_policy="pico_teleop"`. The left X/WebXR primary state is ignored.
-Holding the left trigger puts `walk` in `active_moves` and exposes
-the learned-policy body targets. R3 also keeps the baseline `walk` actor active
-at zero velocity while the left trigger is released. The right trigger puts
+Holding the left trigger puts `walk` in `active_moves` and exposes the optional
+learned-policy body targets. Here `walk` is the move name, not a request to run
+the old `walk.onnx` actor. R3 keeps the PICO v12 selector active at zero
+velocity with zero body targets while the left trigger is released. The right trigger puts
 `hmd_head` in `active_moves` for neck tracking:
 every valid PICO frame keeps `pico_arms` active, with
 `arm_tracking_enabled=true` and a paired bounded joint target while held, or
@@ -96,26 +96,27 @@ pitch `-100..+100 degrees`, left/right shoulder roll `+10..+120` /
 `-120..-10 degrees`, and elbow `-110..0 degrees`. This does not widen or alter
 the learned v12 actor's original narrow Cartesian hand-observation contract.
 
-Release is also the explicit re-arm boundary. After startup, transport timeout,
-motion inhibition, tracker/contract degradation, or learned-policy fault, do not
-resume from a trigger that was already held: send and receive a released-trigger
-snapshot, then press again. The new pressed snapshot must be fresh and must
-contain the exact v12 target contract plus complete feet and hands expressed
-from the bridge's fixed policy-session calibration origin. Calibration is a
-bridge-side prerequisite: the robot validates freshness, contract, completeness
-and envelopes, but cannot prove the physical origin was calibrated correctly.
-Do not re-arm with an uncalibrated/reused absolute pose. A stale packet,
-incomplete target pair, or target outside the wire envelope cannot re-arm v12;
-the receiver keeps the joystick-triggered legacy walk path and the selector
-keeps that fallback latched until another release/press boundary.
+Release is the explicit re-arm boundary after startup, motion inhibition, or a
+learned-policy fault: send and receive a released-trigger snapshot, then press
+again. A temporary PICO-sample or PC-to-robot UDP gap replays the last
+authenticated operator snapshot and does not release the trigger or policy.
+The new pressed snapshot must be authenticated with a fresh session sequence;
+body trackers are optional. Missing, malformed, stale, or out-of-envelope body
+targets become zero offsets while the PICO actor continues to receive joystick
+velocity and feedback. Valid nonzero offsets must use the exact v12 target
+contract and the bridge's fixed policy-session calibration origin. Calibration
+is a bridge-side prerequisite: the robot validates contract, completeness and
+envelopes for supplied targets, but cannot prove the physical origin was
+calibrated correctly. Do not send an uncalibrated/reused absolute pose.
 
 The arm deadman has its own release-to-rearm latch. A new/reconnected session
 cannot begin with the right trigger held. During a brief controller-tracking
 dropout the bridge repeats its last bounded arm target, so the robot neither
-requires another press nor uses a partially invalid side. An expired transport
-snapshot, malformed/out-of-range paired target, safety inhibition, or session
-loss removes `pico_arms`, clears the cached target, and returns those six joints
-to global neutral. A subsequent valid released frame commands the robot-local
+requires another press nor uses a partially invalid side. A UDP gap repeats
+the last authenticated arm state. A malformed/out-of-range paired target,
+safety inhibition, or sender-authority change removes `pico_arms`, clears the
+cached target, and returns those six joints to global neutral. A subsequent
+valid released frame commands the robot-local
 PICO arm HOME and rearms the next press. The overlay is registered after
 `walk`, so it replaces only shoulder pitch/roll and elbow commands while the
 learned or fallback actor continues to own the legs.
@@ -201,7 +202,8 @@ PYTHONPATH=src uv run --locked python tools/validate_pico_policy.py \
 For v12, the learned-policy load smoke checks the fixed output shape, float32
 finiteness and the authenticated finite-amplitude guard on every fixed sample.
 The validator reports that guard and an explicit `walk_fallback` record containing
-the fallback path, digest, tensor contract, providers and smoke result.
+the pinned old actor's path, digest, tensor contract, providers and smoke result.
+This is an artifact-admission check; production fallback holds body goals.
 For v12 it also hashes the validator, learned-policy contract parser, selector,
 walk runtime, direct-arm runtime and contract, network input parser and data
 contract, production entrypoint, scheduler, configuration, `uv.lock`, and
@@ -212,7 +214,7 @@ CPU smokes so a source changed during admission is rejected.
 The production `PicoHybridMove` performs the same embedded-identity check at
 load and repeats it after its fixed CPU smoke. Therefore the `teleop-run`
 rsync cannot start a learned actor against different runtime bytes; the
-selector rejects that actor and retains the authenticated `walk.onnx` fallback.
+selector rejects that actor and holds measured or prior PICO body goals.
 Contract-v10 validation remains a separate branch with its existing bounded-
 action and effective-action checks unchanged.
 
@@ -242,8 +244,8 @@ physical range. The runtime recomputes the formula from the metadata evidence,
 requires exact agreement and accepts equality at the boundary. If
 `abs(raw_action)` exceeds its joint's guard, it raises before writing any of the
 18 targets or updating the previous-action recurrence. `PolicySelectableWalkMove`
-then starts and steps the pinned legacy walk policy in that same control cycle
-and latches the fallback until trigger release.
+then holds the last complete body goals in that same control cycle and latches
+the hold until trigger release.
 
 The deployment ONNX uses these exact metadata keys for that contract:
 
@@ -376,10 +378,9 @@ This preflight's scope is artifact admission, CPU load, and two sets of 16 fixed
 inference samples. It does not test UDP freshness/session re-arm, live PICO
 calibration, tracker loss, MuJoCo dynamics, physical motor commands, or a fall.
 It also does not deliberately fault the final ONNX on the Pi. The offline
-selector regression injects a learned-policy inference failure while using the
-real `WalkMove` and pinned `walk.onnx`; it proves that the faulting cycle starts
-and runs the fallback and produces 18 finite targets without opening the motor
-bus. This remains an offline regression, not a hardware integration test.
+selector regression injects learned-policy faults and checks the same-cycle
+hold path without opening the motor bus. This remains an offline regression,
+not a hardware integration test.
 
 Likewise, `make teleop-sim` by itself only starts the robot repository's MuJoCo
 process with a network input socket. It neither generates calibrated v12 body
@@ -389,7 +390,10 @@ canonical training-repository stage/canary evaluators for checkpoint validation;
 use an explicitly paired PICO bridge plus simulator only as a separate live
 integration observation.
 
-If either validator fails, do not bypass it. The learned policy remains
-optional: removing or withholding `src/agents/pico_teleop.onnx` leaves the
-pinned `walk.onnx` fallback available under the same left-trigger control, but
-an absent or altered fallback is now a failed deployment preflight.
+If either validator fails, do not bypass it. Removing or withholding
+`src/agents/pico_teleop.onnx` leaves the production move in position hold under
+the same left-trigger control. The pinned `walk.onnx` is still an artifact
+dependency of this validator, so an absent or altered copy fails deployment
+preflight even though the production fallback does not execute it. The current
+get-up artifact does not meet the v2 runtime contract; automatic get-up remains
+unavailable until the accepted replacement is installed.

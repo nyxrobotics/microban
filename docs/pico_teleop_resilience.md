@@ -1,31 +1,40 @@
 # PICO teleop degraded-operation contract
 
-Basic joystick locomotion is the availability baseline. `src/agents/walk.onnx` is
-the pinned actor; `pico_teleop.onnx`, body trackers and the stereo view are optional
-enhancements. The robot runtime must not turn an enhancement fault into a stop.
+The contract-v12 PICO actor provides locomotion and R3 balance. The robot's
+`walk` move name routes through `PolicySelectableWalkMove`; the old
+`src/agents/walk.onnx` actor is not run as the production fallback. If the PICO
+actor cannot run, the selector holds its last complete joint goals. At startup,
+before a PICO goal exists, it holds the measured pose. The pinned old actor is
+still checked by the v12 deployment validator as an artifact dependency.
 
 | Condition | Same-cycle result | Recovery |
 |---|---|---|
 | Camera stale/missing, calibration/FOV/IPD invalid | View may fall back to passthrough; locomotion is unchanged | Camera can recover independently |
-| Body target missing, malformed, stale, out of envelope | Keep left trigger and all three stick axes; clear targets and use `walk` | Legacy remains latched until trigger release; next press may retry learned policy |
-| Learned ONNX absent or contract/load rejected | Start `walk` with the same observation | Atomically replace the file; background validation makes it eligible on a later activation |
-| Learned start/inference exception or non-finite/unsafe output | Discard the learned tick, then call legacy `on_start` and `step` in that control cycle | Reason remains in `fallback_reason`; reload is attempted without process restart and adoption waits for a later activation |
-| Left X / primary button changes | No locomotion effect; bridge keeps requesting `pico_teleop` | Left trigger remains the only momentary enable |
-| Controller/network packets stop | Watchdog returns neutral/HOME and disarms | After reconnect, release the left trigger once, then press to move |
-| Robot-side IMU/fall/current safety interlock | Existing robot safety behavior remains authoritative | Follow that interlock's explicit recovery procedure |
+| Optional body/hand targets missing, malformed, stale, or outside the wire envelope | Feed zero body targets to PICO v12; preserve left trigger and joystick velocity | Valid tracking can resume without restarting the gait |
+| Head tracking unavailable | Ignore that head pose; keep buttons, sticks, arms, and locomotion independent | Head tracking resumes when a valid pose arrives |
+| PICO ONNX absent, rejected, or unable to start | Hold the last complete joint goals, or the measured pose if none were produced | Atomic replacement is loaded in the background and can be selected on a later activation |
+| PICO inference fails or produces an unusable target | Hold the last complete PICO goals in the faulting control cycle; do not start the old walk actor | Keep the hold latched until locomotion is released and activated again |
+| Left X / primary button changes | No locomotion effect; bridge keeps requesting `pico_teleop` | Left trigger enables walking; R3 enables zero-velocity balance |
+| PICO controller samples or PC-to-robot UDP packets stop | Replay the last authenticated operator state, including motion, policy and torque state | Fresh input replaces that state when it arrives; a sender-authority change requires a new released-trigger snapshot |
+| IMU becomes unavailable | Keep the previous motor goals and torque while policy output is inhibited | Valid IMU input allows the normal motion gate to resume |
+| Robot fall with the current get-up artifact | Fall detection inhibits walking; the unavailable get-up actor returns toward neutral | Automatic get-up requires a newly trained, accepted v2 artifact |
+
+An explicit B press turns torque off. A changes to the neutral-return mode; R3
+selects the PICO policy for balance even with the left trigger released. Missing
+tracking data and packet gaps do not synthesize A or B events. Before the first
+authenticated operator snapshot, the hardware gate stays in its startup state.
 
 The learned implementation is constructed through `LearnedMoveFactory` in
-`moves/policy_selector.py`. When the next policy contract is finalized, inject its
-loader there; do not relax the current parser or guess future metadata fields.
+`moves/policy_selector.py`. The current v12 parser and its embedded source
+identity checks remain authoritative for policy admission.
 
-Run the non-hardware regression suite from the repository root:
+The focused non-hardware regression command is:
 
 ```bash
 PYTHONPATH=src uv run --with pytest python -m pytest -q \
   tests/test_policy_selector.py tests/test_network_input.py
 ```
 
-These tests never open the motor bus or launch the physical gateway. They cover
-same-cycle inference fallback, command preservation, tracker degradation latching,
-trigger-only packet-to-selector activation, atomic-file reload and network
-reconnect deadman rules.
+These tests do not open the motor bus or launch the physical gateway. They cover
+selector fallback holding, optional-tracker isolation, packet-to-selector
+activation, atomic-file reload, and replay of authenticated operator input.
