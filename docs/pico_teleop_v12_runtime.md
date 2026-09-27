@@ -1,5 +1,27 @@
 # Contract-v12 PICO policy runtime
 
+## Live checkpoint: 2026-09-27
+
+The operator reported that walking improved on the physical robot after the
+contract-v12 target soft-limit clip was removed. The active locomotion path is
+PICO v12; the old `walk.onnx` actor is not used for walking. This records an
+observed improvement, not a claim that fall recovery or every motion is working.
+
+The working set at that report was:
+
+| Component | Revision or SHA-256 |
+| --- | --- |
+| Robot runtime, before this documentation commit | `e5c3688f6355ac40ab12f3e87c09826eaf5e2f85` |
+| PICO client | `0c39c13ecd10cb7e73d5e5ce0a8c41759c29b3a8` |
+| PC teleoperation bridge | `89f03363ff11ed5c0fcdccffdcc8736dba37a65c` |
+| V12 training and export | `649415e97cf46786d25149e4df9ed4e2dde3f5f5` |
+| Deployed `pico_teleop.onnx` SHA-256 | `6b7bd3b151eb442b9ccc14aee063f3bd58cbe8ceb0a6661e963c277315c8c5e6` |
+
+The robot service was active, and the deployed runtime and ONNX hashes matched
+the local copies. The get-up actor was still disabled by its existing contract
+check. The PC bridge and PICO ADB input were connected after the ADB recovery
+service fix.
+
 The v12 gyro input now uses the raw BMI088 IMU-site axes, matching the
 `robot/imu_ang_vel` observation used in training and the ONNX metadata
 `base_ang_vel_frame=imu_sensor_xyz`. Broader cross-policy IMU unification remains
