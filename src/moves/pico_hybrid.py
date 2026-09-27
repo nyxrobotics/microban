@@ -384,18 +384,13 @@ _CHECKPOINT_SHA256_RE = re.compile(r"[0-9a-f]{64}\Z")
 # full-precision, robot-side action contract here and only use the serialized
 # form when checking the ONNX metadata.  Inference always uses these values,
 # never model-provided limits, so altered metadata cannot widen motor targets.
-# The deployed PICO policy was trained with hip pitch at -10 degrees, ankle
-# pitch at 0 degrees and shoulder pitch at 0 degrees. Keep these deployment
-# defaults independent of NEUTRAL_POSE: the latter is the physical A-button
-# return pose, balanced with an upright trunk at +1.198384259489 degrees hip
-# pitch and -1.198384259489 degrees ankle pitch. The runtime guide records the
-# training and ONNX metadata evidence.
+# The PICO policy was trained with shoulder pitch at 0 degrees.  Keep this
+# deployment contract local: NEUTRAL_POSE is shared by unrelated legacy moves.
+# Its +10-degree shoulder pitch originated in main-repository commit f27a9e29;
+# the robot MJCF supplies only joint ranges, not that HOME value.  See the
+# runtime guide for the separate training-history and ONNX-metadata evidence.
 PICO_TELEOP_HOME_POSE = {
     **NEUTRAL_POSE,
-    "left_hip_pitch": float(np.deg2rad(-10.0)),
-    "right_hip_pitch": float(np.deg2rad(-10.0)),
-    "left_ankle_pitch": 0.0,
-    "right_ankle_pitch": 0.0,
     "left_shoulder_pitch": 0.0,
     "right_shoulder_pitch": 0.0,
 }

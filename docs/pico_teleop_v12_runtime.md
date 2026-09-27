@@ -147,44 +147,21 @@ learned or fallback actor continues to own the legs.
 
 ## Training HOME versus inactive neutral
 
-The new training HOME and the physical A-button/inactive `NEUTRAL_POSE` use the
-same 21 joint angles. The deployed PICO v12 actor still has its own historical
-HOME:
+These are intentionally distinct software conventions:
 
-- `NEUTRAL_POSE` uses shoulder pitch `0 degrees`, hip pitch
-  `+1.198384259489 degrees`, knee pitch `0 degrees`, and ankle pitch
-  `-1.198384259489 degrees` on both sides. Other joints retain their prior
-  values. The shoulder value replaces the previous physical `+10 degrees`.
-  The hip and ankle angles were recomputed for this complete 21-joint pose:
-  with upright trunk (root pitch `0 degrees`) and knees at `0 degrees`, a flat
-  sole requires `ankle_pitch = -hip_pitch`. MuJoCo forward kinematics then
-  solves the remaining hip angle so the mass-weighted whole-body CoM x equals
-  the midpoint of both sole collision patches. The x residual is about
-  `2.6e-18 m` before rounding the angles. The patch centers come from the six
-  concentric collision boxes per foot, rather than the convenience foot sites.
-  In simulation the root quaternion is identity, and placing the lowest sole
-  corner on the ground requires root z `0.170554885633559 m`. The corresponding
-  grounded zero-pitch leg pose is `0.170644236955448 m`, so the trunk is about
-  `0.08935 mm` lower. This is a geometric static result; live balance and
-  hardware mass errors are separate.
-- The deployed PICO v12 actor was trained with hip pitch `-10 degrees`, ankle
-  pitch `0 degrees`, and shoulder pitch `0 degrees` on both sides.
-  `PICO_TELEOP_HOME_POSE` pins these values independently of the A-button
-  neutral so this posture adjustment does not reinterpret the existing actor's
-  observations, actions, or checkpoint. This pose change refreshes the ONNX
-  runtime source hashes; its weights and graph are unchanged.
-- The previous physical shoulder pitch `+10 degrees` came from Microban commit
-  `f27a9e29` (2026-05-22, *Neutral pose and motor signs*), which records no
-  measurement provenance. MjLab commit `0119357e` changed both training
-  shoulder pitches from `+10 degrees` to `0 degrees`; the new training HOME,
-  PICO contract defaults and pinned `walk.onnx` `default_joint_pos` metadata
-  now agree at `0 degrees`.
+- `NEUTRAL_POSE` in the physical runtime has shoulder pitch `+10 degrees`. Git
+  blame traces it to Microban commit `f27a9e29` (2026-05-22, *Neutral pose and
+  motor signs*). That commit records no measurement provenance. The robot MJCF
+  contains only the shoulder-pitch joint range (`-pi..+pi`) and no HOME/keyframe
+  value, so XML is not authority for `+10 degrees`.
+- MjLab commit `0119357e` changed both training shoulder pitches from
+  `+10 degrees` to `0 degrees`; current `HOME_FRAME`, PICO contract defaults and
+  the pinned `walk.onnx` `default_joint_pos` metadata all use `0 degrees`.
 
-The deployed PICO actor continues to use its local shoulder-pitch 0-degree,
-hip-pitch -10-degree, ankle-pitch 0-degree HOME. Left-trigger locomotion release
-interpolates all 18 policy joints to the global `NEUTRAL_POSE`, including shoulder
-pitch `0 degrees`, before declaring the walk move inactive. Independently, a valid
-right-trigger release
+The PICO actor therefore continues to use its local 0-degree training HOME.
+Left-trigger locomotion release interpolates all 18 policy joints to the
+unchanged global `NEUTRAL_POSE`, including shoulder pitch `+10 degrees`, before
+declaring the walk move inactive. Independently, a valid right-trigger release
 keeps the arm overlay active and commands its authenticated arm HOME (shoulder
 pitch `0 degrees`, roll `+10/-10 degrees`, elbow `-20 degrees`) after the walk
 output. Only loss of the PICO arm session returns those six joints to global
