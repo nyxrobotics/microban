@@ -26,10 +26,16 @@ authenticated operator snapshot, the hardware gate stays in its startup state.
 The A/B servo-bus command is a broadcast sync-write. Because that packet has no
 per-servo acknowledgement, the runtime reads the torque-enable registers before
 resuming normal control. It retries IDs whose state differs from the command
-for up to about one second and reports any that remain unconfirmed. OFF cancels
-pending ON retries first; unresolved IDs also receive slower background checks.
-The limp loop does not send goal positions. A seeds measured goals once, before
-enabling torque, so a servo cannot jump toward a stale goal register.
+for up to about one second and reports any that remain unconfirmed. A starts the
+neutral return for confirmed joints while continuing ON retries for the others.
+OFF cancels pending ON retries first; unresolved IDs also receive slower
+background checks. The limp loop does not send goal positions. A seeds measured
+goals before enabling torque when feedback is available. If an initial position
+reply is missing, it seeds that joint directly to neutral and enables it without
+waiting for a position read; that joint may move directly to neutral. During the
+A return, subsequent position reply failures do not stop feedforward neutral
+goals. During policy output, a joint with a missing position reply is resent its
+previous goal until feedback returns.
 
 The learned implementation is constructed through `LearnedMoveFactory` in
 `moves/policy_selector.py`. The current v12 parser and its embedded source

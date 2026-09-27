@@ -525,7 +525,9 @@ class Scheduler:
 
                     # Send command to motors
                     try:
-                        self._send_to_motors(command)
+                        self._send_to_motors(
+                            command, neutral_return=hardware_mode == "neutral"
+                        )
                     except RuntimeError as e:
                         if not self._serial_hold_on_error:
                             raise
@@ -640,34 +642,44 @@ class Scheduler:
                 self._reset_moves_for_hardware_gate()
                 return "limp", MotorCommand(target_angles={})
 
+            # For an unreadable joint, seed the neutral goal itself. The A
+            # return is feedforward; it must not wait for a position packet.
+            neutral_seed = dict(measured)
+            for name in getattr(self.controller, "stale_motor_names", ()):
+                if name in neutral_seed:
+                    neutral_seed[name] = NEUTRAL_POSE[name]
+
             motor_ids = list(MOTOR_TO_ID.values())
             self.controller.sync_write_kp(
                 motor_ids, [KP_HARDWARE_NEUTRAL] * len(motor_ids)
             )
-            # A servo can retain an old goal register while torque is off.
-            # Seed every goal with the freshly measured pose *before* enabling
-            # torque, otherwise A could cause a short jump toward that stale
-            # goal before the first neutral-slew tick is written.
-            self.controller.sync_write_goal_position(
-                motor_ids, [measured[name] for name in MOTOR_TO_ID]
+            # Replace old goal registers before enabling torque. Responsive
+            # joints start from their measured pose; unreadable joints receive
+            # neutral directly, as requested for feedforward A return.
+            write_neutral = getattr(
+                self.controller,
+                "sync_write_neutral_goal_position",
+                self.controller.sync_write_goal_position,
             )
-            self._remember_goal_write(measured)
-            # A broadcast may reach some servos even if verification fails.
-            # Keep the gate uncertain until every attempted transition returns
-            # so a later B still sends OFF and a later A resends ON.
+            write_neutral(motor_ids, [neutral_seed[name] for name in MOTOR_TO_ID])
+            self._remember_goal_write(neutral_seed)
+            # Keep the gate uncertain until the bounded ON transaction returns.
+            # Unconfirmed IDs are retried in the background after the healthy
+            # joints start their neutral return.
             self._hardware_torque_enabled = None
             self.controller.sync_write_torque_enable(
                 motor_ids, [True] * len(motor_ids)
             )
+            self._remember_goal_write(neutral_seed)
             self._hardware_torque_enabled = True
             self._hardware_policy_enabled = False
-            self._hardware_neutral_targets = measured
+            self._hardware_neutral_targets = dict(self._last_sent_targets or neutral_seed)
             self._hardware_neutral_last_time_s = obs.robot_state.time_s
             self._cmd_history.clear()
             self._overcurrent_ticks = 0
             just_enabled = True
             print(
-                "Hardware gate: torque enabled; policy withheld, returning to neutral",
+                "Hardware gate: torque ON requested; policy withheld, returning to neutral",
                 end="\r\n",
                 flush=True,
             )
@@ -703,10 +715,19 @@ class Scheduler:
             # Remove the last learned target before changing gains.  Without
             # this ordering, raising an RL joint to neutral holding gain could
             # briefly amplify its error against a stale policy goal.
-            self.controller.sync_write_goal_position(
-                motor_ids, [measured[name] for name in MOTOR_TO_ID]
+            neutral_seed = dict(measured)
+            for name in getattr(self.controller, "stale_motor_names", ()):
+                previous_goal = (self._last_sent_targets or {}).get(name)
+                if previous_goal is not None and math.isfinite(previous_goal):
+                    neutral_seed[name] = previous_goal
+            write_neutral = getattr(
+                self.controller,
+                "sync_write_neutral_goal_position",
+                self.controller.sync_write_goal_position,
             )
-            self._remember_goal_write(measured)
+            write_neutral(motor_ids, [neutral_seed[name] for name in MOTOR_TO_ID])
+            self._remember_goal_write(neutral_seed)
+            self._hardware_neutral_targets = dict(self._last_sent_targets or neutral_seed)
             self.controller.sync_write_kp(
                 motor_ids, [KP_HARDWARE_NEUTRAL] * len(motor_ids)
             )
@@ -1134,7 +1155,9 @@ class Scheduler:
             return True
         return False
 
-    def _send_to_motors(self, command: MotorCommand):
+    def _send_to_motors(
+        self, command: MotorCommand, *, neutral_return: bool = False
+    ):
         """Send one batched goal position command from the composed command dict."""
         if not command.target_angles:
             return
@@ -1144,6 +1167,11 @@ class Scheduler:
 
         write_start = time.perf_counter()
         try:
-            self.controller.sync_write_goal_position(motor_ids, target_positions)
+            write_goals = self.controller.sync_write_goal_position
+            if neutral_return:
+                write_goals = getattr(
+                    self.controller, "sync_write_neutral_goal_position", write_goals
+                )
+            write_goals(motor_ids, target_positions)
         finally:
             self._last_goal_write_ms = (time.perf_counter() - write_start) * 1000.0

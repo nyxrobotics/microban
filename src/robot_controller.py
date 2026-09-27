@@ -39,6 +39,10 @@ class RobotController:
         self._pending_enable: set[int] = set()
         self._requested_torque_ids: set[int] = set()
         self._torque_unconfirmed_ids: set[int] = set()
+        # A neutral-return goal was written before ON. For an unreadable joint
+        # that goal is neutral; for a readable joint it is the measured pose.
+        # Either can be enabled without waiting for another position reply.
+        self._neutral_fallback_enable_ids: set[int] = set()
         # OFF remains eligible for background retry if its broadcast write
         # could not be confirmed within the one-second A/B transaction.
         self._torque_off_unconfirmed_ids: set[int] = set()
@@ -256,11 +260,16 @@ class RobotController:
                 self._torque_off_unconfirmed_ids.add(motor_id)
                 self._torque_rejoin_last_s.pop(motor_id, None)
                 self._pending_enable.discard(motor_id)
+                self._neutral_fallback_enable_ids.discard(motor_id)
             else:
                 # Cancel previous OFF retries immediately. A failed ON write
                 # is retried by the scheduler with a fresh measured goal.
                 self._torque_off_unconfirmed_ids.discard(motor_id)
-            if enabled and motor_id in self._stale_ids:
+            if (
+                enabled
+                and motor_id in self._stale_ids
+                and motor_id not in self._neutral_fallback_enable_ids
+            ):
                 self._pending_enable.add(motor_id)
             else:
                 write_ids.append(motor_id)
@@ -333,6 +342,14 @@ class RobotController:
                 actual = status.get(motor_id)
                 if actual is None:
                     if enabled:
+                        if motor_id in self._neutral_fallback_enable_ids:
+                            # A neutral goal was written before ON. A missing
+                            # status reply must not block the ON resend.
+                            self._torque_unconfirmed_ids.add(motor_id)
+                            if time.monotonic() - last_on_retry_s.get(motor_id, 0.0) >= 0.05:
+                                last_on_retry_s[motor_id] = time.monotonic()
+                                resend.append(motor_id)
+                            continue
                         # A missing torque reply is not proof of OFF. A fresh
                         # position read and goal seed make an ON resend safe.
                         self._pending_enable.add(motor_id)
@@ -365,6 +382,12 @@ class RobotController:
                     continue
                 last_status[motor_id] = actual
                 if actual == expected:
+                    if enabled and motor_id in self._neutral_fallback_enable_ids:
+                        self._neutral_fallback_enable_ids.discard(motor_id)
+                        self._pending_enable.discard(motor_id)
+                        self._torque_unconfirmed_ids.discard(motor_id)
+                        pending.discard(motor_id)
+                        continue
                     if enabled and (
                         motor_id in self._torque_unconfirmed_ids
                         or motor_id in self._pending_enable
@@ -383,9 +406,15 @@ class RobotController:
                 if not enabled:
                     resend.append(motor_id)
                     continue
-                # A confirmed OFF servo needs a fresh goal and healthy status
-                # before an ON retry; never energize against an old register.
+                # A confirmed OFF servo needs a fresh goal before an ON retry.
                 self._torque_unconfirmed_ids.add(motor_id)
+                if motor_id in self._neutral_fallback_enable_ids:
+                    # The feedforward neutral goal replaced the old register
+                    # before A, so a missing position reply is not a blocker.
+                    if time.monotonic() - last_on_retry_s.get(motor_id, 0.0) >= 0.05:
+                        last_on_retry_s[motor_id] = time.monotonic()
+                        resend.append(motor_id)
+                    continue
                 if time.monotonic() - last_on_retry_s.get(motor_id, 0.0) < 0.05:
                     continue
                 try:
@@ -413,6 +442,10 @@ class RobotController:
 
         if pending:
             unconfirmed = sorted(pending)
+            if enabled:
+                # Let confirmed joints start their neutral return. Remaining
+                # joints are retried by the background torque-state poll.
+                self._torque_unconfirmed_ids.update(pending)
             mismatched = sorted(
                 motor_id for motor_id in pending
                 if motor_id in last_status and last_status[motor_id] != expected
@@ -422,7 +455,9 @@ class RobotController:
                 f"IDs={unconfirmed}, confirmed mismatches={mismatched}",
                 end="\r\n", flush=True,
             )
-            if mismatched or (last_write_error is not None and len(unconfirmed) == len(ids)):
+            if not enabled and (
+                mismatched or (last_write_error is not None and len(unconfirmed) == len(ids))
+            ):
                 raise RuntimeError(
                     f"torque {'ON' if enabled else 'OFF'} not confirmed for IDs {unconfirmed}"
                 )
@@ -438,15 +473,35 @@ class RobotController:
         self._controller.sync_write_status_return_level(ids, levels)
 
     def sync_write_goal_position(self, ids: list[int], positions: list[float]) -> None:
+        self._write_goal_position(ids, positions, advance_stale=False)
+
+    def sync_write_neutral_goal_position(self, ids: list[int], positions: list[float]) -> None:
+        """Continue feedforward neutral return even without position replies."""
+        self._write_goal_position(ids, positions, advance_stale=True)
+
+    def _write_goal_position(
+        self, ids: list[int], positions: list[float], *, advance_stale: bool
+    ) -> None:
         if len(ids) != len(positions):
             raise ValueError("motor ID and goal counts differ")
         now = time.monotonic()
         live = []
         rejoining = []
         for motor_id, raw_pos in zip(ids, positions):
-            if motor_id in self._stale_ids or motor_id in self._torque_unconfirmed_ids:
-                continue
-            pos = float(raw_pos)
+            if advance_stale:
+                pos = float(raw_pos)
+            else:
+                if (
+                    motor_id in self._pending_enable
+                    or motor_id in self._torque_unconfirmed_ids
+                ):
+                    continue
+                if motor_id in self._stale_ids:
+                    if motor_id not in self._requested_torque_ids:
+                        continue
+                    pos = self._last_goals[motor_id]
+                else:
+                    pos = float(raw_pos)
             last_rejoin_s = self._torque_rejoin_last_s.get(motor_id)
             if last_rejoin_s is not None:
                 dt = max(0.001, min(0.1, now - last_rejoin_s))
@@ -463,6 +518,14 @@ class RobotController:
                 [pos * self._id_to_sign[motor_id] for motor_id, pos in live],
             )
             self._last_goals.update(live)
+            if advance_stale:
+                self._neutral_fallback_enable_ids.update(
+                    motor_id for motor_id, _ in live
+                    if (
+                        motor_id not in self._requested_torque_ids
+                        or motor_id in self._torque_unconfirmed_ids
+                    )
+                )
             for motor_id, finished in rejoining:
                 if finished:
                     self._torque_rejoin_last_s.pop(motor_id, None)
@@ -543,6 +606,13 @@ class RobotController:
             enabled = self._scalar(self._controller.read_torque_enable(motor_id))
         except (RuntimeError, OSError, TypeError, ValueError) as exc:
             self._torque_warn(motor_id, f"read failed: {exc}")
+            if requested_on and motor_id in self._neutral_fallback_enable_ids:
+                # A neutral goal is already in the register. A missing status
+                # packet must not prevent the ON request from being retried.
+                try:
+                    self._controller.sync_write_torque_enable([motor_id], [True])
+                except (RuntimeError, OSError, TypeError, ValueError) as write_exc:
+                    self._torque_warn(motor_id, f"ON retry failed: {write_exc}")
             if not requested_on:
                 # OFF is idempotent. Retry it even when the status read is
                 # missing, since a failed broadcast write has no other ACK.
@@ -571,6 +641,9 @@ class RobotController:
             return
         if enabled == 1.0:
             if motor_id in self._torque_unconfirmed_ids:
+                if motor_id in self._neutral_fallback_enable_ids:
+                    self._finish_neutral_fallback_enable(motor_id)
+                    return
                 try:
                     measured = self._seed_rejoin_goal(motor_id)
                 except (RuntimeError, OSError, TypeError, ValueError) as exc:
@@ -584,6 +657,21 @@ class RobotController:
 
         self._torque_unconfirmed_ids.add(motor_id)
         self._torque_rejoin_last_s.pop(motor_id, None)
+        if motor_id in self._neutral_fallback_enable_ids:
+            try:
+                self._controller.sync_write_torque_enable([motor_id], [True])
+                verified = self._scalar(self._controller.read_torque_enable(motor_id))
+            except (RuntimeError, OSError, TypeError, ValueError) as exc:
+                self._torque_warn(motor_id, f"OFF, neutral ON retry unconfirmed: {exc}")
+                return
+            if verified == 1.0:
+                self._finish_neutral_fallback_enable(motor_id)
+            else:
+                self._torque_warn(
+                    motor_id,
+                    f"OFF, neutral ON retry did not take effect (register={verified!r})",
+                )
+            return
         try:
             hardware_error = self._scalar(
                 self._controller.read_hardware_error_status(motor_id)
@@ -626,6 +714,19 @@ class RobotController:
             return
 
         self._finish_torque_rejoin(motor_id, measured, "was OFF")
+
+    def _finish_neutral_fallback_enable(self, motor_id: int) -> None:
+        """Accept an ON reply after a feedforward neutral goal was seeded."""
+        self._pending_enable.discard(motor_id)
+        self._torque_unconfirmed_ids.discard(motor_id)
+        self._neutral_fallback_enable_ids.discard(motor_id)
+        self._torque_rejoin_last_s[motor_id] = time.monotonic()
+        self._torque_warn_after_s.pop(motor_id, None)
+        print(
+            f"Servo torque feedback: id={motor_id} "
+            f"name={self._id_to_name[motor_id]} ON; continuing neutral goal",
+            end="\r\n", flush=True,
+        )
 
     def _finish_torque_rejoin(
         self, motor_id: int, measured: float, previous_status: str
