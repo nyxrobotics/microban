@@ -158,7 +158,7 @@ class Gc300InputSource(InputSource):
         self._lt_axis = 0.0
         self.last_error: str | None = None
         self._last_output = UserInput(
-            locomotion_policy="pico_teleop",
+            locomotion_policy="walk",
             torque_enabled=False,
             policy_enabled=False,
         )
@@ -378,7 +378,7 @@ class Gc300InputSource(InputSource):
             self._torque = False
             self._policy = False
             self._last_output = UserInput(
-                locomotion_policy="pico_teleop",
+                locomotion_policy="walk",
                 torque_enabled=False,
                 policy_enabled=False,
             )
@@ -394,7 +394,7 @@ class Gc300InputSource(InputSource):
                 self._torque = False
                 self._policy = False
                 self._last_output = UserInput(
-                    locomotion_policy="pico_teleop",
+                    locomotion_policy="walk",
                     torque_enabled=False,
                     policy_enabled=False,
                 )
@@ -428,13 +428,13 @@ class Gc300InputSource(InputSource):
         lx, ly = _radial_deadzone(self._sticks["lx"], self._sticks["ly"])
         rx, _ry = _radial_deadzone(self._sticks["rx"], self._sticks["ry"])
         self._last_output = UserInput(
-            active_moves={"walk", "pico_arms"} if active_policy else set(),
+            active_moves={"walk"} if active_policy else set(),
             velocity={
                 "vx": -ly if walking else 0.0,
                 "vy": -lx if walking else 0.0,
                 "vtheta": -rx if walking else 0.0,
             },
-            locomotion_policy="pico_teleop",
+            locomotion_policy="walk",
             balance_only=active_policy and not walking,
             arm_tracking_enabled=False,
             torque_enabled=self._torque,
