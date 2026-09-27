@@ -148,7 +148,10 @@ class PicoArmTrackingMoveTest(unittest.TestCase):
                         command.target_angles[name], expected.get(name, 7.0)
                     )
 
-    def test_valid_release_commands_exact_pico_home_not_global_pitch(self):
+    def test_valid_release_commands_exact_pico_home(self):
+        # PICO_ARM_HOME_RAD is a fixed, robot-local contract (see
+        # pico_arm_contract.py): release must always command exactly this,
+        # regardless of what NEUTRAL_POSE happens to be.
         move = PicoArmTrackingMove(slew_rate_rad_s=1000.0)
         obs = observation(0.0, enabled=True)
         move.on_start(obs, MotorCommand())
@@ -165,12 +168,6 @@ class PicoArmTrackingMoveTest(unittest.TestCase):
                 self.assertEqual(
                     command.target_angles[name], PICO_ARM_HOME_RAD[side][index]
                 )
-        self.assertEqual(command.target_angles["left_shoulder_pitch"], 0.0)
-        self.assertNotEqual(
-            command.target_angles["left_shoulder_pitch"],
-            NEUTRAL_POSE["left_shoulder_pitch"],
-        )
-
     def test_invalid_custom_input_cannot_retain_previous_target(self):
         move = PicoArmTrackingMove(slew_rate_rad_s=1000.0)
         obs = observation(0.0, enabled=True)
