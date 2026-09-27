@@ -6,7 +6,10 @@ readonly script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 readonly repo_root="$(cd -- "${script_dir}/.." && pwd)"
 readonly runtime_unit="microban-pico-runtime.service"
 readonly camera_unit="microban-camera-tls.service"
-readonly conflicting_unit="microban-gamepad.service"
+readonly -a conflicting_units=(
+  "microban-gamepad.service"
+  "microban-gc300-runtime.service"
+)
 readonly runtime_unit_path="/etc/systemd/system/${runtime_unit}"
 readonly camera_unit_path="/etc/systemd/system/${camera_unit}"
 readonly runtime_env="/etc/default/microban-pico-runtime"
@@ -194,7 +197,9 @@ PY
     # Do not leave both mutually exclusive controllers enabled for the next
     # boot.  Merely declaring Conflicts= prevents concurrent execution, but
     # does not define which controller wins when both are enabled.
-    systemctl disable --now "${conflicting_unit}" 2>/dev/null || true
+    for conflicting_unit in "${conflicting_units[@]}"; do
+      systemctl disable --now "${conflicting_unit}" 2>/dev/null || true
+    done
     systemctl enable --now "${units[@]}"
     ;;
   disable)
@@ -220,13 +225,15 @@ PY
     [[ -f "${runtime_env}" && -f "${state_file}" ]] || die "run '$0 install ...' first"
     healthy=0
     report_unit_health "${runtime_unit}" || healthy=1
-    if systemctl is-enabled --quiet "${conflicting_unit}" ||
-       systemctl is-active --quiet "${conflicting_unit}"; then
-      echo "ERROR conflicting controller is enabled or active: ${conflicting_unit}" >&2
-      healthy=1
-    else
-      echo "OK conflicting controller disabled/inactive: ${conflicting_unit}"
-    fi
+    for conflicting_unit in "${conflicting_units[@]}"; do
+      if systemctl is-enabled --quiet "${conflicting_unit}" ||
+         systemctl is-active --quiet "${conflicting_unit}"; then
+        echo "ERROR conflicting controller is enabled or active: ${conflicting_unit}" >&2
+        healthy=1
+      else
+        echo "OK conflicting controller disabled/inactive: ${conflicting_unit}"
+      fi
+    done
     network_port=$(sed -n 's/^MICROBAN_NETWORK_PORT=//p' "${runtime_env}")
     [[ "${network_port}" =~ ^[0-9]+$ ]] || die "invalid installed network port"
     report_listener_health udp "${network_port}" || healthy=1
