@@ -2,7 +2,6 @@
 # Copyright 2026 Marc Duclusaud
 
 import math
-from collections.abc import Callable, Sequence
 
 import onnxruntime as ort
 
@@ -51,17 +50,9 @@ class GetupMove(Move):
     fall-detection switch to/from WalkMove.
     """
 
-    def __init__(
-        self,
-        controller: ControllerProtocol | None = None,
-        *,
-        gyro_transform: Callable[[Sequence[float]], Sequence[float]] | None = None,
-    ) -> None:
+    def __init__(self, controller: ControllerProtocol | None = None) -> None:
         super().__init__()
         self._controller = controller
-        # The BMI088 and MuJoCo IMU site report sensor-frame rates. Their
-        # entry points supply the fixed sensor-to-body mount rotation.
-        self._gyro_transform = gyro_transform or (lambda values: values)
 
         session_options = ort.SessionOptions()
         session_options.intra_op_num_threads = 1
@@ -130,6 +121,7 @@ class GetupMove(Move):
         self.model_ready = (
             meta.get("microban_getup_contract") == GETUP_CONTRACT_VERSION
             and meta.get("microban_getup_target_slew_rad_s") == "0.5"
+            and meta.get("microban_getup_angular_velocity_frame") == "imu_sensor_xyz"
             and meta.get("microban_getup_previous_action_semantics")
             == "post_slew_applied_target_delta_from_default"
             and joints_valid
@@ -148,8 +140,8 @@ class GetupMove(Move):
         )
         if not self.model_ready:
             print(
-                "Get-up actor disabled: deployed model lacks the v2 clipped-action "
-                "and 0.5 rad/s target-slew contract; falls return toward neutral",
+                "Get-up actor disabled: deployed model lacks the v2 action, "
+                "IMU-frame, or 0.5 rad/s target-slew contract; falls return toward neutral",
                 end="\r\n", flush=True,
             )
         self._neck_joint_names = [
@@ -360,7 +352,10 @@ class GetupMove(Move):
         joint_vel, actions -- no foot_contact, this hardware has no such sensor."""
         input_obs = []
 
-        input_obs.extend(self._gyro_transform(obs.robot_state.gyro))
+        # Mjlab's base_ang_vel actor term reads robot/imu_ang_vel directly;
+        # MuJoCo's gyro reports the IMU site's local axes. The BMI088 driver
+        # likewise reports sensor-frame axes, so no mount rotation belongs here.
+        input_obs.extend(obs.robot_state.gyro)
         input_obs.extend(obs.robot_state.projected_gravity)
 
         for name in OBSERVATION_DOF_ORDER:
