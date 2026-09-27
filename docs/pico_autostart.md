@@ -60,10 +60,12 @@ all-joint torque-offを実行します。したがってboot、service restart�
 3. 右stick押し込み: 初期姿勢待機とpolicy有効をtoggle。
 4. PICO右手B: 即時に全関節torque OFF、policy OFF。
 
-UDPやPICO入力が途切れた場合は、直前の全関節目標とトルク状態を保持して新しい動作目標の送信を止めます。
-PC bridgeが送る`torque_enabled=false`だけではトルクを切らず、右手Bを示す
-`torque_off_requested=true`を受けたときだけトルクを切ります。再接続後の歩行はトリガーを一度離してから
-再開します。長いPICO接続断後はAと右stick押し込みを改めて操作します。
+最初の認証済み操作を受けた後にUDPパケットが途切れても、最後の操作状態を再利用して歩行ポリシーを
+継続します。PICOの一時的な入力欠落についても、PC bridgeが送る`torque_enabled=false`だけでは
+トルクを切らず、右手Bを示す`torque_off_requested=true`を受けたときだけトルクを切ります。
+起動後の初回パケット前と送信元PCの切替時は、前回の関節目標とトルク状態を保持します。
+PC bridgeが新しいセッションで再起動した場合、歩行の再開には左トリガーを一度離してください。
+単なるUDP断の復旧では、Aや右stick押し込みを操作し直す必要はありません。
 
 これは物理非常停止の代替ではありません。実機確認は支持治具を使い、別の人が電源へ手を届かせた状態で行って
 ください。
