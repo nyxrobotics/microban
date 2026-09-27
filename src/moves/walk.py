@@ -60,6 +60,9 @@ class WalkMove(Move):
         self._controller = controller
         self._ankle_pitch_bias_rad = ankle_pitch_bias_rad
         self._ankle_bias_start_time_s: float | None = None
+        self._last_commanded_ankle_bias_rad = {
+            name: 0.0 for name in _ANKLE_PITCH_JOINTS
+        }
         self._last_action = [0.0] * len(OBSERVATION_DOF_ORDER)
         self._last_safe_targets: dict[str, float] = {}
         self._last_invalid_action_warn_s = -math.inf
@@ -151,6 +154,8 @@ class WalkMove(Move):
         self._last_action = [0.0] * len(OBSERVATION_DOF_ORDER)
         self._phase_step = 0
         self._ankle_bias_start_time_s = float(obs.robot_state.time_s)
+        for name in _ANKLE_PITCH_JOINTS:
+            self._last_commanded_ankle_bias_rad[name] = 0.0
         if self._controller is not None:
             ids = [MOTOR_TO_ID[name] for name in OBSERVATION_DOF_ORDER]
             self._controller.sync_write_kp(ids, [KP_RL] * len(ids))
@@ -188,6 +193,8 @@ class WalkMove(Move):
             self._last_safe_targets = {
                 name: command.target_angles[name] for name in OBSERVATION_DOF_ORDER
             }
+            # Retain the previous virtual-coordinate offset if the fall flag
+            # clears on the next tick; on_start resets it after a real handoff.
             return
         
         # Run policy
@@ -223,6 +230,7 @@ class WalkMove(Move):
         )
         invalid_names = []
         next_action = list(self._last_action)
+        next_ankle_bias = dict(self._last_commanded_ankle_bias_rad)
         for i, name in enumerate(OBSERVATION_DOF_ORDER):
             target = self._default_pose[name] + action[i] * self.action_scale
             if name in _ANKLE_PITCH_JOINTS:
@@ -236,10 +244,14 @@ class WalkMove(Move):
                 command.target_angles[name] = (
                     previous if math.isfinite(previous) else NEUTRAL_POSE[name]
                 )
+                if name in _ANKLE_PITCH_JOINTS and not math.isfinite(previous):
+                    next_ankle_bias[name] = 0.0
                 invalid_names.append(name)
                 continue
             command.target_angles[name] = target
             next_action[i] = action[i]
+            if name in _ANKLE_PITCH_JOINTS:
+                next_ankle_bias[name] = ankle_bias
         if invalid_names:
             now = float(obs.robot_state.time_s)
             if now - self._last_invalid_action_warn_s >= 1.0:
@@ -252,6 +264,7 @@ class WalkMove(Move):
         # Preserve the original raw-action recurrence for ordinary outputs.
         # An outlier joint keeps both its previous target and previous action.
         self._last_action = next_action
+        self._last_commanded_ankle_bias_rad = next_ankle_bias
         self._last_safe_targets = {
             name: command.target_angles[name] for name in OBSERVATION_DOF_ORDER
         }
@@ -283,7 +296,12 @@ class WalkMove(Move):
         
         # Motor positions
         for name in OBSERVATION_DOF_ORDER:
-            input_obs.append(obs.robot_state.motor_positions[name] - self._default_pose[name])
+            position = obs.robot_state.motor_positions[name]
+            if name in _ANKLE_PITCH_JOINTS:
+                # Undo the previous physical goal offset only in the actor's
+                # position input. The safety gate and get-up keep true feedback.
+                position -= self._last_commanded_ankle_bias_rad[name]
+            input_obs.append(position - self._default_pose[name])
         
         # Motor velocities
         for name in OBSERVATION_DOF_ORDER:
