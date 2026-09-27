@@ -652,6 +652,10 @@ class Scheduler:
                 motor_ids, [measured[name] for name in MOTOR_TO_ID]
             )
             self._remember_goal_write(measured)
+            # A broadcast may reach some servos even if verification fails.
+            # Keep the gate uncertain until every attempted transition returns
+            # so a later B still sends OFF and a later A resends ON.
+            self._hardware_torque_enabled = None
             self.controller.sync_write_torque_enable(
                 motor_ids, [True] * len(motor_ids)
             )
@@ -782,6 +786,7 @@ class Scheduler:
     def _disable_hardware_torque(self) -> None:
         if self._hardware_torque_enabled is not False:
             motor_ids = list(MOTOR_TO_ID.values())
+            self._hardware_torque_enabled = None
             self.controller.sync_write_torque_enable(
                 motor_ids, [False] * len(motor_ids)
             )

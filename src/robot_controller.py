@@ -10,6 +10,9 @@ from constants import MOTOR_TO_ID, MOTOR_SIGN, NEUTRAL_POSE, IMU_I2C_BUS, PRESEN
 from imu_reader import ThreadedIMUReader
 
 
+TORQUE_VERIFY_TIMEOUT_S = 1.0
+
+
 class RobotController:
     """Wraps Xl330PyController."""
 
@@ -36,6 +39,9 @@ class RobotController:
         self._pending_enable: set[int] = set()
         self._requested_torque_ids: set[int] = set()
         self._torque_unconfirmed_ids: set[int] = set()
+        # OFF remains eligible for background retry if its broadcast write
+        # could not be confirmed within the one-second A/B transaction.
+        self._torque_off_unconfirmed_ids: set[int] = set()
         self._torque_check_ids = tuple(MOTOR_TO_ID.values())
         self._torque_check_cursor = 0
         self._torque_recovery_cursor = 0
@@ -233,6 +239,13 @@ class RobotController:
     def sync_write_torque_enable(self, ids: list[int], values: list[bool]) -> None:
         if len(ids) != len(values):
             raise ValueError("motor ID and torque value counts differ")
+        if not ids:
+            return
+        all_joint_transition = (
+            len(ids) == len(self._torque_check_ids)
+            and set(ids) == set(self._torque_check_ids)
+            and all(value == values[0] for value in values)
+        )
         write_ids, write_values = [], []
         for motor_id, enabled in zip(ids, values):
             if not enabled:
@@ -240,19 +253,186 @@ class RobotController:
                 # B write can never cause the feedback loop to re-enable it.
                 self._requested_torque_ids.discard(motor_id)
                 self._torque_unconfirmed_ids.discard(motor_id)
+                self._torque_off_unconfirmed_ids.add(motor_id)
                 self._torque_rejoin_last_s.pop(motor_id, None)
+                self._pending_enable.discard(motor_id)
+            else:
+                # Cancel previous OFF retries immediately. A failed ON write
+                # is retried by the scheduler with a fresh measured goal.
+                self._torque_off_unconfirmed_ids.discard(motor_id)
             if enabled and motor_id in self._stale_ids:
                 self._pending_enable.add(motor_id)
             else:
                 write_ids.append(motor_id)
                 write_values.append(enabled)
-                if not enabled:
-                    self._pending_enable.discard(motor_id)
+        write_error = None
+        transition_started_s = time.monotonic()
         if write_ids:
-            self._controller.sync_write_torque_enable(write_ids, write_values)
+            try:
+                # Sync-write uses Dynamixel's broadcast packet ID. No other
+                # scheduler motor command runs during this transaction.
+                self._controller.sync_write_torque_enable(write_ids, write_values)
+            except (RuntimeError, OSError, ValueError) as exc:
+                if not all_joint_transition:
+                    raise
+                write_error = exc
+        if all_joint_transition:
+            self._verify_torque_transition(
+                ids, values[0], write_error, transition_started_s
+            )
         for motor_id, enabled in zip(ids, values):
             if enabled:
                 self._requested_torque_ids.add(motor_id)
+
+    def _verify_torque_transition(
+        self,
+        ids: list[int],
+        enabled: bool,
+        initial_write_error: Exception | None,
+        started_s: float,
+    ) -> None:
+        """Confirm a broadcast A/B transition before normal goals resume."""
+
+        deadline = started_s + TORQUE_VERIFY_TIMEOUT_S
+        pending = set(ids)
+        last_status: dict[int, float] = {}
+        seeded_goals: dict[int, float] = {}
+        last_on_retry_s: dict[int, float] = {}
+        group_read_available = True
+        last_write_error = initial_write_error
+        expected = 1.0 if enabled else 0.0
+        while pending and time.monotonic() < deadline:
+            ordered = [motor_id for motor_id in ids if motor_id in pending]
+            status: dict[int, float] = {}
+            if group_read_available and len(ordered) > 1:
+                try:
+                    values = self._controller.sync_read_torque_enable(ordered)
+                    if len(values) != len(ordered):
+                        raise RuntimeError("incomplete torque state read")
+                    status = {
+                        motor_id: self._scalar(value)
+                        for motor_id, value in zip(ordered, values)
+                    }
+                except (RuntimeError, OSError, TypeError, ValueError):
+                    # One silent servo can invalidate a group response. Check
+                    # IDs individually for the rest of this transition.
+                    group_read_available = False
+            if not status:
+                for motor_id in ordered:
+                    if time.monotonic() >= deadline:
+                        break
+                    try:
+                        status[motor_id] = self._scalar(
+                            self._controller.read_torque_enable(motor_id)
+                        )
+                    except (RuntimeError, OSError, TypeError, ValueError):
+                        pass
+
+            resend = []
+            for motor_id in ordered:
+                actual = status.get(motor_id)
+                if actual is None:
+                    if enabled:
+                        # A missing torque reply is not proof of OFF. A fresh
+                        # position read and goal seed make an ON resend safe.
+                        self._pending_enable.add(motor_id)
+                        self._stale_ids.add(motor_id)
+                        if time.monotonic() - last_on_retry_s.get(motor_id, 0.0) < 0.05:
+                            continue
+                        try:
+                            hardware_error = self._scalar(
+                                self._controller.read_hardware_error_status(motor_id)
+                            )
+                            if hardware_error != 0.0:
+                                continue
+                            seeded_goals[motor_id] = self._seed_rejoin_goal(motor_id)
+                        except (RuntimeError, OSError, TypeError, ValueError):
+                            self._pending_enable.add(motor_id)
+                            self._stale_ids.add(motor_id)
+                            continue
+                        self._torque_unconfirmed_ids.add(motor_id)
+                        last_on_retry_s[motor_id] = time.monotonic()
+                        resend.append(motor_id)
+                    else:
+                        resend.append(motor_id)
+                    continue
+                if not math.isfinite(actual) or actual not in (0.0, 1.0):
+                    if enabled:
+                        self._pending_enable.add(motor_id)
+                        self._stale_ids.add(motor_id)
+                    else:
+                        resend.append(motor_id)
+                    continue
+                last_status[motor_id] = actual
+                if actual == expected:
+                    if enabled and (
+                        motor_id in self._torque_unconfirmed_ids
+                        or motor_id in self._pending_enable
+                    ):
+                        try:
+                            measured = seeded_goals.get(motor_id)
+                            if measured is None:
+                                measured = self._seed_rejoin_goal(motor_id)
+                        except (RuntimeError, OSError, TypeError, ValueError):
+                            continue
+                        self._finish_torque_rejoin(motor_id, measured, "ON again")
+                    if not enabled:
+                        self._torque_off_unconfirmed_ids.discard(motor_id)
+                    pending.discard(motor_id)
+                    continue
+                if not enabled:
+                    resend.append(motor_id)
+                    continue
+                # A confirmed OFF servo needs a fresh goal and healthy status
+                # before an ON retry; never energize against an old register.
+                self._torque_unconfirmed_ids.add(motor_id)
+                if time.monotonic() - last_on_retry_s.get(motor_id, 0.0) < 0.05:
+                    continue
+                try:
+                    hardware_error = self._scalar(
+                        self._controller.read_hardware_error_status(motor_id)
+                    )
+                    if hardware_error != 0.0:
+                        continue
+                    seeded_goals[motor_id] = self._seed_rejoin_goal(motor_id)
+                except (RuntimeError, OSError, TypeError, ValueError):
+                    continue
+                last_on_retry_s[motor_id] = time.monotonic()
+                resend.append(motor_id)
+            if resend:
+                try:
+                    self._controller.sync_write_torque_enable(
+                        resend, [enabled] * len(resend)
+                    )
+                except (RuntimeError, OSError, ValueError) as exc:
+                    last_write_error = exc
+                else:
+                    last_write_error = None
+            if pending:
+                time.sleep(min(0.01, max(0.0, deadline - time.monotonic())))
+
+        if pending:
+            unconfirmed = sorted(pending)
+            mismatched = sorted(
+                motor_id for motor_id in pending
+                if motor_id in last_status and last_status[motor_id] != expected
+            )
+            print(
+                f"Servo torque {'ON' if enabled else 'OFF'} unconfirmed after 1 s: "
+                f"IDs={unconfirmed}, confirmed mismatches={mismatched}",
+                end="\r\n", flush=True,
+            )
+            if mismatched or (last_write_error is not None and len(unconfirmed) == len(ids)):
+                raise RuntimeError(
+                    f"torque {'ON' if enabled else 'OFF'} not confirmed for IDs {unconfirmed}"
+                )
+        else:
+            elapsed_ms = (time.monotonic() - started_s) * 1000.0
+            print(
+                f"Servo torque {'ON' if enabled else 'OFF'} confirmed "
+                f"{len(ids)}/{len(ids)} in {elapsed_ms:.1f} ms",
+                end="\r\n", flush=True,
+            )
 
     def sync_write_status_return_level(self, ids: list[int], levels: list[int]) -> None:
         self._controller.sync_write_status_return_level(ids, levels)
@@ -325,9 +505,9 @@ class RobotController:
         return measured
 
     def _poll_torque_state(self) -> None:
-        if not self._requested_torque_ids:
-            return
         now = time.monotonic()
+        if not self._requested_torque_ids and not self._torque_off_unconfirmed_ids:
+            return
         if now < self._torque_check_next_s:
             return
         self._torque_check_next_s = now + 0.1
@@ -336,8 +516,10 @@ class RobotController:
         # recovering joint on each 100 ms poll while retaining the normal scan.
         recovering = [
             motor_id for motor_id in self._torque_check_ids
-            if motor_id in self._torque_unconfirmed_ids
-            and motor_id in self._requested_torque_ids
+            if (
+                motor_id in self._torque_unconfirmed_ids
+                and motor_id in self._requested_torque_ids
+            ) or motor_id in self._torque_off_unconfirmed_ids
         ]
         recovery_id = None
         if recovering:
@@ -350,13 +532,42 @@ class RobotController:
             self._check_torque_state(motor_id)
 
     def _check_torque_state(self, motor_id: int) -> None:
-        if motor_id not in self._requested_torque_ids:
+        requested_on = motor_id in self._requested_torque_ids
+        if (
+            not requested_on
+            and motor_id not in self._torque_off_unconfirmed_ids
+        ):
             return
 
         try:
             enabled = self._scalar(self._controller.read_torque_enable(motor_id))
         except (RuntimeError, OSError, TypeError, ValueError) as exc:
             self._torque_warn(motor_id, f"read failed: {exc}")
+            if not requested_on:
+                # OFF is idempotent. Retry it even when the status read is
+                # missing, since a failed broadcast write has no other ACK.
+                try:
+                    self._controller.sync_write_torque_enable([motor_id], [False])
+                except (RuntimeError, OSError, TypeError, ValueError) as write_exc:
+                    self._torque_warn(motor_id, f"OFF retry failed: {write_exc}")
+            return
+        if not requested_on:
+            if enabled == 0.0:
+                self._torque_off_unconfirmed_ids.discard(motor_id)
+                return
+            if enabled != 1.0:
+                self._torque_warn(motor_id, f"invalid register value: {enabled!r}")
+                try:
+                    self._controller.sync_write_torque_enable([motor_id], [False])
+                except (RuntimeError, OSError, TypeError, ValueError) as exc:
+                    self._torque_warn(motor_id, f"OFF retry failed: {exc}")
+                return
+            try:
+                # Sync write still uses the broadcast packet ID, with only
+                # this failed servo listed in its payload.
+                self._controller.sync_write_torque_enable([motor_id], [False])
+            except (RuntimeError, OSError, TypeError, ValueError) as exc:
+                self._torque_warn(motor_id, f"OFF, torque-disable retry failed: {exc}")
             return
         if enabled == 1.0:
             if motor_id in self._torque_unconfirmed_ids:

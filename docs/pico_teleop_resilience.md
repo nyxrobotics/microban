@@ -23,6 +23,13 @@ An explicit B press turns torque off. A changes to the neutral-return mode; R3
 selects the PICO policy for balance even with the left trigger released. Missing
 tracking data and packet gaps do not synthesize A or B events. Before the first
 authenticated operator snapshot, the hardware gate stays in its startup state.
+The A/B servo-bus command is a broadcast sync-write. Because that packet has no
+per-servo acknowledgement, the runtime reads the torque-enable registers before
+resuming normal control. It retries IDs whose state differs from the command
+for up to about one second and reports any that remain unconfirmed. OFF cancels
+pending ON retries first; unresolved IDs also receive slower background checks.
+The limp loop does not send goal positions. A seeds measured goals once, before
+enabling torque, so a servo cannot jump toward a stale goal register.
 
 The learned implementation is constructed through `LearnedMoveFactory` in
 `moves/policy_selector.py`. The current v12 parser and its embedded source

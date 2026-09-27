@@ -53,7 +53,9 @@ serviceのpre-start helperはそのsessionへ割り込んでtorqueを変更せ�
 ## 起動時の状態遷移
 
 serviceは`MICROBAN_INPUT=network`と`MICROBAN_START_TORQUE_OFF=1`を固定し、通常runtimeの前にも独立した
-all-joint torque-offを実行します。したがってboot、service restart、PC/PICO再接続だけではtorqueが入りません。
+all-joint torque-offを実行します。起動前・終了後のhelperはブロードキャストOFF後に各IDを読み戻し、
+未確認のIDへ約1秒間再送します。期限時に無応答のIDはログに残し、OFF以外を読み戻したIDが残る場合は
+起動を失敗させます。boot、service restart、PC/PICO再接続だけではtorque ONを指令しません。
 
 1. 起動直後: 全関節torque OFF、policy OFF。
 2. PICO右手A: torque ON、policyはOFFのまま、全関節を低速で初期姿勢へ移動。
