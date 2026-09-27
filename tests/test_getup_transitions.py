@@ -29,7 +29,7 @@ def transition_only_move(controller):
     Move.__init__(move)
     move._controller = controller
     # These tests exercise the transition/gain-handoff logic assuming a
-    # contract-compliant policy is installed (see the model_ready v2-contract
+    # contract-compliant policy is installed (see the model_ready v3-contract
     # gate in GetupMove.__init__); the real per-checkpoint metadata gating is
     # exercised separately via the real GetupMove(...) instances below.
     move.model_ready = True
@@ -118,7 +118,7 @@ class GetupTransitionTest(unittest.TestCase):
         move = GetupMove(controller=None)
         # This test's job is to catch a build_observation()/onnx I/O mismatch,
         # independent of whether the checkpoint currently committed under
-        # src/agents/ carries the full v2 contract metadata (model_ready).
+        # src/agents/ carries the full v3 contract metadata (model_ready).
         # Without this, a not-yet-contract-tagged checkpoint would silently
         # skip inference below (step() falls back to _step_recover_to_neutral)
         # and this test would stop exercising the ONNX call it exists to check.

@@ -98,11 +98,19 @@ class GetupMove(Move):
             meta.get("microban_getup_previous_action_upper")
         )
         action_count = len(OBSERVATION_DOF_ORDER)
+        # Per-joint, not a blanket range: training clips each joint's target at
+        # its own soft limit (MICROBAN_BODY_JOINT_SOFT_LIMITS), which are far
+        # from symmetric or uniform across joints (e.g. right_hip_yaw is
+        # -3.927/+0.785 rad). An earlier version of this file instead checked
+        # for a stale blanket +-1.57 rad, left over from before the training
+        # side moved to a per-joint clip -- this just checks the metadata is
+        # well-formed and trusts its actual per-joint values.
         clip_valid = (
             len(clip_lower) == action_count
             and len(clip_upper) == action_count
-            and all(abs(value + 1.57) <= 0.001 for value in clip_lower)
-            and all(abs(value - 1.57) <= 0.001 for value in clip_upper)
+            and all(math.isfinite(value) for value in clip_lower)
+            and all(math.isfinite(value) for value in clip_upper)
+            and all(lo < hi for lo, hi in zip(clip_lower, clip_upper))
         )
         scale_valid = len(action_scale) in (1, action_count) and all(
             abs(value - 1.0) <= 0.001 for value in action_scale
@@ -158,11 +166,21 @@ class GetupMove(Move):
         ]
 
         self.action_scale = 1.0
-        # Matches the training-time JointPositionActionCfg.clip (microban_getup_env_cfg.py):
-        # the policy's raw output relied on the env clamping it to this range before
-        # becoming a target, so deploying without the same clip lets occasional
-        # out-of-range outputs reach the motors as much larger, wrong targets.
-        self._action_clip = (-1.57, 1.57)
+        # Per-joint, from the model's own action_clip_lower/upper metadata
+        # (validated above as clip_valid): matches the training-time
+        # JointPositionActionCfg.clip (microban_getup_env_cfg.py), which is
+        # each joint's own soft limit, not a blanket range. The policy's raw
+        # output relied on the env clamping it to this same per-joint range
+        # before becoming a target, so deploying with anything else -- a
+        # blanket range, or no clip -- lets occasional out-of-range outputs
+        # reach the motors as much larger, wrong targets. Falls back to a
+        # loose, safe blanket range if the metadata is malformed (model_ready
+        # is already False in that case, so this fallback should never
+        # actually reach the motors -- see the neutral-fallback comment above).
+        if clip_valid:
+            self._action_clip = dict(zip(OBSERVATION_DOF_ORDER, zip(clip_lower, clip_upper)))
+        else:
+            self._action_clip = {name: (-1.57, 1.57) for name in OBSERVATION_DOF_ORDER}
         self._last_action = [0.0] * len(OBSERVATION_DOF_ORDER)
 
         # Real-hardware test gating (GamepadInputSource B/A/R3; see step()).
@@ -277,10 +295,10 @@ class GetupMove(Move):
             self.policy_faulted = True
             self._hold_policy_targets(obs, command)
             return
-        lo, hi = self._action_clip
         self._policy_targets = {}
         self._last_action = []
         for i, name in enumerate(OBSERVATION_DOF_ORDER):
+            lo, hi = self._action_clip[name]
             target = max(lo, min(hi, self._default_pose[name] + action_values[i] * self.action_scale))
             self._policy_targets[name] = target
             # The v3 training observation is the actual applied (clipped)
