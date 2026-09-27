@@ -347,6 +347,10 @@ def valid_v12_metadata():
                 EXPECTED_V12_TRAINING_CONTRACT_VERSION
             ),
             "microban_teleop_recipe_revision": EXPECTED_V12_RECIPE_REVISION,
+            "base_ang_vel_frame": "imu_sensor_xyz",
+            "physical_motor_target_guard_semantics": (
+                PHYSICAL_MOTOR_TARGET_GUARD_SEMANTICS
+            ),
             "action_width": "18",
             "observation_schema_json": json.dumps(
                 [
@@ -599,7 +603,7 @@ class PicoHybridMoveTest(unittest.TestCase):
         self.assertEqual(session.run_count, 16)
         self.assertEqual(
             PHYSICAL_MOTOR_TARGET_GUARD_SEMANTICS,
-            "compiled_soft_limit_continuous_clamp_preserve_policy_recurrence_v1",
+            "finite_target_no_software_clip_v1",
         )
 
     def test_v12_contract_accepts_deadline_final_tracking_profile(self):
@@ -837,7 +841,7 @@ class PicoHybridMoveTest(unittest.TestCase):
                     (8.0,) * 18,
                 )
 
-    def test_v12_step_clamps_motor_target_but_preserves_raw_recurrence(self):
+    def test_v12_step_sends_unclipped_target_and_preserves_raw_recurrence(self):
         raw = np.linspace(-3.5, 3.5, 18, dtype=np.float32).reshape(1, 18)
         session = FakeSession(metadata=valid_v12_metadata(), output=raw)
         move = PicoHybridMove(session=session)
@@ -846,29 +850,21 @@ class PicoHybridMoveTest(unittest.TestCase):
         move.on_start(obs, command)
         move.step(obs, command)
 
+        # V12 sends the finite raw target as-is (see
+        # PHYSICAL_MOTOR_TARGET_GUARD_SEMANTICS): default_joint_pos plus the
+        # raw action, with no software soft-limit clamp.
         expected_targets = {
-            name: max(
-                EXPECTED_SOFT_JOINT_POS_LOWER[index],
-                min(
-                    EXPECTED_SOFT_JOINT_POS_UPPER[index],
-                    EXPECTED_ACTION_DEFAULT_JOINT_POS[index]
-                    + float(raw[0, index]),
-                ),
-            )
+            name: EXPECTED_ACTION_DEFAULT_JOINT_POS[index] + float(raw[0, index])
             for index, name in enumerate(OBSERVATION_DOF_ORDER)
         }
         for name, expected in expected_targets.items():
             self.assertEqual(command.target_angles[name], expected)
-        self.assertEqual(
-            command.target_angles["left_ankle_roll"],
-            EXPECTED_SOFT_JOINT_POS_UPPER[-1],
-        )
         next_observation = move.build_observation(obs)
         np.testing.assert_array_equal(
             np.asarray(next_observation[48:66], dtype=np.float32), raw[0]
         )
 
-    def test_v12_step_accepts_guard_boundary_and_clamps_without_exception(self):
+    def test_v12_step_accepts_guard_boundary_without_exception(self):
         raw = np.full((1, 18), 24.0, dtype=np.float32)
         move = PicoHybridMove(
             session=FakeSession(metadata=valid_v12_metadata(), output=raw)
@@ -881,12 +877,15 @@ class PicoHybridMoveTest(unittest.TestCase):
         np.testing.assert_array_equal(move._last_action, raw[0])
         self.assertEqual(
             command.target_angles[OBSERVATION_DOF_ORDER[0]],
-            EXPECTED_SOFT_JOINT_POS_UPPER[0],
+            EXPECTED_ACTION_DEFAULT_JOINT_POS[0] + 24.0,
         )
 
-    def test_v12_extreme_targets_never_add_five_degree_command_margin(self):
-        # Five degrees is reserved for measured-angle acceptance adjudication.
-        # It must never widen an actuator command beyond the compiled soft limit.
+    def test_v12_extreme_targets_pass_through_at_the_guard_boundary(self):
+        # At the raw-action guard's own absolute-maximum boundary (not beyond
+        # it -- see test_v12_step_rejects_guard_escape_before_any_target_write
+        # for one ULP over), the finite target reaches the actuator exactly as
+        # computed: no clamp, no added margin (see
+        # PHYSICAL_MOTOR_TARGET_GUARD_SEMANTICS).
         raw = np.asarray(
             [[30.0, *(-24.0 if index % 2 else 24.0 for index in range(1, 18))]],
             dtype=np.float32,
@@ -902,17 +901,8 @@ class PicoHybridMoveTest(unittest.TestCase):
 
         self.assertEqual(move.state, MoveState.ACTIVE)
         for index, name in enumerate(OBSERVATION_DOF_ORDER):
-            lower = EXPECTED_SOFT_JOINT_POS_LOWER[index]
-            upper = EXPECTED_SOFT_JOINT_POS_UPPER[index]
-            target = command.target_angles[name]
-            self.assertLessEqual(lower, target)
-            self.assertLessEqual(target, upper)
-            expected = upper if raw[0, index] > 0.0 else lower
-            self.assertEqual(target, expected)
-            widened = expected + math.copysign(
-                math.radians(5.0), float(raw[0, index])
-            )
-            self.assertNotEqual(target, widened)
+            expected = EXPECTED_ACTION_DEFAULT_JOINT_POS[index] + float(raw[0, index])
+            self.assertEqual(command.target_angles[name], expected)
         np.testing.assert_array_equal(move._last_action, raw[0])
 
     def test_v12_step_rejects_guard_escape_before_any_target_write(self):

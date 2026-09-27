@@ -311,7 +311,12 @@ class PolicySelectorTest(unittest.TestCase):
         self.assertEqual(continued.locomotion_policy, "pico_teleop")
         self.assertFalse(continued.learned_policy_degraded)
         self.assertIsNone(continued.foot_target)
-        self.assertIsNone(continued.hand_target)
+        # hand_target is untouched here (only foot_target was cleared in this
+        # packet) and is independent of the foot channel.
+        self.assertEqual(
+            continued.hand_target,
+            {"left": (0.01, 0.0, 0.0), "right": (-0.01, 0.0, 0.0)},
+        )
         command = MotorCommand()
         selector.step(
             Observation(robot_state=RobotState(time_s=0.0), user_input=continued),

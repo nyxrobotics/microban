@@ -641,9 +641,14 @@ class NetworkInputSource(InputSource):
         try:
             foot_target = packet.get("foot_target")
             if foot_target is not None:
-                if not isinstance(foot_target, dict) or set(foot_target) != {
-                    "left", "right"
-                }:
+                if not isinstance(foot_target, dict) or (
+                    incoming_pico_packet
+                    and set(foot_target) != {"left", "right"}
+                ):
+                    # The exact-two-keys contract only matters for pico_teleop
+                    # (foot_target is otherwise meaningless): a legacy "walk"
+                    # sender's odd-shaped foot_target must not discard its
+                    # velocity/joystick command over an irrelevant field.
                     raise TypeError("foot_target must be an object or null")
                 left_foot_target = _tuple3(foot_target.get("left"))
                 right_foot_target = _tuple3(foot_target.get("right"))
@@ -662,9 +667,11 @@ class NetworkInputSource(InputSource):
         try:
             hand_target = packet.get("hand_target")
             if hand_target is not None:
-                if not isinstance(hand_target, dict) or set(hand_target) != {
-                    "left", "right"
-                }:
+                if not isinstance(hand_target, dict) or (
+                    incoming_pico_packet
+                    and set(hand_target) != {"left", "right"}
+                ):
+                    # Same reasoning as foot_target above.
                     raise TypeError("hand_target must be an object or null")
                 parsed_hand_target = {
                     side: _tuple3(hand_target.get(side))
