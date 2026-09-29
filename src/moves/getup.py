@@ -13,7 +13,14 @@ from moves.move import MotorCommand, Move, MoveState
 
 # Policy name
 AGENT_NAME = "getup.onnx"
-GETUP_CONTRACT_VERSION = "v3"
+# v4: absolute target = default + raw action, clipped at the model's own
+# action_clip_lower/upper (a flat +-1.57 rad in training), and the policy
+# observes its own previous RAW output. Every get-up policy that stood in
+# simulation was trained this way, as was the one this robot ran on
+# 2026-09-26 (runtime 9b36403 fed back the raw output too). v3 fed back the
+# applied target instead.
+GETUP_CONTRACT_VERSION = "v4"
+GETUP_PREVIOUS_ACTION_SEMANTICS = "raw_policy_output"
 
 # "Slowly" for the torque-on-but-unarmed recovery slew (see
 # _step_recover_to_neutral): far below hmd_head.py's 2.5 rad/s, since this is
@@ -27,13 +34,6 @@ GETUP_CONTRACT_VERSION = "v3"
 _RECOVERY_SLEW_RATE_RAD_S = 0.5
 _RECOVERY_MIN_DT_S = 0.001
 _RECOVERY_MAX_DT_S = 0.1
-# Rough sanity ceiling on the actor's raw (pre-clip) output, independent of
-# any joint's actual range of motion -- that's already 100% enforced by
-# _action_clip below no matter how large the raw value is. This just catches
-# a badly-behaving/out-of-distribution model and holds the last good target
-# instead of trusting it; the specific number isn't load-bearing for
-# range-of-motion safety, just a loose "does this look sane" gate.
-_POLICY_MAX_RAW_ACTION = 120.0
 
 
 def _metadata_floats(value: str | None) -> list[float]:
@@ -91,20 +91,9 @@ class GetupMove(Move):
         clip_lower = _metadata_floats(meta.get("action_clip_lower"))
         clip_upper = _metadata_floats(meta.get("action_clip_upper"))
         action_scale = _metadata_floats(meta.get("action_scale"))
-        previous_lower = _metadata_floats(
-            meta.get("microban_getup_previous_action_lower")
-        )
-        previous_upper = _metadata_floats(
-            meta.get("microban_getup_previous_action_upper")
-        )
         action_count = len(OBSERVATION_DOF_ORDER)
-        # Per-joint, not a blanket range: training clips each joint's target at
-        # its own soft limit (MICROBAN_BODY_JOINT_SOFT_LIMITS), which are far
-        # from symmetric or uniform across joints (e.g. right_hip_yaw is
-        # -3.927/+0.785 rad). An earlier version of this file instead checked
-        # for a stale blanket +-1.57 rad, left over from before the training
-        # side moved to a per-joint clip -- this just checks the metadata is
-        # well-formed and trusts its actual per-joint values.
+        # Well-formedness only: the per-joint values come from training's own
+        # JointPositionActionCfg.clip, whatever it is for this model.
         clip_valid = (
             len(clip_lower) == action_count
             and len(clip_upper) == action_count
@@ -114,21 +103,6 @@ class GetupMove(Move):
         )
         scale_valid = len(action_scale) in (1, action_count) and all(
             abs(value - 1.0) <= 0.001 for value in action_scale
-        )
-        previous_valid = (
-            len(previous_lower) == action_count
-            and len(previous_upper) == action_count
-            and all(
-                lo <= clip_lo - self._default_pose[name] + 0.001
-                and hi >= clip_hi - self._default_pose[name] - 0.001
-                for name, lo, hi, clip_lo, clip_hi in zip(
-                    OBSERVATION_DOF_ORDER,
-                    previous_lower,
-                    previous_upper,
-                    clip_lower,
-                    clip_upper,
-                )
-            )
         )
         checkpoint_sha256 = meta.get("checkpoint_sha256", "")
         checkpoint_valid = len(checkpoint_sha256) == 64 and all(
@@ -140,7 +114,7 @@ class GetupMove(Move):
             meta.get("microban_getup_contract") == GETUP_CONTRACT_VERSION
             and meta.get("microban_getup_angular_velocity_frame") == "imu_sensor_xyz"
             and meta.get("microban_getup_previous_action_semantics")
-            == "applied_target_delta_from_default"
+            == GETUP_PREVIOUS_ACTION_SEMANTICS
             and joints_valid
             and action_joint_names == OBSERVATION_DOF_ORDER
             and observation_names == [
@@ -148,7 +122,6 @@ class GetupMove(Move):
             ]
             and clip_valid
             and scale_valid
-            and previous_valid
             and checkpoint_valid
             and len(inputs) == 1
             and inputs[0].shape == [1, 60]
@@ -157,7 +130,7 @@ class GetupMove(Move):
         )
         if not self.model_ready:
             print(
-                "Get-up actor disabled: deployed model lacks the v3 action or "
+                "Get-up actor disabled: deployed model lacks the v4 action or "
                 "IMU-frame contract; falls return toward neutral",
                 end="\r\n", flush=True,
             )
@@ -166,17 +139,10 @@ class GetupMove(Move):
         ]
 
         self.action_scale = 1.0
-        # Per-joint, from the model's own action_clip_lower/upper metadata
-        # (validated above as clip_valid): matches the training-time
-        # JointPositionActionCfg.clip (microban_getup_env_cfg.py), which is
-        # each joint's own soft limit, not a blanket range. The policy's raw
-        # output relied on the env clamping it to this same per-joint range
-        # before becoming a target, so deploying with anything else -- a
-        # blanket range, or no clip -- lets occasional out-of-range outputs
-        # reach the motors as much larger, wrong targets. Falls back to a
-        # loose, safe blanket range if the metadata is malformed (model_ready
-        # is already False in that case, so this fallback should never
-        # actually reach the motors -- see the neutral-fallback comment above).
+        # From the model's own action_clip_lower/upper metadata (validated
+        # above as clip_valid), i.e. training's JointPositionActionCfg.clip.
+        # Falls back to +-1.57 rad if the metadata is malformed (model_ready
+        # is already False then, so this never reaches the motors).
         if clip_valid:
             self._action_clip = dict(zip(OBSERVATION_DOF_ORDER, zip(clip_lower, clip_upper)))
         else:
@@ -266,9 +232,12 @@ class GetupMove(Move):
         ort_outs = self._ort_session.run(None, ort_inputs)
         action = ort_outs[0][0]
         action_values = [float(value) for value in action]
+        # Only non-finite output is a fault. A v4 policy's raw output is
+        # routinely hundreds of radians: it drives the clipped target to a
+        # bound to get torque out of the soft P125 servos, and the clip
+        # below bounds the physical target no matter how large it is.
         if len(action) != len(OBSERVATION_DOF_ORDER) or any(
-            not math.isfinite(value) or abs(value) > _POLICY_MAX_RAW_ACTION
-            for value in action_values
+            not math.isfinite(value) for value in action_values
         ):
             if not self.policy_faulted:
                 finite_action = [abs(value) for value in action_values if math.isfinite(value)]
@@ -296,15 +265,14 @@ class GetupMove(Move):
             self._hold_policy_targets(obs, command)
             return
         self._policy_targets = {}
-        self._last_action = []
         for i, name in enumerate(OBSERVATION_DOF_ORDER):
             lo, hi = self._action_clip[name]
             target = max(lo, min(hi, self._default_pose[name] + action_values[i] * self.action_scale))
             self._policy_targets[name] = target
-            # The v3 training observation is the actual applied (clipped)
-            # target -- no per-tick rate limit on the active policy.
-            self._last_action.append((target - self._default_pose[name]) / self.action_scale)
             command.target_angles[name] = target
+        # The v4 training observation is the policy's own raw output, not
+        # the clipped target -- and no per-tick rate limit on either.
+        self._last_action = action_values
 
         # Not in the policy's action space (see class docstring): hold steady
         # at the continuously-measured position rather than a stale snapshot,
