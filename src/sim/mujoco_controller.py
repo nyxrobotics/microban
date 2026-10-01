@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING
 
 import mujoco
 import mujoco.viewer
+import numpy as np
 
 if TYPE_CHECKING:
     from sim.mujoco_input import MuJoCoInputSource
@@ -138,6 +139,21 @@ class MuJoCoController:
             vin_min=BAM_VIN_MIN,
         )
         self._bam.last_ts = self._data.time
+        # BamController.__init__ calls mj_setConst, which overwrites data.qpos
+        # with qpos0 (z=0, every joint 0): re-apply the upright neutral spawn.
+        self._data.qpos[:] = 0.0
+        self._data.qpos[3] = 1.0
+        self._data.qpos[2] = 0.175
+        for name, angle in NEUTRAL_POSE.items():
+            if name in self._name_to_qpos_idx:
+                self._data.qpos[self._name_to_qpos_idx[name]] = angle
+        mujoco.mj_forward(self._model, self._data)
+        # Per-servo P gain, in the BAM controller's actuator order, so that
+        # sync_write_kp has the hardware's per-ID semantics (get-up runs the 18
+        # policy joints at KP_RL and the neck at KP_DEFAULT).
+        self._kp_names = list(MOTOR_TO_ID.keys())
+        self._kp = np.full(len(self._kp_names), float(KP_DEFAULT))
+        self._bam.model.actuator.kp = self._kp
 
         self._viewer = mujoco.viewer.launch_passive(
             self._model, self._data, key_callback=key_callback
@@ -165,14 +181,14 @@ class MuJoCoController:
         return self._viewer.opt
 
     def set_kp(self, kp: float) -> None:
-        self._bam.model.actuator.kp = kp
+        self._kp[:] = kp
 
     def sync_read_kp(self, ids: list[int]) -> list[int]:
-        kp = int(self._bam.model.actuator.kp)
-        return [kp] * len(ids)
+        return [int(self._kp[self._kp_names.index(ID_TO_MOTOR[mid])]) for mid in ids]
 
     def sync_write_kp(self, ids: list[int], gains: list[int]) -> None:
-        self._bam.model.actuator.kp = gains[0]
+        for mid, gain in zip(ids, gains):
+            self._kp[self._kp_names.index(ID_TO_MOTOR[mid])] = float(gain)
 
     def sync_write_torque_enable(self, ids: list[int], values: list[bool]) -> None:
         pass

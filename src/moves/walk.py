@@ -170,6 +170,11 @@ class WalkMove(Move):
         self._stop_start_angles = {}
         self.state = MoveState.ACTIVE
 
+    def can_balance(self, user_input) -> bool:
+        # The actor is loaded in __init__; it stands in place at zero velocity.
+        _ = user_input
+        return True
+
     def seed_next_start_from_hardware_neutral(self) -> None:
         """A/R3-off already holds the physically biased neutral ankle goals."""
         self._next_start_ankle_bias_rad = self._ankle_pitch_bias_rad

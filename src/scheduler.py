@@ -154,6 +154,15 @@ class Scheduler:
         self._fallen_tick_count = 0
         self._standing_tick_count = 0
         self._getup_active_override = False
+        # Post-get-up standing balance. Once stood up, GetupMove stays on as the
+        # standing balancer (its actor is trained to stand still and recover
+        # from pushes) until a "walk" move that can itself balance is
+        # requested; see _walk_can_take_over. While True, the override is still
+        # on but the get-up time limit is not counting.
+        self._getup_balancing = False
+        # Operator's requested active_moves when balancing began; on sources
+        # without a hardware power gate, a change to it releases balancing.
+        self._getup_balance_request: frozenset[str] | None = None
         # Keep detecting falls even if the installed get-up actor lacks the
         # current training/deployment contract. Such a fall returns toward
         # neutral instead of running the incompatible actor.
@@ -342,15 +351,71 @@ class Scheduler:
 
                 # Fall / getup auto-switch: forces "getup" on (and "walk" off) after a
                 # sustained fall, and hands back to the user's own "walk" toggle once
-                # stood up (and stable) again. No-op if "getup" isn't registered.
+                # stood up (and stable) again -- but only to a walk move that can
+                # balance; until then get-up stays on as the standing balancer, and
+                # leaves on R3-off/B/actor fault (or, without that gate, any
+                # move-toggle change). No-op if "getup" isn't
+                # registered.
                 fall_pending = False
                 if "getup" in self.registered_moves and self._getup_auto_trigger_enabled:
+                    getup_move = self.registered_moves["getup"]
+                    model_ready = getattr(getup_move, "model_ready", True)
+                    # Evaluated on the operator's own request, before get-up
+                    # rewrites active_moves below; only relevant while get-up
+                    # owns the robot.
+                    walk_takes_over = (
+                        self._getup_active_override
+                        and self._walk_can_take_over(obs.user_input)
+                    )
+                    # The operator's own request, before the rewrite below.
+                    requested_moves = frozenset(obs.user_input.active_moves)
+                    if self._getup_balancing:
+                        # An unsafe IMU is not a release reason: the safety hold
+                        # below freezes the goals, and balancing resumes through
+                        # GetupMove.on_safety_resume once the IMU is valid again
+                        # (exactly as a get-up attempt rides through it).
+                        release_reason = (
+                            "policy output withheld" if hardware_mode != "policy"
+                            else "get-up actor unavailable"
+                            if self._getup_auto_failed or not model_ready
+                            else "balancing walk requested" if walk_takes_over
+                            # Sources without the B/A/R3 gate (keyboard, MuJoCo
+                            # viewer) have no other way out: any change to the
+                            # operator's move toggles hands control back.
+                            else "operator changed active moves"
+                            if (
+                                not self._hardware_power_control
+                                and self._getup_balance_request is not None
+                                and requested_moves != self._getup_balance_request
+                            )
+                            else None
+                        )
+                        if release_reason is not None:
+                            self._release_getup_balance(release_reason)
                     if imu_safe:
                         fall_pending = self._update_getup_override(
-                            obs.robot_state.projected_gravity
+                            obs.robot_state.projected_gravity,
+                            balance_when_standing=(
+                                hardware_mode == "policy"
+                                and model_ready
+                                and not self._getup_auto_failed
+                                and not walk_takes_over
+                            ),
                         )
+                    if not self._getup_balancing:
+                        self._getup_balance_request = None
+                    elif self._getup_balance_request is None:
+                        self._getup_balance_request = requested_moves
                     if self._getup_active_override:
-                        obs.user_input.active_moves = (obs.user_input.active_moves | {"getup"}) - {"walk"}
+                        if self._getup_balancing:
+                            # The balancer is the sole owner. Motion input is no
+                            # longer inhibited (so a walk request is visible and a
+                            # released trigger can re-arm the deadman), but none of
+                            # it reaches a move until walk takes over at zero speed.
+                            obs.user_input.active_moves = {"getup"}
+                            obs.user_input.velocity = {"vx": 0.0, "vy": 0.0, "vtheta": 0.0}
+                        else:
+                            obs.user_input.active_moves = (obs.user_input.active_moves | {"getup"}) - {"walk"}
                         # Get-up can preempt the A->R3 handoff before walk's
                         # first on_start, so clear its neutral-pose offset here.
                         walk_move = self.registered_moves.get("walk")
@@ -359,15 +424,16 @@ class Scheduler:
                         )
                         if callable(seed_from_getup):
                             seed_from_getup()
-                        getup_move = self.registered_moves["getup"]
-                        model_ready = getattr(getup_move, "model_ready", True)
                         if not model_ready and hardware_mode == "policy":
                             self._stop_auto_getup("get-up model contract unavailable; returning to neutral")
                         can_attempt = imu_safe and hardware_mode == "policy" and model_ready
-                        if can_attempt and self._getup_auto_started_s is None:
+                        # The time limit bounds one attempt from the fall to
+                        # standing; it never runs while standing-balancing.
+                        timing = can_attempt and not self._getup_balancing
+                        if timing and self._getup_auto_started_s is None:
                             self._getup_auto_started_s = start_time
                             print("Automatic get-up attempt started", end="\r\n", flush=True)
-                        if can_attempt and self._getup_auto_started_s is not None:
+                        if timing and self._getup_auto_started_s is not None:
                             elapsed_s = start_time - self._getup_auto_started_s
                             if elapsed_s >= GETUP_AUTO_TIMEOUT_S:
                                 self._stop_auto_getup(
@@ -385,10 +451,13 @@ class Scheduler:
                 # Keep the network deadman disarmed for the complete fault/fall/get-up
                 # interval. Removing the inhibit does not arm it: a later released
                 # trigger snapshot is required before walking can resume.
+                # Standing-balance is the exception: the deadman is live again
+                # (see the active_moves rewrite above), exactly as after a
+                # hand-back, so walking still needs a fresh trigger release.
                 motion_inhibited = (
                     not imu_safe
                     or fall_pending
-                    or self._getup_active_override
+                    or (self._getup_active_override and not self._getup_balancing)
                     or hardware_mode != "policy"
                     or (self._serial_write_hold_pending and self._serial_hold_extended)
                 )
@@ -536,9 +605,13 @@ class Scheduler:
                         if self._cmd_history
                         else command.target_angles
                     )
+                    # The higher get-up limit covers the bounded get-up
+                    # transient only; standing balance can last indefinitely
+                    # and runs under the normal limit.
                     cutoff = (
                         OVERCURRENT_CUTOFF_A_GETUP
                         if "getup" in obs.user_input.active_moves
+                        and not self._getup_balancing
                         else OVERCURRENT_CUTOFF_A
                     )
                     if self._check_overcurrent(robot_state, aligned_targets, cutoff):
@@ -1079,8 +1152,44 @@ class Scheduler:
             self._fall_pending_hold_targets = dict(measured.target_angles)
         return MotorCommand(target_angles=dict(self._fall_pending_hold_targets))
 
-    def _update_getup_override(self, projected_gravity: list[float]) -> bool:
-        """Update fall/stand debounce; return True during the pre-get-up hold."""
+    def _walk_can_take_over(self, user_input: UserInput) -> bool:
+        """True when the requested walk move may own the legs after a get-up.
+
+        It must be requested, commanded to stand still (so the hand-back itself
+        never starts a walk) and report that it actively balances.
+        """
+        walk_move = self.registered_moves.get("walk")
+        if walk_move is None or "walk" not in user_input.active_moves:
+            return False
+        try:
+            moving = any(
+                abs(float(user_input.velocity.get(axis, 0.0))) > 1e-9
+                for axis in ("vx", "vy", "vtheta")
+            )
+        except (AttributeError, TypeError, ValueError, OverflowError):
+            return False
+        return not moving and walk_move.can_balance(user_input) is True
+
+    def _release_getup_balance(self, reason: str) -> None:
+        """End standing-balance and hand back as after a normal get-up."""
+        print(f"Get-up balance released: {reason}", end="\r\n", flush=True)
+        self._getup_balancing = False
+        self._getup_balance_request = None
+        self._getup_active_override = False
+        self._getup_auto_started_s = None
+
+    def _update_getup_override(
+        self,
+        projected_gravity: list[float],
+        *,
+        balance_when_standing: bool = False,
+    ) -> bool:
+        """Update fall/stand debounce; return True during the pre-get-up hold.
+
+        On standing up, the override is released, or, with
+        ``balance_when_standing``, kept as standing balance. A new fall while
+        balancing turns it back into a get-up attempt with a fresh time limit.
+        """
         if not self._finite_vector(projected_gravity, 3):
             return False
 
@@ -1095,10 +1204,29 @@ class Scheduler:
             self._fallen_tick_count = 0
             self._standing_tick_count = 0
 
-        if not self._getup_active_override and self._fallen_tick_count >= self._fall_debounce_ticks:
-            self._getup_active_override = True
-        elif self._getup_active_override and self._standing_tick_count >= self._stand_debounce_ticks:
-            self._getup_active_override = False
+        fallen = self._fallen_tick_count >= self._fall_debounce_ticks
+        if not self._getup_active_override:
+            if fallen:
+                self._getup_active_override = True
+        elif self._getup_balancing:
+            if fallen:
+                self._getup_balancing = False
+                self._getup_auto_started_s = None
+                print(
+                    "Fall detected while balancing; new get-up attempt",
+                    end="\r\n", flush=True,
+                )
+        elif self._standing_tick_count >= self._stand_debounce_ticks:
+            if balance_when_standing:
+                self._getup_balancing = True
+                self._getup_auto_started_s = None
+                print(
+                    "Get-up: standing; get-up actor keeps balancing until a "
+                    "balancing walk is requested",
+                    end="\r\n", flush=True,
+                )
+            else:
+                self._getup_active_override = False
         return not self._getup_active_override and self._fallen_tick_count > 0
 
     def _stop_auto_getup(self, reason: str) -> None:

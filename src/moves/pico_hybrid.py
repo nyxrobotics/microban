@@ -2827,6 +2827,11 @@ class PicoHybridMove(Move):
         self._stop_start_time_s: float | None = None
         self._stop_start_angles: dict[str, float] = {}
 
+    def can_balance(self, user_input) -> bool:
+        # Only constructed once its contract validated and the session loaded.
+        _ = user_input
+        return True
+
     def _physical_target(self, index: int, value: float) -> float:
         """Reject non-finite targets; only the historical v10 path clips."""
 

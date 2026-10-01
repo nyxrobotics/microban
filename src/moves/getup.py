@@ -56,8 +56,9 @@ class GetupMove(Move):
     WalkMove's assumes is upright-ish, so this deliberately does not attempt to
     actively drive the neck to anything, just holds it. No velocity command:
     this move doesn't walk anywhere, it only gets the robot upright (or calm,
-    if held in the air) and then hands off. See scheduler.py for the
-    fall-detection switch to/from WalkMove.
+    if held in the air) and then hands off -- or, when the requested walk move
+    cannot balance (the PICO static hold), keeps standing in place as the
+    balancer. See scheduler.py for the fall-detection switch to/from WalkMove.
     """
 
     def __init__(self, controller: ControllerProtocol | None = None) -> None:
@@ -183,9 +184,12 @@ class GetupMove(Move):
                 name, NEUTRAL_POSE[name]
             )
         self._last_action = [0.0] * len(OBSERVATION_DOF_ORDER)
-        # Force step()'s torque-enable branch to run fresh on this
-        # (re)activation instead of trusting a previous activation's state.
-        self._last_torque_enabled = None
+        # Torque is already on whenever the scheduler starts this move; a
+        # redundant all-joint ON write runs RobotController's blocking verify
+        # (up to TORQUE_VERIFY_TIMEOUT_S = 1 s) on the first get-up tick.
+        self._last_torque_enabled = (
+            True if obs.user_input.torque_enabled is True else None
+        )
         self._recovery_targets = None
         self._policy_targets = None
         self.policy_faulted = False
@@ -357,8 +361,11 @@ class GetupMove(Move):
         if self._controller is not None:
             ids = [MOTOR_TO_ID[name] for name in self._joint_names]
             walking = "walk" in obs.user_input.active_moves
+            # No locomotion owner yet (Xbox X off, PICO LT still held): the
+            # measured stance is then a static hold; P400 does not hold it.
             gains = [
-                KP_RL if walking and name in OBSERVATION_DOF_ORDER else KP_DEFAULT
+                (KP_RL if walking else KP_HARDWARE_NEUTRAL)
+                if name in OBSERVATION_DOF_ORDER else KP_DEFAULT
                 for name in self._joint_names
             ]
             self._controller.sync_write_kp(ids, gains)

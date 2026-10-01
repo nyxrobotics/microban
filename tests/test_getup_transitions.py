@@ -1,6 +1,6 @@
 import unittest
 
-from constants import KP_DEFAULT, KP_RL, MOTOR_TO_ID, NEUTRAL_POSE, OBSERVATION_DOF_ORDER
+from constants import KP_DEFAULT, KP_HARDWARE_NEUTRAL, KP_RL, MOTOR_TO_ID, NEUTRAL_POSE, OBSERVATION_DOF_ORDER
 from input.input_source import UserInput
 from moves.getup import GetupMove
 from moves.move import MotorCommand, Move, MoveState
@@ -76,6 +76,16 @@ class GetupTransitionTest(unittest.TestCase):
         gains_by_name = dict(zip(move._joint_names, controller.kp_writes[-1][1]))
         for name in move._joint_names:
             expected = KP_RL if name in OBSERVATION_DOF_ORDER else KP_DEFAULT
+            self.assertEqual(gains_by_name[name], expected)
+
+    def test_stop_without_walk_holds_pose_at_neutral_gain(self):
+        controller = FakeController()
+        move = transition_only_move(controller)
+        move.state = MoveState.STOPPING
+        move.on_stop(observation(set()), MotorCommand())
+        gains_by_name = dict(zip(move._joint_names, controller.kp_writes[-1][1]))
+        for name in move._joint_names:
+            expected = KP_HARDWARE_NEUTRAL if name in OBSERVATION_DOF_ORDER else KP_DEFAULT
             self.assertEqual(gains_by_name[name], expected)
 
     def test_stop_holds_pose_and_hands_policy_gains_to_walk(self):

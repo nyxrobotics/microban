@@ -3,7 +3,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from constants import NEUTRAL_POSE, OBSERVATION_DOF_ORDER
+from constants import KP_HARDWARE_NEUTRAL, MOTOR_TO_ID, NEUTRAL_POSE, OBSERVATION_DOF_ORDER
 from input.input_source import UserInput
 from input.network_input import NetworkInputSource
 from moves.move import MotorCommand, Move, MoveState
@@ -428,6 +428,55 @@ class PolicySelectorTest(unittest.TestCase):
         self.assertEqual(selector.effective_policy, "pico_teleop")
         self.assertEqual(replacement.start_count, 1)
         self.assertIn("rejected contract", selector.fallback_reason)
+
+
+class _KpRecorder:
+    def __init__(self):
+        self.kp_writes = []
+        self.goal_writes = []
+
+    def sync_write_kp(self, ids, gains):
+        self.kp_writes.append((list(ids), list(gains)))
+
+    def sync_write_goal_position(self, ids, positions):
+        self.goal_writes.append((list(ids), list(positions)))
+
+
+class HoldAfterGetupGainTest(unittest.TestCase):
+    def _selector(self, controller):
+        return PolicySelectableWalkMove(
+            controller=controller,
+            pico_policy_path=Path(tempfile.gettempdir()) / "missing_pico_policy.onnx",
+        )
+
+    def _obs(self):
+        return Observation(
+            robot_state=RobotState(
+                time_s=0.0,
+                motor_positions={name: NEUTRAL_POSE[name] + 0.01 for name in MOTOR_TO_ID},
+            ),
+            user_input=UserInput(active_moves={"walk"}, locomotion_policy="walk"),
+        )
+
+    def test_hold_taking_over_from_getup_raises_gain_after_reseeding_goals(self):
+        controller = _KpRecorder()
+        move = self._selector(controller)
+        move.seed_next_start_from_getup()
+        move.on_start(self._obs(), MotorCommand())
+        self.assertEqual(controller.kp_writes, [])
+        move.step(self._obs(), MotorCommand())
+        ids = [MOTOR_TO_ID[name] for name in OBSERVATION_DOF_ORDER]
+        self.assertEqual(controller.goal_writes[-1][0], ids)
+        self.assertEqual(controller.kp_writes, [(ids, [KP_HARDWARE_NEUTRAL] * len(ids))])
+        move.step(self._obs(), MotorCommand())
+        self.assertEqual(len(controller.kp_writes), 1)
+
+    def test_hold_not_from_getup_leaves_gain_unchanged(self):
+        controller = _KpRecorder()
+        move = self._selector(controller)
+        move.on_start(self._obs(), MotorCommand())
+        move.step(self._obs(), MotorCommand())
+        self.assertEqual(controller.kp_writes, [])
 
 
 if __name__ == "__main__":

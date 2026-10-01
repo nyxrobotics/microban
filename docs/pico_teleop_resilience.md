@@ -17,7 +17,8 @@ still checked by the v12 deployment validator as an artifact dependency.
 | Left X / primary button changes | No locomotion effect; bridge keeps requesting `pico_teleop` | Left trigger enables walking; R3 enables zero-velocity balance |
 | PICO controller samples or PC-to-robot UDP packets stop | Replay the last authenticated operator state, including motion, policy and torque state | Fresh input replaces that state when it arrives; a sender-authority change requires a new released-trigger snapshot |
 | IMU becomes unavailable | Keep the previous motor goals and torque while policy output is inhibited | Valid IMU input allows the normal motion gate to resume |
-| Robot fall with the current get-up artifact | Fall detection inhibits walking; the unavailable get-up actor returns toward neutral | Automatic get-up requires a newly trained, accepted v2 artifact |
+| Robot falls in policy mode (R3 on) | After 0.3 s tilted beyond 60 deg, walking is inhibited and the v4 get-up actor runs (up within ~2-3 s in sim; 20 s limit per attempt) | Once upright for 0.4 s, the get-up actor keeps balancing the robot until a walk move that can itself balance is requested at zero velocity; R3 off, B or an actor fault also end it. A new fall starts a fresh attempt |
+| Get-up attempt exceeds 20 s or the actor output is non-finite | Latched fault: hold the measured pose at P900 and return slowly toward neutral | R3 off then on (or B) clears the fault and allows a new attempt |
 
 An explicit B press turns torque off. A changes to the neutral-return mode; R3
 selects the PICO policy for balance even with the left trigger released. Missing

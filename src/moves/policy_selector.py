@@ -11,7 +11,7 @@ from collections.abc import Callable
 from collections.abc import Mapping
 from pathlib import Path
 
-from constants import KP_DEFAULT, MOTOR_TO_ID, NEUTRAL_POSE, OBSERVATION_DOF_ORDER
+from constants import KP_DEFAULT, KP_HARDWARE_NEUTRAL, MOTOR_TO_ID, NEUTRAL_POSE, OBSERVATION_DOF_ORDER
 from controller import ControllerProtocol
 from moves.move import MotorCommand, Move, MoveState
 from moves.pico_hybrid import AGENT_NAME as PICO_AGENT_NAME
@@ -47,6 +47,18 @@ class _HoldPositionMove(Move):
         self._held_targets: dict[str, float] = {}
         self._stop_start_time_s: float | None = None
         self._stop_start_angles: dict[str, float] = {}
+        # Set when this hold takes over from GetupMove, which leaves the 18
+        # policy joints at the soft learned-policy gain (KP_RL). A static hold
+        # at that gain cannot carry the robot and slowly topples it.
+        self._restore_gain_pending = False
+
+    def arm_gain_restore_after_getup(self) -> None:
+        self._restore_gain_pending = True
+
+    def can_balance(self, user_input) -> bool:
+        # A fixed goal hold has no feedback: it cannot keep the robot upright.
+        _ = user_input
+        return False
 
     def seed_targets(self, targets: Mapping[str, float] | None) -> None:
         if targets is None:
@@ -84,6 +96,18 @@ class _HoldPositionMove(Move):
 
     def step(self, obs: Observation, command: MotorCommand) -> None:
         _ = obs
+        if self._restore_gain_pending:
+            # One tick after the handoff: GetupMove.on_stop has already written
+            # its KP_RL gain and the held (measured) goals have been sent. Re-seed
+            # the goals first, then raise the gain, so P900 never acts on an old
+            # saturated get-up target.
+            self._restore_gain_pending = False
+            if self._controller is not None:
+                ids = [MOTOR_TO_ID[name] for name in OBSERVATION_DOF_ORDER]
+                self._controller.sync_write_goal_position(
+                    ids, [self._held_targets[name] for name in OBSERVATION_DOF_ORDER]
+                )
+                self._controller.sync_write_kp(ids, [KP_HARDWARE_NEUTRAL] * len(ids))
         command.target_angles.update(self._held_targets)
 
     def on_stop(self, obs: Observation, command: MotorCommand) -> None:
@@ -153,6 +177,7 @@ class PolicySelectableWalkMove(Move):
         self._fallback_reason: str | None = None
         self._last_pico_targets: dict[str, float] | None = None
         self._last_balance_only = False
+        self._started_from_getup = False
 
         self._reload_lock = threading.Lock()
         self._reload_thread: threading.Thread | None = None
@@ -388,7 +413,35 @@ class PolicySelectableWalkMove(Move):
         self._fallback_reason = reason
         self._start_legacy(obs, command, step_now=step_now)
 
+    def can_balance(self, user_input) -> bool:
+        """Whether on_start for ``user_input`` would select a balancing child.
+
+        Mirrors on_start's choice: a loaded learned policy when it is
+        requested and its tracking is not degraded, otherwise the legacy
+        child (the static _HoldPositionMove on the PICO runtime). A finished
+        background reload is adopted first, exactly as on_start would.
+        """
+        requested = user_input.locomotion_policy
+        if requested not in POLICY_NAMES:
+            return False
+        self._poll_reload()
+        if requested == "pico_teleop" and not user_input.learned_policy_degraded:
+            learned = self._children.get("pico_teleop")
+            if learned is not None:
+                return learned.can_balance(user_input)
+        return self._children["walk"].can_balance(user_input)
+
+    def seed_next_start_from_getup(self) -> None:
+        """Called by the scheduler every tick while get-up owns the robot."""
+        self._started_from_getup = True
+        legacy = self._children["walk"]
+        seed = getattr(legacy, "seed_next_start_from_getup", None)
+        if callable(seed):
+            seed()
+
     def on_start(self, obs: Observation, command: MotorCommand) -> None:
+        from_getup = self._started_from_getup
+        self._started_from_getup = False
         self._poll_reload()
         self._notice_replacement()
         self._fallback_latched = False
@@ -403,6 +456,7 @@ class PolicySelectableWalkMove(Move):
             )
             self._record_fallback(reason)
             self._start_legacy(obs, command, step_now=False)
+            self._arm_hold_gain_restore(from_getup)
             return
 
         assert child is not None
@@ -420,6 +474,11 @@ class PolicySelectableWalkMove(Move):
                 command,
                 step_now=False,
             )
+        self._arm_hold_gain_restore(from_getup)
+
+    def _arm_hold_gain_restore(self, from_getup: bool) -> None:
+        if from_getup and isinstance(self._selected, _HoldPositionMove):
+            self._selected.arm_gain_restore_after_getup()
 
     def step(self, obs: Observation, command: MotorCommand) -> None:
         self._poll_reload()

@@ -420,5 +420,5 @@ If either validator fails, do not bypass it. Removing or withholding
 the same left-trigger control. The pinned `walk.onnx` is still an artifact
 dependency of this validator, so an absent or altered copy fails deployment
 preflight even though the production fallback does not execute it. The current
-get-up artifact does not meet the v2 runtime contract; automatic get-up remains
-unavailable until the accepted replacement is installed.
+get-up artifact is the v4 HOME-stance policy (`src/agents/getup.onnx`); see
+`docs/pico_teleop_resilience.md` for automatic get-up and standing balance.
