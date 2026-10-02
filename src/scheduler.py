@@ -608,10 +608,16 @@ class Scheduler:
                     # The higher get-up limit covers the bounded get-up
                     # transient only; standing balance can last indefinitely
                     # and runs under the normal limit.
+                    # The fall-debounce hold is part of the same fall
+                    # transient: the delay-aligned proxy still pairs the
+                    # walk actor's last (falling) goals with a snapped hold.
                     cutoff = (
                         OVERCURRENT_CUTOFF_A_GETUP
-                        if "getup" in obs.user_input.active_moves
-                        and not self._getup_balancing
+                        if (
+                            "getup" in obs.user_input.active_moves
+                            and not self._getup_balancing
+                        )
+                        or (fall_pending and not self._getup_auto_failed)
                         else OVERCURRENT_CUTOFF_A
                     )
                     if self._check_overcurrent(robot_state, aligned_targets, cutoff):

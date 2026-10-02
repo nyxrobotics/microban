@@ -20,6 +20,19 @@ still checked by the v12 deployment validator as an artifact dependency.
 | Robot falls in policy mode (R3 on) | After 0.3 s tilted beyond 60 deg, walking is inhibited and the v4 get-up actor runs (up within ~2-3 s in sim; 20 s limit per attempt) | Once upright for 0.4 s, the get-up actor keeps balancing the robot until a walk move that can itself balance is requested at zero velocity; R3 off, B or an actor fault also end it. A new fall starts a fresh attempt |
 | Get-up attempt exceeds 20 s or the actor output is non-finite | Latched fault: hold the measured pose at P900 and return slowly toward neutral | R3 off then on (or B) clears the fault and allows a new attempt |
 
+After an automatic get-up, tracking does not resume on its own while the
+operator keeps holding the triggers: the get-up actor keeps balancing. Release
+the left trigger once after the robot is upright to hand the legs back to the
+PICO policy (it takes over at zero velocity), and the right trigger for the
+arm and head tracking; a release while the robot is still getting up does not
+count. Measured in the runtime MuJoCo sim on 2026-10-02 with the PICO policy
+loaded, tracking resumed 0.5-3.8 s after the release. On branches where
+`src/agents/pico_teleop.onnx` fails its contract-v12 runtime source identity
+check (as on `feature/neck-roll-pitch-camera` since 2026-09-27), the legs fall
+back to the static position hold, which cannot balance: the get-up actor then
+keeps the robot standing until R3 is switched off, and the policy must be
+re-exported against the current runtime sources to restore tracking.
+
 An explicit B press turns torque off. A changes to the neutral-return mode; R3
 selects the PICO policy for balance even with the left trigger released. Missing
 tracking data and packet gaps do not synthesize A or B events. Before the first

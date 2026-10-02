@@ -460,6 +460,30 @@ class OvercurrentCutoffTest(unittest.TestCase):
         self.assertTrue(any(t < STAND_TICK for t in attempts))
         self.assertTrue(any(t > second_fall for t in attempts))
 
+    def test_fall_debounce_hold_uses_getup_cutoff(self):
+        # The 15-tick fall debounce is part of the fall transient: the
+        # delay-aligned current proxy still pairs the walk actor's falling
+        # goals with the snapped hold (14.7 A estimated in the runtime sim,
+        # against the normal 15 A limit).
+        h = Harness(FakeWalk(balances=False))
+        cutoffs = {}
+        check = h.scheduler._check_overcurrent
+
+        def spy(state, targets, cutoff):
+            cutoffs[len(h.rows) - 1] = cutoff
+            return check(state, targets, cutoff)
+
+        h.scheduler._check_overcurrent = spy
+        h.run(fall_then_stand(), STAND_TICK + sec(1.0))
+        fall_start = sec(0.2)
+        before_fall = {c for t, c in cutoffs.items() if t < fall_start}
+        debounce = {
+            c for t, c in cutoffs.items()
+            if fall_start + 1 <= t < fall_start + h.scheduler._fall_debounce_ticks
+        }
+        self.assertEqual(before_fall, {scheduler_module.OVERCURRENT_CUTOFF_A})
+        self.assertEqual(debounce, {scheduler_module.OVERCURRENT_CUTOFF_A_GETUP})
+
 
 class GatelessSourceReleaseTest(unittest.TestCase):
     """Keyboard/MuJoCo viewer: no B/A/R3 gate, so a move toggle releases."""
