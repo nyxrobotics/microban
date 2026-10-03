@@ -16,6 +16,8 @@ import math
 from collections.abc import Mapping, Sequence
 from typing import Any
 
+from constants import NEUTRAL_POSE
+
 PICO_ARM_TARGET_CONTRACT_REVISION = (
     "microban_hmd_absolute_arm_fk_live_box_pitch100_roll120_elbow110_v1"
 )
@@ -32,9 +34,10 @@ PICO_ARM_UPPER_RAD = {
     "left": tuple(math.radians(value) for value in (100.0, 120.0, 0.0)),
     "right": tuple(math.radians(value) for value in (100.0, -10.0, 0.0)),
 }
+# The arm part of the one shared centered HOME (constants.NEUTRAL_POSE).
 PICO_ARM_HOME_RAD = {
-    "left": tuple(math.radians(value) for value in (0.0, 10.0, -20.0)),
-    "right": tuple(math.radians(value) for value in (0.0, -10.0, -20.0)),
+    side: tuple(float(NEUTRAL_POSE[name]) for name in PICO_ARM_JOINT_NAMES[side])
+    for side in PICO_ARM_SIDES
 }
 _BOUND_EPSILON_RAD = 1.0e-12
 

@@ -1,11 +1,24 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright 2026 Marc Duclusaud
 
+import json
 import math
+from pathlib import Path
+from typing import Any
 
 import onnxruntime as ort
 
-from constants import KP_DEFAULT, KP_HARDWARE_NEUTRAL, KP_RL, MOTOR_TO_ID, NEUTRAL_POSE, OBSERVATION_DOF_ORDER
+from constants import (
+    HOME_ROOT_POS_Z_M,
+    HOME_ROOT_QUAT_WXYZ,
+    KP_DEFAULT,
+    KP_HARDWARE_NEUTRAL,
+    KP_RL,
+    MOTOR_TO_ID,
+    NEUTRAL_POSE,
+    OBSERVATION_DOF_ORDER,
+    POLICY_TARGET_CLIP_RAD,
+)
 from controller import ControllerProtocol
 from observer import Observation
 from moves.move import MotorCommand, Move, MoveState
@@ -21,6 +34,12 @@ AGENT_NAME = "getup.onnx"
 # applied target instead.
 GETUP_CONTRACT_VERSION = "v4"
 GETUP_PREVIOUS_ACTION_SEMANTICS = "raw_policy_output"
+# The model's HOME must be the robot's NEUTRAL_POSE (the one centered HOME
+# every policy shares). microban_getup_home_pose carries it at full precision;
+# default_joint_pos is serialized with 3 decimals by mjlab's exporter.
+_HOME_POSE_TOLERANCE_RAD = 1.0e-6
+_HOME_ROOT_TOLERANCE = 1.0e-6
+_SERIALIZED_DEFAULT_TOLERANCE_RAD = 0.0005 + 1.0e-9
 
 # "Slowly" for the torque-on-but-unarmed recovery slew (see
 # _step_recover_to_neutral): far below hmd_head.py's 2.5 rad/s, since this is
@@ -46,6 +65,34 @@ def _metadata_floats(value: str | None) -> list[float]:
     return values if all(math.isfinite(item) for item in values) else []
 
 
+def _home_pose_matches_neutral(value: str | None) -> bool:
+    """True when the model's full-precision training HOME is NEUTRAL_POSE."""
+    if not value:
+        return False
+    try:
+        home = json.loads(value)
+        joints = {str(name): float(angle) for name, angle in home["joint_pos_rad"].items()}
+        root_pos = [float(item) for item in home["root_pos_m"]]
+        root_quat = [float(item) for item in home["root_quat_wxyz"]]
+    except (TypeError, ValueError, KeyError, AttributeError, OverflowError):
+        return False
+    return (
+        set(joints) == set(NEUTRAL_POSE)
+        and all(
+            math.isfinite(angle)
+            and abs(angle - NEUTRAL_POSE[name]) <= _HOME_POSE_TOLERANCE_RAD
+            for name, angle in joints.items()
+        )
+        and len(root_pos) == 3
+        and abs(root_pos[2] - HOME_ROOT_POS_Z_M) <= _HOME_ROOT_TOLERANCE
+        and len(root_quat) == 4
+        and all(
+            abs(actual - expected) <= _HOME_ROOT_TOLERANCE
+            for actual, expected in zip(root_quat, HOME_ROOT_QUAT_WXYZ)
+        )
+    )
+
+
 class GetupMove(Move):
     """Fall recovery / anti-thrashing-when-held, via a RL policy trained in simulation.
 
@@ -61,16 +108,23 @@ class GetupMove(Move):
     balancer. See scheduler.py for the fall-detection switch to/from WalkMove.
     """
 
-    def __init__(self, controller: ControllerProtocol | None = None) -> None:
+    def __init__(
+        self,
+        controller: ControllerProtocol | None = None,
+        *,
+        policy_path: str | Path | None = None,
+        session: Any | None = None,
+    ) -> None:
         super().__init__()
         self._controller = controller
 
-        session_options = ort.SessionOptions()
-        session_options.intra_op_num_threads = 1
-        session_options.inter_op_num_threads = 1
-        self._ort_session = ort.InferenceSession(
-            f"src/agents/{AGENT_NAME}", sess_options=session_options
-        )
+        if session is None:
+            session_options = ort.SessionOptions()
+            session_options.intra_op_num_threads = 1
+            session_options.inter_op_num_threads = 1
+            path = policy_path if policy_path is not None else Path("src/agents") / AGENT_NAME
+            session = ort.InferenceSession(str(path), sess_options=session_options)
+        self._ort_session = session
 
         meta = self._ort_session.get_modelmeta().custom_metadata_map
         joint_names = meta.get("joint_names", "").split(",")
@@ -80,13 +134,22 @@ class GetupMove(Move):
             and set(joint_names) == set(MOTOR_TO_ID)
             and len(default_positions) == len(joint_names)
         )
-        if joints_valid:
-            self._joint_names = joint_names
-            self._default_pose = dict(zip(joint_names, default_positions))
-        else:
-            # Even a malformed ONNX must leave the neutral fallback available.
-            self._joint_names = list(MOTOR_TO_ID)
-            self._default_pose = dict(NEUTRAL_POSE)
+        # The model must have been trained at the robot's one shared HOME:
+        # both its full-precision HOME stamp and its (3-decimal) default_joint_pos
+        # must reproduce NEUTRAL_POSE. A model trained at an older HOME is
+        # rejected (model_ready False) rather than offset-corrected.
+        home_valid = (
+            joints_valid
+            and _home_pose_matches_neutral(meta.get("microban_getup_home_pose"))
+            and all(
+                abs(value - NEUTRAL_POSE[name]) <= _SERIALIZED_DEFAULT_TOLERANCE_RAD
+                for name, value in zip(joint_names, default_positions)
+            )
+        )
+        self._joint_names = joint_names if joints_valid else list(MOTOR_TO_ID)
+        # Validated equal to NEUTRAL_POSE above; inference uses the robot's
+        # full-precision copy rather than the rounded metadata.
+        self._default_pose = dict(NEUTRAL_POSE)
         action_joint_names = meta.get("action_joint_names", "").split(",")
         observation_names = meta.get("observation_names", "").split(",")
         clip_lower = _metadata_floats(meta.get("action_clip_lower"))
@@ -101,6 +164,13 @@ class GetupMove(Move):
             and all(math.isfinite(value) for value in clip_lower)
             and all(math.isfinite(value) for value in clip_upper)
             and all(lo < hi for lo, hi in zip(clip_lower, clip_upper))
+            # Every policy shares the +-POLICY_TARGET_CLIP_RAD absolute clip;
+            # never let metadata widen it.
+            and all(
+                lo >= -POLICY_TARGET_CLIP_RAD - 1.0e-6
+                and hi <= POLICY_TARGET_CLIP_RAD + 1.0e-6
+                for lo, hi in zip(clip_lower, clip_upper)
+            )
         )
         scale_valid = len(action_scale) in (1, action_count) and all(
             abs(value - 1.0) <= 0.001 for value in action_scale
@@ -117,6 +187,7 @@ class GetupMove(Move):
             and meta.get("microban_getup_previous_action_semantics")
             == GETUP_PREVIOUS_ACTION_SEMANTICS
             and joints_valid
+            and home_valid
             and action_joint_names == OBSERVATION_DOF_ORDER
             and observation_names == [
                 "base_ang_vel", "projected_gravity", "joint_pos", "joint_vel", "actions"
@@ -131,8 +202,8 @@ class GetupMove(Move):
         )
         if not self.model_ready:
             print(
-                "Get-up actor disabled: deployed model lacks the v4 action or "
-                "IMU-frame contract; falls return toward neutral",
+                "Get-up actor disabled: deployed model lacks the v4 action, "
+                "IMU-frame or centered-HOME contract; falls return toward neutral",
                 end="\r\n", flush=True,
             )
         self._neck_joint_names = [
@@ -147,7 +218,10 @@ class GetupMove(Move):
         if clip_valid:
             self._action_clip = dict(zip(OBSERVATION_DOF_ORDER, zip(clip_lower, clip_upper)))
         else:
-            self._action_clip = {name: (-1.57, 1.57) for name in OBSERVATION_DOF_ORDER}
+            self._action_clip = {
+                name: (-POLICY_TARGET_CLIP_RAD, POLICY_TARGET_CLIP_RAD)
+                for name in OBSERVATION_DOF_ORDER
+            }
         self._last_action = [0.0] * len(OBSERVATION_DOF_ORDER)
 
         # Real-hardware test gating (GamepadInputSource B/A/R3; see step()).

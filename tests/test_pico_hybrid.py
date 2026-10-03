@@ -12,6 +12,7 @@ from constants import (
     MOTOR_TO_ID,
     NEUTRAL_POSE,
     OBSERVATION_DOF_ORDER,
+    POLICY_TARGET_CLIP_RAD,
 )
 from imu_reader import imu_quat_to_body
 from input.input_source import UserInput
@@ -317,6 +318,16 @@ def valid_metadata():
             "periodic_command_resampling_does_not_move_reference"
         ),
     }
+
+
+def clipped_target(index, raw_value):
+    return max(
+        -POLICY_TARGET_CLIP_RAD,
+        min(
+            POLICY_TARGET_CLIP_RAD,
+            EXPECTED_ACTION_DEFAULT_JOINT_POS[index] + raw_value,
+        ),
+    )
 
 
 def valid_v12_metadata():
@@ -841,7 +852,7 @@ class PicoHybridMoveTest(unittest.TestCase):
                     (8.0,) * 18,
                 )
 
-    def test_v12_step_sends_unclipped_target_and_preserves_raw_recurrence(self):
+    def test_v12_step_clips_target_and_preserves_raw_recurrence(self):
         raw = np.linspace(-3.5, 3.5, 18, dtype=np.float32).reshape(1, 18)
         session = FakeSession(metadata=valid_v12_metadata(), output=raw)
         move = PicoHybridMove(session=session)
@@ -850,13 +861,15 @@ class PicoHybridMoveTest(unittest.TestCase):
         move.on_start(obs, command)
         move.step(obs, command)
 
-        # V12 sends the finite raw target as-is (see
-        # PHYSICAL_MOTOR_TARGET_GUARD_SEMANTICS): default_joint_pos plus the
-        # raw action, with no software soft-limit clamp.
+        # Every policy: target = clip(HOME + raw * 1.0, -1.57, +1.57), and
+        # the previous-action observation is the unclipped raw output.
         expected_targets = {
-            name: EXPECTED_ACTION_DEFAULT_JOINT_POS[index] + float(raw[0, index])
+            name: clipped_target(index, float(raw[0, index]))
             for index, name in enumerate(OBSERVATION_DOF_ORDER)
         }
+        self.assertTrue(
+            any(abs(value) == POLICY_TARGET_CLIP_RAD for value in expected_targets.values())
+        )
         for name, expected in expected_targets.items():
             self.assertEqual(command.target_angles[name], expected)
         next_observation = move.build_observation(obs)
@@ -876,16 +889,14 @@ class PicoHybridMoveTest(unittest.TestCase):
 
         np.testing.assert_array_equal(move._last_action, raw[0])
         self.assertEqual(
-            command.target_angles[OBSERVATION_DOF_ORDER[0]],
-            EXPECTED_ACTION_DEFAULT_JOINT_POS[0] + 24.0,
+            command.target_angles[OBSERVATION_DOF_ORDER[0]], POLICY_TARGET_CLIP_RAD
         )
 
-    def test_v12_extreme_targets_pass_through_at_the_guard_boundary(self):
+    def test_v12_extreme_targets_are_clipped_at_the_guard_boundary(self):
         # At the raw-action guard's own absolute-maximum boundary (not beyond
         # it -- see test_v12_step_rejects_guard_escape_before_any_target_write
-        # for one ULP over), the finite target reaches the actuator exactly as
-        # computed: no clamp, no added margin (see
-        # PHYSICAL_MOTOR_TARGET_GUARD_SEMANTICS).
+        # for one ULP over), the target is the shared absolute clip while the
+        # raw output still recurs unclipped.
         raw = np.asarray(
             [[30.0, *(-24.0 if index % 2 else 24.0 for index in range(1, 18))]],
             dtype=np.float32,
@@ -901,9 +912,36 @@ class PicoHybridMoveTest(unittest.TestCase):
 
         self.assertEqual(move.state, MoveState.ACTIVE)
         for index, name in enumerate(OBSERVATION_DOF_ORDER):
-            expected = EXPECTED_ACTION_DEFAULT_JOINT_POS[index] + float(raw[0, index])
-            self.assertEqual(command.target_angles[name], expected)
+            self.assertEqual(
+                command.target_angles[name], clipped_target(index, float(raw[0, index]))
+            )
+            self.assertEqual(abs(command.target_angles[name]), POLICY_TARGET_CLIP_RAD)
         np.testing.assert_array_equal(move._last_action, raw[0])
+
+    def test_v12_target_clip_metadata_may_narrow_but_never_widen(self):
+        raw = np.full((1, 18), 3.0, dtype=np.float32)
+        narrow = valid_v12_metadata()
+        narrow["action_clip_lower"] = ",".join(["-1.0"] * 18)
+        narrow["action_clip_upper"] = ",".join(["1.0"] * 18)
+        move = PicoHybridMove(session=FakeSession(metadata=narrow, output=raw))
+        obs = observation()
+        command = MotorCommand()
+        move.on_start(obs, command)
+        move.step(obs, command)
+        for name in OBSERVATION_DOF_ORDER:
+            self.assertEqual(command.target_angles[name], 1.0)
+
+        wide = valid_v12_metadata()
+        wide["action_clip_lower"] = ",".join(["-2.0"] * 18)
+        wide["action_clip_upper"] = ",".join(["2.0"] * 18)
+        half = valid_v12_metadata()
+        half["action_clip_upper"] = ",".join(["1.57"] * 18)
+        for case, metadata in (("wider", wide), ("only_upper", half)):
+            with (
+                self.subTest(case=case),
+                self.assertRaises(PicoHybridPolicyContractError),
+            ):
+                PicoHybridMove(session=FakeSession(metadata=metadata))
 
     def test_v12_step_rejects_guard_escape_before_any_target_write(self):
         outside = np.nextafter(np.float32(24.0), np.float32(math.inf))
@@ -1860,11 +1898,15 @@ class PicoHybridMoveTest(unittest.TestCase):
             self.assertEqual(final.target_angles[name], NEUTRAL_POSE[name])
         next_inactive_tick = MotorCommand()
         self.assertEqual(final.target_angles, next_inactive_tick.target_angles)
-        self.assertEqual(
-            final.target_angles["left_shoulder_pitch"], math.radians(10.0)
+        # The one shared centered HOME: shoulder pitch 0, hip/ankle pitch
+        # +-1.198 deg.
+        self.assertEqual(final.target_angles["left_shoulder_pitch"], 0.0)
+        self.assertEqual(final.target_angles["right_shoulder_pitch"], 0.0)
+        self.assertAlmostEqual(
+            final.target_angles["left_hip_pitch"], math.radians(1.198384259489)
         )
-        self.assertEqual(
-            final.target_angles["right_shoulder_pitch"], math.radians(10.0)
+        self.assertAlmostEqual(
+            final.target_angles["right_ankle_pitch"], -math.radians(1.198384259489)
         )
 
     def test_getup_cancels_release_interpolation(self):

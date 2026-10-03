@@ -2,6 +2,8 @@
 # Copyright 2026 Marc Duclusaud
 
 import math
+from pathlib import Path
+from typing import Any
 
 import numpy as np
 import onnxruntime as ort
@@ -12,6 +14,8 @@ from constants import (
     MOTOR_TO_ID,
     NEUTRAL_POSE,
     OBSERVATION_DOF_ORDER,
+    POLICY_ACTION_SCALE,
+    POLICY_TARGET_CLIP_RAD,
 )
 from controller import ControllerProtocol
 from moves.move import MotorCommand, Move, MoveState
@@ -21,18 +25,31 @@ from observer import Observation
 # Note: requires to set observe_voltage = True in the Observer to log voltages
 LOGGING = False
 
-# Policy name
+# Policy name. Every input source (PICO fallback, GC300, keyboard, gamepad)
+# runs this one walking model.
 AGENT_NAME = "walk.onnx"
 
-# A gross outlier is ignored for that joint while the rest of the gait continues.
-# Ordinary finite actor targets retain the legacy walk policy's original path.
-_POLICY_MAX_TARGET_ABS_RAD = 2.0 * math.pi
+# Deployment contract of the walking actor, read from the ONNX metadata and
+# checked at construction (fail closed): target = clip(NEUTRAL_POSE + raw *
+# 1.0, -1.57, +1.57) on the 18 OBSERVATION_DOF_ORDER joints, and the previous
+# action observation is the policy's own raw previous output.
+WALK_CONTRACT_VERSION = "v2_centered_home_clip157"
+WALK_PREVIOUS_ACTION_SEMANTICS = "raw_policy_output"
+# default_joint_pos must reproduce NEUTRAL_POSE to this tolerance; the
+# exporter therefore has to write full-precision floats (mjlab's base
+# exporter rounds to 3 decimals, which this check rejects on purpose).
+WALK_DEFAULT_POSE_TOLERANCE_RAD = 1.0e-6
+_SCALE_TOLERANCE = 1.0e-6
+_CLIP_TOLERANCE_RAD = 1.0e-6
 
 # Neck roll/pitch joint ranges (rad), from src/model/mjcf/robot.xml. The stabilization
 # below clips to these so a large trunk tilt can't request an out-of-range neck target.
 NECK_ROLL_RANGE = (-0.436332, 0.436332)
 NECK_PITCH_RANGE = (-1.570796, 0.436332)
-_ANKLE_PITCH_JOINTS = frozenset({"left_ankle_pitch", "right_ankle_pitch"})
+
+
+class WalkPolicyContractError(ValueError):
+    """The installed walk.onnx does not carry the deployed walking contract."""
 
 
 def _body_roll_pitch(body_quat: list[float]) -> tuple[float, float]:
@@ -44,6 +61,102 @@ def _body_roll_pitch(body_quat: list[float]) -> tuple[float, float]:
     return roll, pitch
 
 
+def _metadata_floats(meta: dict[str, str], key: str) -> list[float]:
+    value = meta.get(key)
+    if not value:
+        raise WalkPolicyContractError(f"walk policy metadata lacks {key}")
+    try:
+        values = [float(part) for part in value.split(",")]
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise WalkPolicyContractError(f"walk policy metadata {key} is not numeric") from exc
+    if not all(math.isfinite(item) for item in values):
+        raise WalkPolicyContractError(f"walk policy metadata {key} is not finite")
+    return values
+
+
+def _metadata_exact(meta: dict[str, str], key: str, expected: str) -> None:
+    actual = meta.get(key)
+    if actual != expected:
+        raise WalkPolicyContractError(
+            f"walk policy metadata {key}={actual!r}, expected {expected!r}"
+        )
+
+
+def parse_walk_contract(
+    session: Any,
+) -> tuple[dict[str, float], dict[str, tuple[float, float]], bool]:
+    """Validate a walking actor and return (defaults, clip, uses_reference_phase).
+
+    Raises WalkPolicyContractError for every missing or inconsistent field.
+    """
+    meta = dict(session.get_modelmeta().custom_metadata_map)
+    _metadata_exact(meta, "walk_contract_version", WALK_CONTRACT_VERSION)
+    _metadata_exact(meta, "previous_action_semantics", WALK_PREVIOUS_ACTION_SEMANTICS)
+
+    action_count = len(OBSERVATION_DOF_ORDER)
+    action_names = meta.get("action_joint_names")
+    if action_names is not None and action_names.split(",") != OBSERVATION_DOF_ORDER:
+        raise WalkPolicyContractError(
+            "walk policy action_joint_names differ from OBSERVATION_DOF_ORDER"
+        )
+
+    joint_names = (meta.get("joint_names") or "").split(",")
+    defaults = _metadata_floats(meta, "default_joint_pos")
+    if (
+        len(joint_names) != len(defaults)
+        or len(set(joint_names)) != len(joint_names)
+        or not set(joint_names) <= set(NEUTRAL_POSE)
+        or not set(OBSERVATION_DOF_ORDER) <= set(joint_names)
+    ):
+        raise WalkPolicyContractError(
+            "walk policy joint_names/default_joint_pos are malformed"
+        )
+    for name, value in zip(joint_names, defaults):
+        if abs(value - NEUTRAL_POSE[name]) > WALK_DEFAULT_POSE_TOLERANCE_RAD:
+            raise WalkPolicyContractError(
+                f"walk policy default_joint_pos[{name}]={value!r} differs from "
+                f"NEUTRAL_POSE {NEUTRAL_POSE[name]!r} (trained at another HOME?)"
+            )
+
+    scale = _metadata_floats(meta, "action_scale")
+    if len(scale) not in (1, action_count) or any(
+        abs(value - POLICY_ACTION_SCALE) > _SCALE_TOLERANCE for value in scale
+    ):
+        raise WalkPolicyContractError(f"walk policy action_scale must be {POLICY_ACTION_SCALE}")
+
+    lower = _metadata_floats(meta, "action_clip_lower")
+    upper = _metadata_floats(meta, "action_clip_upper")
+    if len(lower) != action_count or len(upper) != action_count or any(
+        abs(lo + POLICY_TARGET_CLIP_RAD) > _CLIP_TOLERANCE_RAD
+        or abs(hi - POLICY_TARGET_CLIP_RAD) > _CLIP_TOLERANCE_RAD
+        for lo, hi in zip(lower, upper)
+    ):
+        raise WalkPolicyContractError(
+            f"walk policy action_clip_lower/upper must be +-{POLICY_TARGET_CLIP_RAD} "
+            f"on all {action_count} action joints"
+        )
+
+    inputs = session.get_inputs()
+    outputs = session.get_outputs()
+    # base_obs = gyro(3) + proj_grav(3) + pos(N) + vel(N) + action(N) + cmd(3)
+    # phase_obs = base_obs + phase(2)
+    base_obs_size = 3 + 3 + 3 * action_count + 3
+    if len(inputs) != 1 or len(outputs) != 1:
+        raise WalkPolicyContractError("walk policy must have one input and one output")
+    input_shape = list(inputs[0].shape)
+    if input_shape not in ([1, base_obs_size], [1, base_obs_size + 2]):
+        raise WalkPolicyContractError(f"walk policy input shape {input_shape} is unsupported")
+    if list(outputs[0].shape) != [1, action_count]:
+        raise WalkPolicyContractError(
+            f"walk policy output shape {list(outputs[0].shape)} is not [1, {action_count}]"
+        )
+
+    # Validated equal to NEUTRAL_POSE above; use the full-precision robot copy.
+    default_pose = {name: float(NEUTRAL_POSE[name]) for name in joint_names}
+    clip = dict(zip(OBSERVATION_DOF_ORDER, zip(lower, upper)))
+    return default_pose, clip, input_shape[1] > base_obs_size
+
+
 class WalkMove(Move):
     """Walk using a RL policy trained in simulation."""
 
@@ -51,30 +164,33 @@ class WalkMove(Move):
         self,
         controller: ControllerProtocol | None = None,
         neutral_return_duration_s: float = 0.8,
-        ankle_pitch_bias_rad: float = 0.0,
+        *,
+        policy_path: str | Path | None = None,
+        session: Any | None = None,
     ) -> None:
         super().__init__()
-        if not math.isfinite(ankle_pitch_bias_rad):
-            raise ValueError("ankle_pitch_bias_rad must be finite")
         self._controller = controller
-        self._ankle_pitch_bias_rad = ankle_pitch_bias_rad
-        self._next_start_ankle_bias_rad = 0.0
-        self._last_commanded_ankle_bias_rad = {
-            name: 0.0 for name in _ANKLE_PITCH_JOINTS
-        }
         self._last_action = [0.0] * len(OBSERVATION_DOF_ORDER)
         self._last_safe_targets: dict[str, float] = {}
-        self._last_invalid_action_warn_s = -math.inf
+        self.policy_faulted = False
 
         # Load ONNX policy
-        session_options = ort.SessionOptions()
-        session_options.intra_op_num_threads = 1
-        session_options.inter_op_num_threads = 1
-        self._ort_session = ort.InferenceSession(
-            f"src/agents/{AGENT_NAME}", sess_options=session_options
-        )
+        if session is None:
+            session_options = ort.SessionOptions()
+            session_options.intra_op_num_threads = 1
+            session_options.inter_op_num_threads = 1
+            path = policy_path if policy_path is not None else Path("src/agents") / AGENT_NAME
+            session = ort.InferenceSession(str(path), sess_options=session_options)
+        self._ort_session = session
 
-        self.action_scale = 1.0
+        # Fail closed: an actor trained at another HOME, with another action
+        # rule or without the contract stamp never reaches the motors.
+        (
+            self._default_pose,
+            self._action_clip,
+            self._use_reference_phase,
+        ) = parse_walk_contract(self._ort_session)
+        self.action_scale = POLICY_ACTION_SCALE
 
         # Head stabilization: counter-rotate neck_roll/neck_pitch against trunk tilt so the
         # head stays level while walking. Not part of the RL policy (neck is excluded from
@@ -85,17 +201,6 @@ class WalkMove(Move):
         self._stop_start_time_s: float | None = None
         self._stop_start_angles: dict[str, float] = {}
 
-        # Reference pose: read from ONNX metadata
-        meta = self._ort_session.get_modelmeta().custom_metadata_map
-        names = meta["joint_names"].split(",")
-        positions = [float(v) for v in meta["default_joint_pos"].split(",")]
-        self._default_pose: dict[str, float] = dict(zip(names, positions))
-
-        # Detect reference phase from model input size:
-        # base_obs = gyro(3) + proj_grav(3) + pos(N) + vel(N) + action(N) + cmd(3)
-        # phase_obs = base_obs + phase(2)
-        base_obs_size = 3 + 3 + 3 * len(OBSERVATION_DOF_ORDER) + 3
-        self._use_reference_phase: bool = self._ort_session.get_inputs()[0].shape[1] > base_obs_size
         self._phase_step = 0
         self._phase_total_steps = 20
 
@@ -152,8 +257,7 @@ class WalkMove(Move):
         # activation into that emergency handoff.
         self._last_action = [0.0] * len(OBSERVATION_DOF_ORDER)
         self._phase_step = 0
-        for name in _ANKLE_PITCH_JOINTS:
-            self._last_commanded_ankle_bias_rad[name] = self._next_start_ankle_bias_rad
+        self.policy_faulted = False
         if self._controller is not None:
             ids = [MOTOR_TO_ID[name] for name in OBSERVATION_DOF_ORDER]
             self._controller.sync_write_kp(ids, [KP_RL] * len(ids))
@@ -174,14 +278,6 @@ class WalkMove(Move):
         # The actor is loaded in __init__; it stands in place at zero velocity.
         _ = user_input
         return True
-
-    def seed_next_start_from_hardware_neutral(self) -> None:
-        """A/R3-off already holds the physically biased neutral ankle goals."""
-        self._next_start_ankle_bias_rad = self._ankle_pitch_bias_rad
-
-    def seed_next_start_from_getup(self) -> None:
-        """Get-up owns unshifted ankle goals until walk takes over again."""
-        self._next_start_ankle_bias_rad = 0.0
 
     def step(self, obs: Observation, command: MotorCommand) -> None:
         # Update reference phase
@@ -204,73 +300,54 @@ class WalkMove(Move):
             self._last_safe_targets = {
                 name: command.target_angles[name] for name in OBSERVATION_DOF_ORDER
             }
-            # Retain the previous virtual-coordinate offset if the fall flag
-            # clears on the next tick; on_start resets it after a real handoff.
             return
-        
-        # Run policy
+
+        if self.policy_faulted:
+            self._hold_safe_targets(obs, command)
+            return
+
+        # Run policy. Like GetupMove, only an unusable output (wrong width,
+        # non-finite value, or an inference failure) is a fault: it latches,
+        # and the last bounded targets are held until the move restarts.
+        # A large finite raw output is legitimate; the clip below bounds it.
+        input_obs: list[float] = []
         try:
             input_obs = self.build_observation(obs)
             ort_inputs = {self._ort_session.get_inputs()[0].name: [input_obs]}
             ort_outs = self._ort_session.run(None, ort_inputs)
             action = [float(value) for value in ort_outs[0][0]]
-            if len(action) != len(OBSERVATION_DOF_ORDER):
-                raise ValueError(f"actor returned {len(action)} actions")
-        except Exception as exc:
-            now = float(obs.robot_state.time_s)
-            if now - self._last_invalid_action_warn_s >= 1.0:
-                print(f"Walk policy output unavailable; holding last targets: {exc}", flush=True)
-                self._last_invalid_action_warn_s = now
-            for name in OBSERVATION_DOF_ORDER:
-                command.target_angles[name] = self._last_safe_targets.get(
-                    name, obs.robot_state.motor_positions.get(name, NEUTRAL_POSE[name])
-                )
-            for name in ("neck_roll", "neck_pitch"):
-                command.target_angles[name] = obs.robot_state.motor_positions.get(
-                    name, NEUTRAL_POSE[name]
-                )
+            error = None
+        except Exception as exc:  # noqa: BLE001 - inference boundary
+            action = []
+            error = exc
+        if (
+            error is not None
+            or len(action) != len(OBSERVATION_DOF_ORDER)
+            or any(not math.isfinite(value) for value in action)
+        ):
+            finite_action = [abs(value) for value in action if math.isfinite(value)]
+            finite_obs = [abs(value) for value in input_obs if math.isfinite(value)]
+            print(
+                "Walk actor output invalid; holding last targets: "
+                f"error={error!r} count={len(action)} "
+                f"nonfinite={len(action) - len(finite_action)} "
+                f"max_abs_raw={max(finite_action, default=0.0):.3g} "
+                f"obs_nonfinite={len(input_obs) - len(finite_obs)} "
+                f"obs_max_abs={max(finite_obs, default=0.0):.3g}",
+                end="\r\n",
+                flush=True,
+            )
+            self.policy_faulted = True
+            self._hold_safe_targets(obs, command)
             return
 
-        # The GC300 A gate has already reached this offset. Keep it through
-        # R3 handoff instead of briefly undoing the physical neutral posture.
-        ankle_bias = self._ankle_pitch_bias_rad
-        invalid_names = []
-        next_action = list(self._last_action)
-        next_ankle_bias = dict(self._last_commanded_ankle_bias_rad)
         for i, name in enumerate(OBSERVATION_DOF_ORDER):
+            lo, hi = self._action_clip[name]
             target = self._default_pose[name] + action[i] * self.action_scale
-            if name in _ANKLE_PITCH_JOINTS:
-                # Apply only to fresh actor output. Fallback paths already
-                # hold the previously sent, biased target and must not add it again.
-                target += ankle_bias
-            if not math.isfinite(target) or abs(target) > _POLICY_MAX_TARGET_ABS_RAD:
-                previous = self._last_safe_targets.get(
-                    name, obs.robot_state.motor_positions.get(name, NEUTRAL_POSE[name])
-                )
-                command.target_angles[name] = (
-                    previous if math.isfinite(previous) else NEUTRAL_POSE[name]
-                )
-                if name in _ANKLE_PITCH_JOINTS and not math.isfinite(previous):
-                    next_ankle_bias[name] = 0.0
-                invalid_names.append(name)
-                continue
-            command.target_angles[name] = target
-            next_action[i] = action[i]
-            if name in _ANKLE_PITCH_JOINTS:
-                next_ankle_bias[name] = ankle_bias
-        if invalid_names:
-            now = float(obs.robot_state.time_s)
-            if now - self._last_invalid_action_warn_s >= 1.0:
-                print(
-                    "Walk policy outlier; holding previous targets: "
-                    + ", ".join(invalid_names),
-                    flush=True,
-                )
-                self._last_invalid_action_warn_s = now
-        # Preserve the original raw-action recurrence for ordinary outputs.
-        # An outlier joint keeps both its previous target and previous action.
-        self._last_action = next_action
-        self._last_commanded_ankle_bias_rad = next_ankle_bias
+            command.target_angles[name] = max(lo, min(hi, target))
+        # The training observation is the policy's own raw output, not the
+        # clipped target.
+        self._last_action = action
         self._last_safe_targets = {
             name: command.target_angles[name] for name in OBSERVATION_DOF_ORDER
         }
@@ -292,6 +369,17 @@ class WalkMove(Move):
                 self.position[name].append(obs.robot_state.motor_positions[name])
                 self.voltage[name].append(obs.robot_state.motor_voltages[name])
 
+    def _hold_safe_targets(self, obs: Observation, command: MotorCommand) -> None:
+        """Keep the most recent bounded targets while the actor is faulted."""
+        for name in OBSERVATION_DOF_ORDER:
+            command.target_angles[name] = self._last_safe_targets.get(
+                name, obs.robot_state.motor_positions.get(name, NEUTRAL_POSE[name])
+            )
+        for name in ("neck_roll", "neck_pitch"):
+            command.target_angles[name] = obs.robot_state.motor_positions.get(
+                name, NEUTRAL_POSE[name]
+            )
+
     def build_observation(self, obs: Observation) -> list[float]:
         """Build policy observation from robot state."""
         input_obs = []
@@ -302,12 +390,7 @@ class WalkMove(Move):
         
         # Motor positions
         for name in OBSERVATION_DOF_ORDER:
-            position = obs.robot_state.motor_positions[name]
-            if name in _ANKLE_PITCH_JOINTS:
-                # Undo the previous physical goal offset only in the actor's
-                # position input. The safety gate and get-up keep true feedback.
-                position -= self._last_commanded_ankle_bias_rad[name]
-            input_obs.append(position - self._default_pose[name])
+            input_obs.append(obs.robot_state.motor_positions[name] - self._default_pose[name])
         
         # Motor velocities
         for name in OBSERVATION_DOF_ORDER:
@@ -333,9 +416,6 @@ class WalkMove(Move):
         if "getup" in obs.user_input.active_moves:
             # Get-up is exclusive and owns both commands and gains. Do not finish the
             # normal return later and raise KP halfway through fall recovery.
-            # Its own goals use unshifted coordinates, so a later walk restart
-            # must not subtract the GC300 A-gate offset from its first feedback.
-            self.seed_next_start_from_getup()
             self._last_action = [0.0] * len(OBSERVATION_DOF_ORDER)
             self._phase_step = 0
             self._stop_start_time_s = None
@@ -360,12 +440,9 @@ class WalkMove(Move):
         for name in OBSERVATION_DOF_ORDER:
             start = self._stop_start_angles[name]
             neutral = NEUTRAL_POSE[name]
-            if name in _ANKLE_PITCH_JOINTS:
-                neutral += self._ankle_pitch_bias_rad
             command.target_angles[name] = start + (neutral - start) * blend
 
         if u >= 1.0:
-            self.seed_next_start_from_hardware_neutral()
             if self._controller is not None:
                 ids = [MOTOR_TO_ID[name] for name in OBSERVATION_DOF_ORDER]
                 self._controller.sync_write_kp(ids, [KP_DEFAULT] * len(ids))
@@ -389,5 +466,7 @@ class WalkMove(Move):
         # interpolation is now stale. Restart it from the newly measured pose. ACTIVE
         # walking will be disarmed by NetworkInputSource and enter this fresh stop path.
         _ = obs
+        self._last_action = [0.0] * len(OBSERVATION_DOF_ORDER)
+        self.policy_faulted = False
         self._stop_start_time_s = None
         self._stop_start_angles = {}

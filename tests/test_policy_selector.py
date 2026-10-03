@@ -11,6 +11,7 @@ from moves.pico_hybrid import PicoHybridPolicyContractError
 from moves.policy_selector import PolicySelectableWalkMove
 from moves.walk import WalkMove
 from observer import Observation, RobotState
+from policy_fixtures import WALK_POLICY_FIXTURE
 
 
 class FakeMove(Move):
@@ -248,7 +249,7 @@ class PolicySelectorTest(unittest.TestCase):
         self.assertIn("non-finite output", selector.fallback_reason)
 
     def test_inference_failure_runs_real_walk_actor_in_same_cycle(self):
-        walk = WalkMove(controller=None)
+        walk = WalkMove(controller=None, policy_path=WALK_POLICY_FIXTURE)
         pico = FakeMove(step_error=RuntimeError("intentional learned failure"))
         with tempfile.TemporaryDirectory() as temp_dir:
             selector = PolicySelectableWalkMove(

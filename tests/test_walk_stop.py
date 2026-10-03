@@ -5,12 +5,17 @@ from input.input_source import UserInput
 from moves.move import MotorCommand, MoveState
 from moves.walk import WalkMove
 from observer import Observation, RobotState
+from policy_fixtures import WALK_POLICY_FIXTURE
 
 
 class WalkStopTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.move = WalkMove(controller=None, neutral_return_duration_s=0.8)
+        cls.move = WalkMove(
+            controller=None,
+            neutral_return_duration_s=0.8,
+            policy_path=WALK_POLICY_FIXTURE,
+        )
 
     def setUp(self):
         self.move._stop_start_time_s = None

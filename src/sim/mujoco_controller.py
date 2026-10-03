@@ -28,7 +28,7 @@ from xc330_actuator import XC330Actuator  # noqa: E402
 
 bam.actuators.actuators["xc330"] = lambda: XC330Actuator(Pendulum)
 
-from constants import MOTOR_TO_ID, ID_TO_MOTOR, NEUTRAL_POSE, KP_DEFAULT, BAM_VIN, BAM_VOLTAGE_DROP_GAIN, BAM_VIN_MIN, BAM_MAX_CURRENT
+from constants import MOTOR_TO_ID, ID_TO_MOTOR, NEUTRAL_POSE, HOME_ROOT_POS_Z_M, HOME_ROOT_QUAT_WXYZ, KP_DEFAULT, BAM_VIN, BAM_VOLTAGE_DROP_GAIN, BAM_VIN_MIN, BAM_MAX_CURRENT
 
 
 class _DelayBuffer:
@@ -96,10 +96,7 @@ class MuJoCoController:
             self._model.body_ipos[trunk_id, 2] += trunk_com_offset[2]
 
         # Set initial pose to neutral so the robot starts upright
-        self._data.qpos[2] = 0.175
-        for name, angle in NEUTRAL_POSE.items():
-            if name in self._name_to_qpos_idx:
-                self._data.qpos[self._name_to_qpos_idx[name]] = angle
+        self._set_home_qpos()
         mujoco.mj_forward(self._model, self._data)
 
         # Delay buffers — simulate sensor/communication latency
@@ -141,12 +138,7 @@ class MuJoCoController:
         self._bam.last_ts = self._data.time
         # BamController.__init__ calls mj_setConst, which overwrites data.qpos
         # with qpos0 (z=0, every joint 0): re-apply the upright neutral spawn.
-        self._data.qpos[:] = 0.0
-        self._data.qpos[3] = 1.0
-        self._data.qpos[2] = 0.175
-        for name, angle in NEUTRAL_POSE.items():
-            if name in self._name_to_qpos_idx:
-                self._data.qpos[self._name_to_qpos_idx[name]] = angle
+        self._set_home_qpos()
         mujoco.mj_forward(self._model, self._data)
         # Per-servo P gain, in the BAM controller's actuator order, so that
         # sync_write_kp has the hardware's per-ID semantics (get-up runs the 18
@@ -320,15 +312,21 @@ class MuJoCoController:
                 left = 1.0
         return right, left
 
-    def reset(self) -> None:
-        """Reset the simulation to the initial neutral standing pose."""
+    def _set_home_qpos(self) -> None:
+        """Spawn at the training HOME: root at HOME_ROOT_POS_Z_M (soles on the
+        ground), upright, every joint at NEUTRAL_POSE."""
         self._data.qpos[:] = 0.0
-        self._data.qvel[:] = 0.0
-        self._data.ctrl[:] = 0.0
-        self._data.qpos[2] = 0.175
+        self._data.qpos[2] = HOME_ROOT_POS_Z_M
+        self._data.qpos[3:7] = HOME_ROOT_QUAT_WXYZ
         for name, angle in NEUTRAL_POSE.items():
             if name in self._name_to_qpos_idx:
                 self._data.qpos[self._name_to_qpos_idx[name]] = angle
+
+    def reset(self) -> None:
+        """Reset the simulation to the initial neutral standing pose."""
+        self._data.qvel[:] = 0.0
+        self._data.ctrl[:] = 0.0
+        self._set_home_qpos()
         mujoco.mj_forward(self._model, self._data)
         self._bam.last_ts = self._data.time
         for mid in MOTOR_TO_ID.values():

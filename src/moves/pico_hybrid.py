@@ -30,6 +30,7 @@ from constants import (
     MOTOR_TO_ID,
     NEUTRAL_POSE,
     OBSERVATION_DOF_ORDER,
+    POLICY_TARGET_CLIP_RAD,
 )
 from controller import ControllerProtocol
 from moves.move import MotorCommand, Move, MoveState
@@ -384,16 +385,10 @@ _CHECKPOINT_SHA256_RE = re.compile(r"[0-9a-f]{64}\Z")
 # full-precision, robot-side action contract here and only use the serialized
 # form when checking the ONNX metadata.  Inference always uses these values,
 # never model-provided limits, so altered metadata cannot widen motor targets.
-# The PICO policy was trained with shoulder pitch at 0 degrees.  Keep this
-# deployment contract local: NEUTRAL_POSE is shared by unrelated legacy moves.
-# Its +10-degree shoulder pitch originated in main-repository commit f27a9e29;
-# the robot MJCF supplies only joint ranges, not that HOME value.  See the
-# runtime guide for the separate training-history and ONNX-metadata evidence.
-PICO_TELEOP_HOME_POSE = {
-    **NEUTRAL_POSE,
-    "left_shoulder_pitch": 0.0,
-    "right_shoulder_pitch": 0.0,
-}
+# Every policy (walking, PICO full-body tracking, get-up) shares the one
+# centered HOME, NEUTRAL_POSE.  The name is kept for the contract code below;
+# a PICO model trained at any other HOME is rejected by default_joint_pos.
+PICO_TELEOP_HOME_POSE = dict(NEUTRAL_POSE)
 EXPECTED_ACTION_DEFAULT_JOINT_POS = tuple(
     float(PICO_TELEOP_HOME_POSE[name]) for name in OBSERVATION_DOF_ORDER
 )
@@ -1521,6 +1516,11 @@ class _PolicyContract:
     v12_learned_source_delta_maximum: tuple[float, ...] = ()
     v12_learned_source_delta_absolute_maximum: tuple[float, ...] = ()
     v12_runtime_raw_action_guard_absolute_maximum: tuple[float, ...] = ()
+    # Absolute target clip shared by every policy: target = clip(default + raw
+    # * scale, lower, upper).  From action_clip_lower/upper metadata when
+    # present (never wider than +-POLICY_TARGET_CLIP_RAD), else that default.
+    v12_target_clip_lower: tuple[float, ...] = ()
+    v12_target_clip_upper: tuple[float, ...] = ()
 
 
 def _parse_v10_contract(session: Any) -> _PolicyContract:
@@ -2495,6 +2495,9 @@ def _parse_v12_contract(session: Any) -> _PolicyContract:
         "default_joint_pos", action_defaults, EXPECTED_ACTION_DEFAULT_JOINT_POS
     )
     _require_fixed_metadata_vector("action_scale", action_scale, EXPECTED_ACTION_SCALE)
+    target_clip_lower, target_clip_upper = _parse_v12_target_clip(
+        metadata, len(action_joints)
+    )
 
     # The current v12 deployment exporter does not serialize soft limits because
     # its actor semantics intentionally have no environment target clip.  Older
@@ -2660,7 +2663,39 @@ def _parse_v12_contract(session: Any) -> _PolicyContract:
         v12_runtime_raw_action_guard_absolute_maximum=(
             v12_runtime_raw_action_guard_absolute_maximum
         ),
+        v12_target_clip_lower=target_clip_lower,
+        v12_target_clip_upper=target_clip_upper,
     )
+
+
+def _parse_v12_target_clip(
+    metadata: Mapping[str, str], count: int
+) -> tuple[tuple[float, ...], tuple[float, ...]]:
+    """Return the shared absolute target clip, narrowed only by metadata."""
+
+    keys = ("action_clip_lower", "action_clip_upper")
+    present = [key in metadata for key in keys]
+    if not any(present):
+        return (
+            (-POLICY_TARGET_CLIP_RAD,) * count,
+            (POLICY_TARGET_CLIP_RAD,) * count,
+        )
+    if not all(present):
+        raise PicoHybridPolicyContractError(
+            "action_clip_lower and action_clip_upper must be supplied together"
+        )
+    lower = _float_csv(metadata.get(keys[0]), keys[0], count)
+    upper = _float_csv(metadata.get(keys[1]), keys[1], count)
+    tolerance = 1.0e-6
+    for lo, hi in zip(lower, upper, strict=True):
+        if not (
+            -POLICY_TARGET_CLIP_RAD - tolerance <= lo < hi <= POLICY_TARGET_CLIP_RAD + tolerance
+        ):
+            raise PicoHybridPolicyContractError(
+                "action_clip_lower/upper must lie within "
+                f"+-{POLICY_TARGET_CLIP_RAD} rad"
+            )
+    return lower, upper
 
 
 def _require_v12_runtime_source_identity(metadata: Mapping[str, str]) -> None:
@@ -2691,8 +2726,8 @@ def _parse_contract(session: Any) -> _PolicyContract:
 def _validate_physical_motor_target_contract(contract: _PolicyContract) -> None:
     """Validate the calibrated joint geometry before inference begins.
 
-    V10 still uses the software soft limits. V12 sends its finite raw target,
-    matching its training action without a software position clip.
+    V10 still uses the software soft limits. V12 clips its policy target to
+    the shared +-POLICY_TARGET_CLIP_RAD absolute clip in step().
     """
 
     vectors = {
@@ -2833,7 +2868,11 @@ class PicoHybridMove(Move):
         return True
 
     def _physical_target(self, index: int, value: float) -> float:
-        """Reject non-finite targets; only the historical v10 path clips."""
+        """Reject non-finite targets; only the historical v10 path clips here.
+
+        The v12 policy target is clipped in step() before reaching this guard;
+        measured holds and neutral returns pass through unchanged.
+        """
 
         numeric = float(value)
         if not math.isfinite(numeric):
@@ -3028,8 +3067,8 @@ class PicoHybridMove(Move):
         ):
             # Preserve the source locomotion MDP recurrence exactly: no actor
             # transform and the same raw float32 action recurs in the next
-            # observation.  Finite absolute MotorCommand targets pass through
-            # without a software clip, matching the training action.
+            # observation.  The absolute target is clipped like every other
+            # policy: target = clip(default + raw * scale, lower, upper).
             with np.errstate(over="ignore", invalid="ignore"):
                 raw_action_float32 = raw_action.astype(np.float32)
             if not np.isfinite(raw_action_float32).all():
@@ -3058,6 +3097,15 @@ class PicoHybridMove(Move):
                 raise PicoHybridPolicyRuntimeError(
                     "contract-v12 raw action produced a non-finite target"
                 )
+            targets = [
+                max(lower, min(upper, target))
+                for target, lower, upper in zip(
+                    targets,
+                    self._contract.v12_target_clip_lower,
+                    self._contract.v12_target_clip_upper,
+                    strict=True,
+                )
+            ]
             for index, (name, target) in enumerate(
                 zip(self._contract.action_joint_names, targets, strict=True)
             ):

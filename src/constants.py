@@ -29,23 +29,38 @@ MOTOR_TO_ID = {
 
 ID_TO_MOTOR = {v: k for k, v in MOTOR_TO_ID.items()}
 
+# The one reference pose shared by every policy (walking, PICO full-body
+# tracking, get-up) and by every neutral return on the robot: the centered HOME
+# of the training repository (mjlab_microban HOME_FRAME, commit cb55431). Trunk
+# vertical, knees straight, and opposite hip/ankle pitches that keep the soles
+# flat with the COM over the centre of the sole contact patches. Every policy
+# commands target = clip(NEUTRAL_POSE + raw_action * 1.0, -1.57, +1.57) on its 18
+# body joints and observes its own raw previous output. There is no per-input
+# (GC300) ankle bias any more.
+HOME_PITCH_RAD = float(np.deg2rad(1.198384259489))
+POLICY_TARGET_CLIP_RAD = 1.57
+POLICY_ACTION_SCALE = 1.0
+# Trunk pose of HOME in the training scene: the lowest sole collision corner
+# touches the ground at this z, upright (identity quaternion).
+HOME_ROOT_POS_Z_M = 0.170554885633559
+HOME_ROOT_QUAT_WXYZ = (1.0, 0.0, 0.0, 0.0)
 NEUTRAL_POSE = {
     "left_hip_yaw": float(np.deg2rad(0.0)),
     "left_hip_roll": float(np.deg2rad(5.0)),
-    "left_hip_pitch": float(np.deg2rad(-10.0)),
+    "left_hip_pitch": HOME_PITCH_RAD,
     "left_knee": float(np.deg2rad(0.0)),
-    "left_ankle_pitch": float(np.deg2rad(0.0)),
+    "left_ankle_pitch": -HOME_PITCH_RAD,
     "left_ankle_roll": float(np.deg2rad(-5.0)),
     "right_hip_yaw": float(np.deg2rad(0.0)),
     "right_hip_roll": float(np.deg2rad(-5.0)),
-    "right_hip_pitch": float(np.deg2rad(-10.0)),
+    "right_hip_pitch": HOME_PITCH_RAD,
     "right_knee": float(np.deg2rad(0.0)),
-    "right_ankle_pitch": float(np.deg2rad(0.0)),
+    "right_ankle_pitch": -HOME_PITCH_RAD,
     "right_ankle_roll": float(np.deg2rad(5.0)),
-    "left_shoulder_pitch": float(np.deg2rad(10.0)),
+    "left_shoulder_pitch": float(np.deg2rad(0.0)),
     "left_shoulder_roll": float(np.deg2rad(10.0)),
     "left_elbow": float(np.deg2rad(-20.0)),
-    "right_shoulder_pitch": float(np.deg2rad(10.0)),
+    "right_shoulder_pitch": float(np.deg2rad(0.0)),
     "right_shoulder_roll": float(np.deg2rad(-10.0)),
     "right_elbow": float(np.deg2rad(-20.0)),
     "head": float(np.deg2rad(0.0)),
