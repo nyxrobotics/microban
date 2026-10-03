@@ -40,6 +40,19 @@ from moves.walk import WalkMove
 
 
 GETUP_AUTO_TIMEOUT_S = 20.0  # Match the get-up training episode length.
+# Hand-back from the get-up actor to walk requires a settled stance: trunk
+# tilt below this angle (projected_gravity z < -cos(angle)) for this many
+# consecutive ticks (0.2 s at 50 Hz). The stand debounce alone (tilt below
+# ~25.8 deg) let the walk take over while still leaning up to ~25 deg.
+GETUP_HANDBACK_SETTLE_TILT_DEG = 12.0
+GETUP_HANDBACK_SETTLE_TICKS = 10
+# Standing balance before the stance first settles is still the get-up
+# transient: the get-up actor is still pulling the trunk upright (13-16 A in
+# the current proxy in the runtime sim, against ~2 A once settled). It keeps
+# the get-up overcurrent limit for at most this many ticks after the stand
+# (1.5 s at 50 Hz), followed by the usual bounded tail; a stance that never
+# settles then runs under the normal limit like any standing balance.
+GETUP_SETTLE_CUTOFF_MAX_TICKS = 75
 
 
 def _trunk_roll_pitch(body_quat: list[float]) -> tuple[float, float] | None:
@@ -144,11 +157,21 @@ class Scheduler:
         self._stand_debounce_ticks = 20  # ~0.4 s at 50 Hz
         self._fallen_tick_count = 0
         self._standing_tick_count = 0
+        # Consecutive IMU-valid ticks with tilt below the hand-back settle
+        # angle; see GETUP_HANDBACK_SETTLE_*.
+        self._settle_threshold = -math.cos(math.radians(GETUP_HANDBACK_SETTLE_TILT_DEG))
+        self._settled_tick_count = 0
+        # One log line per deferred hand-back (not one per tick).
+        self._handback_defer_logged = False
+        # Standing-balance ticks since the stand while the stance has not yet
+        # settled; None once it settled (or when not balancing).
+        self._getup_settle_wait_ticks: int | None = None
         self._getup_active_override = False
         # Post-get-up standing balance. Once stood up, GetupMove stays on as the
         # standing balancer (its actor is trained to stand still and recover
         # from pushes) until a "walk" move that can itself balance is
-        # requested; see _walk_can_take_over. While True, the override is still
+        # requested (see _walk_can_take_over) and the stance has settled
+        # (GETUP_HANDBACK_SETTLE_*). While True, the override is still
         # on but the get-up time limit is not counting.
         self._getup_balancing = False
         # Operator's requested active_moves when balancing began; on sources
@@ -348,7 +371,9 @@ class Scheduler:
                 # Fall / getup auto-switch: forces "getup" on (and "walk" off) after a
                 # sustained fall, and hands back to the user's own "walk" toggle once
                 # stood up (and stable) again -- but only to a walk move that can
-                # balance; until then get-up stays on as the standing balancer, and
+                # balance, and only once the tilt has settled below
+                # GETUP_HANDBACK_SETTLE_TILT_DEG; until then get-up stays on as
+                # the standing balancer, and
                 # leaves on R3-off/B/actor fault (or, without that gate, any
                 # move-toggle change). No-op if "getup" isn't
                 # registered.
@@ -356,12 +381,22 @@ class Scheduler:
                 if "getup" in self.registered_moves and self._getup_auto_trigger_enabled:
                     getup_move = self.registered_moves["getup"]
                     model_ready = getattr(getup_move, "model_ready", True)
+                    self._update_settle_count(
+                        obs.robot_state.projected_gravity if imu_safe else None
+                    )
                     # Evaluated on the operator's own request, before get-up
                     # rewrites active_moves below; only relevant while get-up
                     # owns the robot.
-                    walk_takes_over = (
+                    walk_ready = (
                         self._getup_active_override
                         and self._walk_can_take_over(obs.user_input)
+                    )
+                    # Every hand-back to walk (from standing balance, or
+                    # directly at the stand debounce) also waits for a settled
+                    # stance; until then the get-up actor keeps balancing.
+                    walk_takes_over = (
+                        walk_ready
+                        and self._settled_tick_count >= GETUP_HANDBACK_SETTLE_TICKS
                     )
                     # The operator's own request, before the rewrite below.
                     requested_moves = frozenset(obs.user_input.active_moves)
@@ -398,6 +433,25 @@ class Scheduler:
                                 and not walk_takes_over
                             ),
                         )
+                    if self._getup_balancing and walk_ready and not walk_takes_over:
+                        if not self._handback_defer_logged:
+                            self._handback_defer_logged = True
+                            print(
+                                "Get-up hand-back to walk deferred until the stance "
+                                f"settles (tilt < {GETUP_HANDBACK_SETTLE_TILT_DEG:g} deg "
+                                f"for {GETUP_HANDBACK_SETTLE_TICKS} ticks; now "
+                                f"{self._tilt_deg(obs.robot_state.projected_gravity)})",
+                                end="\r\n", flush=True,
+                            )
+                    else:
+                        self._handback_defer_logged = False
+                    if not self._getup_balancing:
+                        self._getup_settle_wait_ticks = None
+                    elif self._getup_settle_wait_ticks is not None:
+                        if self._settled_tick_count >= GETUP_HANDBACK_SETTLE_TICKS:
+                            self._getup_settle_wait_ticks = None
+                        else:
+                            self._getup_settle_wait_ticks += 1
                     if not self._getup_balancing:
                         self._getup_balance_request = None
                     elif self._getup_balance_request is None:
@@ -626,6 +680,15 @@ class Scheduler:
                     # (the hand-back to walk always passes through one), so
                     # they re-arm the tail too: the get-up limit then lasts at
                     # most 2 * maxlen checks past the attempt's last tick.
+                    # Standing balance that has not yet settled since the
+                    # stand is still the get-up transient (bounded by
+                    # GETUP_SETTLE_CUTOFF_MAX_TICKS) and counts as the attempt.
+                    if (
+                        self._getup_balancing
+                        and self._getup_settle_wait_ticks is not None
+                        and self._getup_settle_wait_ticks <= GETUP_SETTLE_CUTOFF_MAX_TICKS
+                    ):
+                        getup_cutoff = True
                     if getup_cutoff:
                         self._getup_cutoff_tail_ticks = self._cmd_history.maxlen
                         self._getup_balance_tail_ticks = self._cmd_history.maxlen
@@ -1194,6 +1257,25 @@ class Scheduler:
             return False
         return not moving and walk_move.can_balance(user_input) is True
 
+    def _update_settle_count(self, projected_gravity: list[float] | None) -> None:
+        """Count consecutive ticks with tilt below the hand-back settle angle.
+
+        An unsafe IMU (None) or invalid vector resets the count: settling must
+        be observed, never assumed.
+        """
+        if projected_gravity is None or not self._finite_vector(projected_gravity, 3):
+            self._settled_tick_count = 0
+        elif float(projected_gravity[2]) < self._settle_threshold:
+            self._settled_tick_count += 1
+        else:
+            self._settled_tick_count = 0
+
+    def _tilt_deg(self, projected_gravity: list[float]) -> str:
+        if not self._finite_vector(projected_gravity, 3):
+            return "unknown"
+        gz = max(-1.0, min(1.0, float(projected_gravity[2])))
+        return f"{math.degrees(math.acos(-gz)):.1f} deg"
+
     def _release_getup_balance(self, reason: str) -> None:
         """End standing-balance and hand back as after a normal get-up."""
         print(f"Get-up balance released: {reason}", end="\r\n", flush=True)
@@ -1210,7 +1292,9 @@ class Scheduler:
     ) -> bool:
         """Update fall/stand debounce; return True during the pre-get-up hold.
 
-        On standing up, the override is released, or, with
+        On standing up, the override is released (the caller passes
+        ``balance_when_standing=False`` only when a balancing walk is requested
+        and the stance has settled, or when no policy may run), or, with
         ``balance_when_standing``, kept as standing balance. A new fall while
         balancing turns it back into a get-up attempt with a fresh time limit.
         """
@@ -1244,9 +1328,10 @@ class Scheduler:
             if balance_when_standing:
                 self._getup_balancing = True
                 self._getup_auto_started_s = None
+                self._getup_settle_wait_ticks = 0
                 print(
                     "Get-up: standing; get-up actor keeps balancing until a "
-                    "balancing walk is requested",
+                    "balancing walk is requested and the stance has settled",
                     end="\r\n", flush=True,
                 )
             else:

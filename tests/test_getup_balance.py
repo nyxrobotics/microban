@@ -3,6 +3,7 @@ move that can balance is requested (see Scheduler._walk_can_take_over)."""
 
 import contextlib
 import io
+import math
 import tempfile
 import unittest
 from pathlib import Path
@@ -598,6 +599,218 @@ class HandBackOvercurrentTest(unittest.TestCase):
             tail + scheduler_module.OVERCURRENT_DEBOUNCE_TICKS,
         )
         self.assertLess(len(rows), STAND_TICK + sec(2.0))
+
+
+def tilted(degrees):
+    rad = math.radians(degrees)
+    return [math.sin(rad), 0.0, -math.cos(rad)]
+
+
+SETTLE_TICKS = scheduler_module.GETUP_HANDBACK_SETTLE_TICKS
+GETUP_A = scheduler_module.OVERCURRENT_CUTOFF_A_GETUP
+NORMAL_A = scheduler_module.OVERCURRENT_CUTOFF_A
+LEANING = tilted(18.0)  # standing (< ~25.8 deg) but not settled (>= 12 deg)
+SETTLED = tilted(5.0)
+STAND_START = sec(0.2) + sec(1.0)  # first upright tick after the fall
+
+
+def fall_then_lean(tilt_for_tick, *, moves=frozenset({"walk"})):
+    """Upright 0.2 s, fallen 1 s, then ``tilt_for_tick(tick)`` gravity."""
+
+    def script(tick, _inhibited):
+        if tick < sec(0.2):
+            gravity = UPRIGHT
+        elif tick < STAND_START:
+            gravity = FALLEN
+        else:
+            gravity = tilt_for_tick(tick)
+        return gravity, UserInput(
+            active_moves=set(moves),
+            velocity={"vx": 0.0, "vy": 0.0, "vtheta": 0.0},
+        )
+
+    return script
+
+
+class SettledHandBackTest(unittest.TestCase):
+    """Hand-back to walk waits for tilt < GETUP_HANDBACK_SETTLE_TILT_DEG for
+    GETUP_HANDBACK_SETTLE_TICKS consecutive ticks; get-up keeps balancing."""
+
+    def test_settle_constants(self):
+        self.assertEqual(scheduler_module.GETUP_HANDBACK_SETTLE_TILT_DEG, 12.0)
+        self.assertEqual(SETTLE_TICKS, 10)
+        self.assertLess(LEANING[2], -0.9)  # stand debounce counts
+        self.assertGreater(LEANING[2], -math.cos(math.radians(12.0)))
+
+    def test_hand_back_after_settle_window(self):
+        h = Harness(FakeWalk(balances=True))
+        settle_at = STAND_START + sec(2.0)
+        rows = h.run(
+            fall_then_lean(lambda t: LEANING if t < settle_at else SETTLED),
+            settle_at + sec(2.0),
+        )
+        # The direct release at the stand debounce is gated: still leaning,
+        # so the get-up actor balances instead of handing back.
+        self.assertTrue(rows[STAND_TICK + 1]["balancing"])
+        self.assertEqual(rows[STAND_TICK + 1]["getup"], MoveState.ACTIVE)
+        # Gravity scripted at tick t is observed at tick t + 1 (as for
+        # STAND_TICK), and rows[t + 1] shows the state left by tick t: the
+        # SETTLE_TICKS-th settled observation releases.
+        hand_back = settle_at + SETTLE_TICKS
+        for row in rows[STAND_TICK + 1:hand_back + 1]:
+            self.assertTrue(row["balancing"], row["tick"])
+        self.assertEqual(rows[hand_back]["walk_steps"], rows[STAND_TICK]["walk_steps"])
+        self.assertFalse(rows[hand_back + 1]["override"])
+        self.assertFalse(rows[hand_back + 1]["balancing"])
+        self.assertEqual(rows[-1]["walk"], MoveState.ACTIVE)
+        self.assertGreater(h.walk.steps, 0)
+        self.assertEqual(h.output.count("hand-back to walk deferred"), 1)
+        self.assertIn("now 18.0 deg", h.output)
+        self.assertIn("released: balancing walk requested", h.output)
+
+    def test_unsettled_tilt_keeps_deferring(self):
+        # Dips below the settle angle, but never for SETTLE_TICKS in a row.
+        h = Harness(FakeWalk(balances=True))
+        period = SETTLE_TICKS - 1
+        rows = h.run(
+            fall_then_lean(lambda t: SETTLED if (t // period) % 2 else LEANING),
+            STAND_START + sec(4.0),
+        )
+        self.assertTrue(rows[-1]["override"])
+        self.assertTrue(rows[-1]["balancing"])
+        self.assertEqual(rows[-1]["getup"], MoveState.ACTIVE)
+        self.assertEqual(h.walk.steps, rows[STAND_TICK]["walk_steps"])
+        self.assertFalse(rows[-1]["failed"])
+        self.assertIsNone(rows[-1]["started"])
+        self.assertEqual(h.output.count("hand-back to walk deferred"), 1)
+        self.assertNotIn("released", h.output)
+
+    def test_already_settled_at_stand_hands_back_directly(self):
+        h = Harness(FakeWalk(balances=True))
+        rows = h.run(fall_then_lean(lambda t: SETTLED), STAND_START + sec(2.0))
+        self.assertFalse(any(row["balancing"] for row in rows))
+        self.assertFalse(rows[STAND_TICK + 1]["override"])
+        self.assertEqual(rows[-1]["walk"], MoveState.ACTIVE)
+        self.assertNotIn("deferred", h.output)
+
+    def test_fall_during_deferred_wait_starts_new_attempt(self):
+        h = Harness(FakeWalk(balances=True))
+        refall = STAND_START + sec(2.0)
+        restand = refall + sec(1.0)
+
+        def tilt(t):
+            if t < refall:
+                return LEANING
+            if t < restand:
+                return FALLEN
+            return SETTLED
+
+        rows = h.run(fall_then_lean(tilt), restand + sec(2.0))
+        self.assertTrue(rows[refall]["balancing"])
+        new_attempt = next(row for row in rows[refall:] if not row["balancing"])
+        self.assertLessEqual(new_attempt["tick"] - refall, 16)
+        self.assertTrue(new_attempt["override"])
+        self.assertIsNotNone(rows[restand]["started"])
+        self.assertIn("Fall detected while balancing", h.output)
+        self.assertEqual(h.output.count("Automatic get-up attempt started"), 2)
+        # Upright and settled after the second attempt: direct hand-back.
+        self.assertFalse(rows[-1]["override"])
+        self.assertEqual(rows[-1]["walk"], MoveState.ACTIVE)
+
+    def test_imu_outage_restarts_settle_window(self):
+        h = Harness(FakeWalk(balances=True), imu_shutdown_after_s=5.0)
+        settle_at = STAND_START + sec(2.0)
+        glitch = settle_at + SETTLE_TICKS - 2
+
+        def on_tick(tick):
+            h.controller.imu_valid = tick != glitch
+
+        h.on_tick = on_tick
+        rows = h.run(
+            fall_then_lean(lambda t: LEANING if t < settle_at else SETTLED),
+            settle_at + sec(2.0),
+        )
+        # Without the glitch, rows[settle_at + SETTLE_TICKS + 1] is released.
+        self.assertTrue(rows[settle_at + SETTLE_TICKS + 1]["balancing"])
+        self.assertTrue(rows[glitch + SETTLE_TICKS]["balancing"])
+        self.assertFalse(rows[glitch + SETTLE_TICKS + 1]["override"])
+        self.assertEqual(rows[-1]["walk"], MoveState.ACTIVE)
+
+    def run_cutoffs(self, settle_at, *, moves=frozenset({"walk"}), tilt=None):
+        h = Harness(FakeWalk(balances=True))
+        cutoffs = {}
+        check = h.scheduler._check_overcurrent
+
+        def spy(state, targets, cutoff):
+            cutoffs[len(h.rows) - 1] = cutoff
+            return check(state, targets, cutoff)
+
+        h.scheduler._check_overcurrent = spy
+        rows = h.run(
+            fall_then_lean(
+                tilt or (lambda t: LEANING if t < settle_at else SETTLED), moves=moves
+            ),
+            settle_at + sec(2.0),
+        )
+        tail = h.scheduler._cmd_history.maxlen
+        first_balancing = next(t for t in sorted(cutoffs) if rows[t + 1]["balancing"])
+        self.assertEqual(first_balancing, STAND_TICK)
+        # The attempt itself ran under the get-up limit.
+        self.assertTrue(any(
+            c == GETUP_A for t, c in cutoffs.items() if sec(0.2) < t < STAND_TICK
+        ))
+        return h, rows, cutoffs, tail
+
+    def test_unsettled_balance_keeps_getup_cutoff_until_hand_back(self):
+        # The get-up actor is still pulling the trunk upright: get-up limit
+        # through the deferred wait, then the usual tail after the hand-back.
+        settle_at = STAND_START + sec(0.6)
+        h, rows, cutoffs, tail = self.run_cutoffs(settle_at)
+        hand_back = settle_at + SETTLE_TICKS
+        self.assertTrue(rows[hand_back]["balancing"])
+        self.assertFalse(rows[hand_back + 1]["override"])
+        self.assertEqual(
+            [cutoffs[t] for t in range(STAND_TICK, hand_back + tail + 1)],
+            [GETUP_A] * (hand_back + tail - STAND_TICK) + [NORMAL_A],
+        )
+        self.assertEqual({c for t, c in cutoffs.items() if t >= hand_back + tail}, {NORMAL_A})
+
+    def test_settled_balance_without_walk_returns_to_normal_cutoff(self):
+        settle_at = STAND_START + sec(0.6)
+        relean = settle_at + sec(0.8)
+
+        def tilt(t):
+            return SETTLED if settle_at <= t < relean else LEANING
+
+        h, rows, cutoffs, tail = self.run_cutoffs(settle_at, moves=frozenset(), tilt=tilt)
+        settled = settle_at + SETTLE_TICKS  # first tick with a settled stance
+        self.assertTrue(rows[-1]["balancing"])
+        self.assertEqual(
+            [cutoffs[t] for t in range(STAND_TICK, settled + 2 * tail + 1)],
+            [GETUP_A] * (settled + 2 * tail - STAND_TICK) + [NORMAL_A],
+        )
+        self.assertEqual({c for t, c in cutoffs.items() if t >= settled + 2 * tail}, {NORMAL_A})
+        # A later lean does not re-arm the get-up limit once settled.
+        self.assertTrue(any(t > relean + sec(1.0) for t in cutoffs))
+        self.assertNotIn("deferred", h.output)
+
+    def test_unsettled_getup_cutoff_is_bounded(self):
+        cap = scheduler_module.GETUP_SETTLE_CUTOFF_MAX_TICKS
+        settle_at = STAND_START + sec(4.0)
+        h, rows, cutoffs, tail = self.run_cutoffs(settle_at)
+        self.assertGreater(settle_at - STAND_TICK, cap + 2 * tail + sec(1.0))
+        self.assertEqual(
+            [cutoffs[t] for t in range(STAND_TICK, STAND_TICK + cap + 2 * tail + 1)],
+            [GETUP_A] * (cap + 2 * tail) + [NORMAL_A],
+        )
+        # The rest of the deferred balance and the hand-back after it run
+        # under the normal limit: no get-up goals are left in the history.
+        hand_back = settle_at + SETTLE_TICKS
+        self.assertFalse(rows[hand_back + 1]["override"])
+        self.assertEqual(
+            {c for t, c in cutoffs.items() if t >= STAND_TICK + cap + 2 * tail},
+            {NORMAL_A},
+        )
 
 
 class GatelessSourceReleaseTest(unittest.TestCase):
