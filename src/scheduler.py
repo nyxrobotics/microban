@@ -172,6 +172,7 @@ class Scheduler:
         # written under it stays in _cmd_history (and, on the robot, in the
         # servos' delayed response) for up to maxlen ticks. Bounded by maxlen.
         self._getup_cutoff_tail_ticks = 0
+        self._getup_balance_tail_ticks = 0
 
     def run(self):
         print(f"Starting control loop at {1 / self.dt:.1f} Hz", end="\r\n", flush=True)
@@ -594,6 +595,7 @@ class Scheduler:
                 if hardware_mode == "limp":
                     self._cmd_history.clear()
                     self._getup_cutoff_tail_ticks = 0
+                    self._getup_balance_tail_ticks = 0
                     self._overcurrent_ticks = 0
                 else:
                     aligned_targets = (
@@ -619,8 +621,18 @@ class Scheduler:
                     # Keep the get-up limit until every command in the history
                     # was written after it stopped (maxlen ticks), then the
                     # normal limit applies again.
+                    # The first maxlen standing-balance ticks right after an
+                    # attempt still write the get-up actor's transient goals
+                    # (the hand-back to walk always passes through one), so
+                    # they re-arm the tail too: the get-up limit then lasts at
+                    # most 2 * maxlen checks past the attempt's last tick.
                     if getup_cutoff:
                         self._getup_cutoff_tail_ticks = self._cmd_history.maxlen
+                        self._getup_balance_tail_ticks = self._cmd_history.maxlen
+                    elif self._getup_balancing and self._getup_balance_tail_ticks > 0:
+                        self._getup_balance_tail_ticks -= 1
+                        self._getup_cutoff_tail_ticks = self._cmd_history.maxlen
+                        getup_cutoff = True
                     elif self._getup_cutoff_tail_ticks > 0:
                         self._getup_cutoff_tail_ticks -= 1
                         getup_cutoff = True
@@ -785,6 +797,7 @@ class Scheduler:
             self._hardware_neutral_last_time_s = obs.robot_state.time_s
             self._cmd_history.clear()
             self._getup_cutoff_tail_ticks = 0
+            self._getup_balance_tail_ticks = 0
             self._overcurrent_ticks = 0
             just_enabled = True
             print(
@@ -942,6 +955,7 @@ class Scheduler:
         self._getup_auto_failed = False
         self._cmd_history.clear()
         self._getup_cutoff_tail_ticks = 0
+        self._getup_balance_tail_ticks = 0
         self._last_sent_targets = None
         self._serial_write_hold_pending = False
         self._serial_write_hold_since_s = None

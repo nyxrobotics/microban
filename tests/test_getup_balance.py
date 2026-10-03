@@ -449,19 +449,21 @@ class OvercurrentCutoffTest(unittest.TestCase):
         self.assertTrue(getting_up and balancing)
         # rows[t + 1] holds the state left by tick t, which chose that tick's
         # cutoff. Balancing runs under the normal limit once the attempt's
-        # last command has left the proxy's delay history.
+        # transient balancing goals have left the proxy's delay history.
         tail = h.scheduler._cmd_history.maxlen
         settled = {
             c for t, c in cutoffs
-            if t >= tail and t + 1 < len(rows)
-            and all(rows[j]["balancing"] for j in range(t - tail + 1, t + 2))
+            if t >= 2 * tail and t + 1 < len(rows)
+            and all(rows[j]["balancing"] for j in range(t - 2 * tail + 1, t + 2))
         }
         self.assertEqual(settled, {scheduler_module.OVERCURRENT_CUTOFF_A})
-        # The first `tail` balancing ticks still pair the attempt's goals.
+        # The first `tail` balancing ticks still write the get-up actor's
+        # transient goals and the next `tail` still pair them in the history,
+        # so the get-up limit holds for exactly 2 * tail balancing ticks.
         first_balancing = next(t for t, _ in cutoffs if rows[t + 1]["balancing"])
         self.assertEqual(
-            [by_tick[t] for t in range(first_balancing, first_balancing + tail + 1)],
-            [scheduler_module.OVERCURRENT_CUTOFF_A_GETUP] * tail
+            [by_tick[t] for t in range(first_balancing, first_balancing + 2 * tail + 1)],
+            [scheduler_module.OVERCURRENT_CUTOFF_A_GETUP] * (2 * tail)
             + [scheduler_module.OVERCURRENT_CUTOFF_A],
         )
         self.assertIn(scheduler_module.OVERCURRENT_CUTOFF_A_GETUP,
