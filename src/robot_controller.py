@@ -38,7 +38,9 @@ def validated_hardware_offsets(offsets: dict[str, float]) -> dict[str, float]:
                 f"hardware joint offset {name}={offsets[name]!r} rad must be finite "
                 f"and within +-{HARDWARE_JOINT_OFFSET_MAX_RAD} rad"
             )
-        checked[name] = value
+        # "+ 0.0" turns a typed -0.0 into +0.0 so a zero entry never changes
+        # the sign of a zero reading (bit-for-bit identity with no offset).
+        checked[name] = value + 0.0
     return checked
 
 
@@ -193,6 +195,13 @@ class RobotController:
             self._proxy_ignore_until[motor_id] = time.monotonic() + 0.12
 
     def _read_core(self, kind: str, method: str, cache: dict[int, float], convert) -> None:
+        """Read a non-position register (current, voltage) into ``cache``.
+
+        Positions never come through here: they must pass ``_from_servo`` (sign
+        and real-robot offset), see ``_read_core_state`` and the head poll.
+        """
+        if kind == "position":
+            raise ValueError("positions are read by _read_core_state / _poll_one_head_position")
         now = time.monotonic()
         for group in self._core_groups:
             if not group:
@@ -201,7 +210,7 @@ class RobotController:
             if now < self._retry_after.get(key, 0.0):
                 self._stale_ids.update(group)
                 continue
-            if kind != "position" and any(motor_id in self._stale_ids for motor_id in group):
+            if any(motor_id in self._stale_ids for motor_id in group):
                 continue
             try:
                 raw = getattr(self._controller, method)(group)
@@ -215,10 +224,7 @@ class RobotController:
                 self._retry_after[key] = now + 0.08
                 continue
             for motor_id, value in zip(group, values):
-                if kind == "position":
-                    self._position_recovered(motor_id, value)
-                else:
-                    cache[motor_id] = value
+                cache[motor_id] = value
 
     def _read_core_state(self) -> None:
         """Read contiguous velocity and position registers in one bus request."""

@@ -139,7 +139,8 @@ HARDWARE_JOINT_OFFSET_RAD = {
 }
 # Offsets are calibration trims, not pose changes. Bounding them keeps every
 # commanded servo angle inside the servo's raw position range (0..4095, i.e.
-# [-pi, pi) rad) for any logical target within +-(pi - 0.2) rad.
+# [-pi, pi) rad) for any logical target strictly within +-(pi - 0.2) rad; policy
+# targets are clipped to +-1.57 rad, so servo commands stay within +-1.77 rad.
 HARDWARE_JOINT_OFFSET_MAX_RAD = 0.2
 
 # Position P Gain (Dynamixel register value)

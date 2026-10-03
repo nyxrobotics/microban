@@ -154,6 +154,12 @@ class OffsetTableTest(unittest.TestCase):
             with self.subTest(label=label), self.assertRaises(ValueError):
                 rc_module.validated_hardware_offsets(table)
 
+    def test_negative_zero_offset_is_normalised(self) -> None:
+        checked = rc_module.validated_hardware_offsets({name: -0.0 for name in MOTOR_TO_ID})
+        for name, value in checked.items():
+            with self.subTest(name=name):
+                self.assertEqual(value.hex(), (0.0).hex())
+
     def test_only_robot_controller_applies_offsets(self) -> None:
         users = sorted(
             path.relative_to(SRC).as_posix()
@@ -202,8 +208,19 @@ class ZeroOffsetIdentityTest(unittest.TestCase):
                 self.assertEqual(math.copysign(1.0, written), math.copysign(1.0, old))
 
     def test_reads_match_sign_only_mapping(self) -> None:
-        controller, bus = make_controller()
+        for label, offsets_deg in (
+            ("default", None),
+            ("typed_negative_zero", {name: -0.0 for name in MOTOR_TO_ID}),
+        ):
+            with self.subTest(table=label):
+                self._check_reads_match_sign_only_mapping(offsets_deg)
+
+    def _check_reads_match_sign_only_mapping(self, offsets_deg) -> None:
+        controller, bus = make_controller(offsets_deg)
         ids = list(MOTOR_TO_ID.values())
+        # An exact-zero reading on a negative-sign joint must stay -0.0, as
+        # the old sign-only mapping produced.
+        bus.raw_position[MOTOR_TO_ID["right_knee"]] = 2048
         positions = controller.sync_read_present_position(ids)
         for motor_id, name in zip(ids, MOTOR_TO_ID):
             old = raw_to_rad(bus.raw_position[motor_id]) * MOTOR_SIGN[name]
@@ -292,21 +309,53 @@ class NonzeroOffsetTest(unittest.TestCase):
             )
 
     def test_pending_enable_seed_commands_measured_physical_pose(self) -> None:
-        motor_id = MOTOR_TO_ID["left_ankle_pitch"]
-        # Stale at start: ON is deferred until a position reply arrives.
-        self.controller.sync_write_torque_enable([motor_id], [True])
-        self.assertIn(motor_id, self.controller._pending_enable)
-        self.controller.sync_read_present_position(self.ids)
-        self.assertNotIn(motor_id, self.controller._pending_enable)
-        goals = self.bus.goals_for(motor_id)
-        self.assertEqual(len(goals), 1)
-        self.assertAlmostEqual(goals[0], self.bus.servo_rad(motor_id), places=12)
+        # Both MOTOR_SIGN values: the offset must be added before the sign.
+        for name in ("left_ankle_pitch", "right_ankle_pitch", "left_hip_yaw"):
+            with self.subTest(name=name):
+                controller, bus = make_controller(TEST_OFFSETS_DEG)
+                motor_id = MOTOR_TO_ID[name]
+                # Stale at start: ON is deferred until a position reply arrives.
+                controller.sync_write_torque_enable([motor_id], [True])
+                self.assertIn(motor_id, controller._pending_enable)
+                controller.sync_read_present_position(self.ids)
+                self.assertNotIn(motor_id, controller._pending_enable)
+                goals = bus.goals_for(motor_id)
+                self.assertEqual(len(goals), 1)
+                self.assertAlmostEqual(goals[0], bus.servo_rad(motor_id), places=12)
+                self.assertAlmostEqual(
+                    controller.last_goal_targets[name],
+                    expected_logical(name, bus.servo_rad(motor_id)),
+                    places=12,
+                )
+                self.assertEqual(bus.torque[motor_id], 1)
+
+    def test_head_poll_applies_offset_before_sign(self) -> None:
+        # The neck signs are CAD-inferred; pretend neck_roll turns out to be -1
+        # so the order of offset and sign is observable on the head poll path.
+        motor_id = MOTOR_TO_ID["neck_roll"]
+        offset = math.radians(2.0)
+        self.controller._id_to_sign[motor_id] = -1.0
+        self.controller._id_to_offset[motor_id] = offset
+        for _ in self.controller._head_ids:
+            self.controller._poll_one_head_position()
         self.assertAlmostEqual(
-            self.controller.last_goal_targets["left_ankle_pitch"],
-            expected_logical("left_ankle_pitch", self.bus.servo_rad(motor_id)),
+            self.controller._last_positions[motor_id],
+            -self.bus.servo_rad(motor_id) - offset,
             places=12,
         )
-        self.assertEqual(self.bus.torque[motor_id], 1)
+        self.assertAlmostEqual(
+            self.controller._to_servo(motor_id, self.controller._last_positions[motor_id]),
+            self.bus.servo_rad(motor_id),
+            places=12,
+        )
+
+    def test_read_core_refuses_positions(self) -> None:
+        # Positions must go through _from_servo; the generic register reader
+        # would skip the offset.
+        with self.assertRaises(ValueError):
+            self.controller._read_core(
+                "position", "sync_read_present_position", {}, lambda _m, v: float(v)
+            )
 
     def test_torque_rejoin_seed_writes_reading_back_unchanged(self) -> None:
         self.controller.sync_read_present_position(self.ids)

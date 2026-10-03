@@ -86,8 +86,8 @@ keyboard, gamepad and sim. Defaults (in [constants.py](../src/constants.py)):
 ## Real-robot joint offsets
 
 If one robot holds a joint slightly off from where the policies expect it (a servo
-horn mounted one spline tooth off, a slightly bent bracket, a robot that wants its
-ankles pitched forward a little), correct it with the per-joint table
+horn mounted slightly off, a slightly bent bracket, a robot that wants its ankles
+pitched forward a little), correct it with the per-joint table
 `HARDWARE_JOINT_OFFSET_DEG` in [constants.py](../src/constants.py). It lists all 21
 joints and every value is `0.0` by default.
 
@@ -102,6 +102,10 @@ joints and every value is `0.0` by default.
   gamepad, GC300, PICO) gets it automatically, and the policies keep observing
   training coordinates. Velocities and currents are unchanged. MuJoCo / placo
   simulation (`make sim`, `make viewer`) and training ignore it.
+- Measuring: with all offsets `0.0`, hold the joint at a known true angle (in the
+  logical coordinate) and read its logical position `m` from the runtime (it already
+  includes `MOTOR_SIGN`). Then `offset = m - true angle`, converted to degrees. Getting
+  the sign wrong doubles the error instead of removing it.
 - Limit: each value must be finite and at most `HARDWARE_JOINT_OFFSET_MAX_RAD`
   (0.2 rad, about 11.5 deg); otherwise the runtime refuses to start. Nonzero values are
   printed once when the runtime starts (`Hardware joint offsets (...)`).
