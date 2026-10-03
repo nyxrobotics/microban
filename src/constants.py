@@ -34,12 +34,21 @@ ID_TO_MOTOR = {v: k for k, v in MOTOR_TO_ID.items()}
 # of the training repository (mjlab_microban HOME_FRAME, commit cb55431). Trunk
 # vertical, knees straight, and opposite hip/ankle pitches that keep the soles
 # flat with the COM over the centre of the sole contact patches. Every policy
-# commands target = clip(NEUTRAL_POSE + raw_action * 1.0, -1.57, +1.57) on its 18
-# body joints and observes its own raw previous output. There is no per-input
-# (GC300) ankle bias any more.
+# commands target = NEUTRAL_POSE + raw_action * 1.0 on its 18 body joints and
+# observes its own raw previous output. There is no per-input (GC300) ankle
+# bias any more.
 HOME_PITCH_RAD = float(np.deg2rad(1.198384259489))
-POLICY_TARGET_CLIP_RAD = 1.57
+# No software clip: the only bound on a policy target is the servo's own goal
+# range. XC330 in Position Control mode accepts raw goals 0..4095 (one turn),
+# which rustypot maps to [-pi, pi - 2*pi/4096] rad. Training models this as an
+# absolute target clip of +-pi (mjlab_microban SERVO_TARGET_RANGE_RAD), so every
+# policy target is clip(NEUTRAL_POSE + raw, -pi, +pi); RobotController then
+# saturates every servo goal into SERVO_GOAL_MIN_RAD..SERVO_GOAL_MAX_RAD.
+SERVO_TARGET_RANGE_RAD = float(np.pi)
 POLICY_ACTION_SCALE = 1.0
+# mjlab's base ONNX exporter writes CSV metadata with 3 decimals, so a +-pi
+# action clip arrives as +-3.142; accept that rounding and nothing more.
+SERIALIZED_CLIP_TOLERANCE_RAD = 0.0005 + 1.0e-9
 # Trunk pose of HOME in the training scene: the lowest sole collision corner
 # touches the ground at this z, upright (identity quaternion).
 HOME_ROOT_POS_Z_M = 0.170554885633559
@@ -137,11 +146,15 @@ HARDWARE_JOINT_OFFSET_DEG = {
 HARDWARE_JOINT_OFFSET_RAD = {
     name: float(np.deg2rad(value)) for name, value in HARDWARE_JOINT_OFFSET_DEG.items()
 }
-# Offsets are calibration trims, not pose changes. Bounding them keeps every
-# commanded servo angle inside the servo's raw position range (0..4095, i.e.
-# [-pi, pi) rad) for any logical target strictly within +-(pi - 0.2) rad; policy
-# targets are clipped to +-1.57 rad, so servo commands stay within +-1.77 rad.
+# Offsets are calibration trims, not pose changes, hence the small bound. They
+# do not keep goals in range: policy targets reach +-pi, so sign * (target +
+# offset) can leave the servo's goal range, and RobotController saturates
+# every servo goal into [SERVO_GOAL_MIN_RAD, SERVO_GOAL_MAX_RAD] instead.
 HARDWARE_JOINT_OFFSET_MAX_RAD = 0.2
+# The servo's raw goal range in rustypot radians, raw = (rad + pi) * 4096 /
+# (2 * pi): raw 0 is -pi and raw 4095 is pi - 2 * pi / 4096 (one turn).
+SERVO_GOAL_MIN_RAD = -float(np.pi)
+SERVO_GOAL_MAX_RAD = float(np.pi) - 2.0 * float(np.pi) / 4096.0
 
 # Position P Gain (Dynamixel register value)
 KP_DEFAULT: int = 400        # Legacy gain used by existing policy and simulation

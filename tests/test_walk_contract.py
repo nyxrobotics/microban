@@ -5,7 +5,7 @@ from constants import (
     MOTOR_TO_ID,
     NEUTRAL_POSE,
     OBSERVATION_DOF_ORDER,
-    POLICY_TARGET_CLIP_RAD,
+    SERVO_TARGET_RANGE_RAD,
 )
 from input.input_source import UserInput
 from moves.move import MotorCommand, MoveState
@@ -54,7 +54,7 @@ class WalkContractTest(unittest.TestCase):
         for name in OBSERVATION_DOF_ORDER:
             self.assertEqual(move._default_pose[name], NEUTRAL_POSE[name])
             self.assertEqual(
-                move._action_clip[name], (-POLICY_TARGET_CLIP_RAD, POLICY_TARGET_CLIP_RAD)
+                move._action_clip[name], (-SERVO_TARGET_RANGE_RAD, SERVO_TARGET_RANGE_RAD)
             )
         self.assertEqual(move.action_scale, 1.0)
         self.assertFalse(move._use_reference_phase)
@@ -89,17 +89,40 @@ class WalkContractTest(unittest.TestCase):
                 "previous_action_semantics": "clipped_target",
             },
             "scale": {**walk_contract_metadata(), "action_scale": "0.5"},
+            "old_v2_clip157_contract": {
+                **walk_contract_metadata(),
+                "walk_contract_version": "v2_centered_home_clip157",
+                "action_clip_lower": csv([-1.57] * ACTION_COUNT),
+                "action_clip_upper": csv([1.57] * ACTION_COUNT),
+            },
+            "v3_with_old_clip157": {
+                **walk_contract_metadata(),
+                "action_clip_lower": csv([-1.57] * ACTION_COUNT),
+                "action_clip_upper": csv([1.57] * ACTION_COUNT),
+            },
             "narrow_clip": {
                 **walk_contract_metadata(),
                 "action_clip_lower": csv([-1.0] * ACTION_COUNT),
             },
-            "wide_clip": {
+            "slightly_narrow_clip": {
                 **walk_contract_metadata(),
                 "action_clip_upper": csv([3.14] * ACTION_COUNT),
             },
+            "three_decimal_clip": {
+                **walk_contract_metadata(),
+                "action_clip_upper": ",".join(["3.142"] * ACTION_COUNT),
+            },
+            "wide_clip": {
+                **walk_contract_metadata(),
+                "action_clip_upper": csv([math.pi + 1.0e-5] * ACTION_COUNT),
+            },
+            "one_joint_wide": {
+                **walk_contract_metadata(),
+                "action_clip_lower": csv([-math.pi] * (ACTION_COUNT - 1) + [-4.0]),
+            },
             "short_clip": {
                 **walk_contract_metadata(),
-                "action_clip_upper": csv([POLICY_TARGET_CLIP_RAD] * (ACTION_COUNT - 1)),
+                "action_clip_upper": csv([SERVO_TARGET_RANGE_RAD] * (ACTION_COUNT - 1)),
             },
             "nan_clip": {
                 **walk_contract_metadata(),
@@ -162,7 +185,7 @@ class WalkTargetRuleTest(unittest.TestCase):
         move.step(obs, command)
         self.assertFalse(move.policy_faulted)
         for index, name in enumerate(OBSERVATION_DOF_ORDER):
-            self.assertEqual(command.target_angles[name], signs[name] * POLICY_TARGET_CLIP_RAD)
+            self.assertEqual(command.target_angles[name], signs[name] * SERVO_TARGET_RANGE_RAD)
             self.assertGreater(abs(move._last_action[index]), 9.0)
         next_obs = move.build_observation(obs)
         start = 6 + 2 * ACTION_COUNT
@@ -178,7 +201,7 @@ class WalkTargetRuleTest(unittest.TestCase):
         self.assertFalse(move.policy_faulted)
         self.assertEqual(move._last_action, raw)
         for name in OBSERVATION_DOF_ORDER:
-            self.assertEqual(abs(command.target_angles[name]), POLICY_TARGET_CLIP_RAD)
+            self.assertEqual(abs(command.target_angles[name]), SERVO_TARGET_RANGE_RAD)
 
     def test_non_finite_output_latches_a_fault_and_holds_last_targets(self):
         good = [0.1] * ACTION_COUNT

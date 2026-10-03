@@ -6,8 +6,9 @@
 > current production, R3 uses PICO v12 for zero-velocity balance, optional
 > body tracking loss supplies zero targets, UDP gaps replay the last authenticated
 > operator state, and PICO actor faults hold prior body goals. The old walk actor
-> is not executed as the production fallback. Automatic get-up runs with the
-> installed v4 `getup.onnx` (see `docs/pico_teleop_resilience.md`).
+> is not executed as the production fallback. Automatic get-up runs with an
+> installed contract-v5 `getup.onnx` (+-pi servo-range clip); the older v4
+> (+-1.57 rad) artifact is refused (see `docs/pico_teleop_resilience.md`).
 
 The contract-v10 PICO bridge requested `pico_teleop`; the left-controller X
 (WebXR `primary_button`) is parsed for protocol compatibility but is ignored by

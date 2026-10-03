@@ -12,7 +12,7 @@ from constants import (
     MOTOR_TO_ID,
     NEUTRAL_POSE,
     OBSERVATION_DOF_ORDER,
-    POLICY_TARGET_CLIP_RAD,
+    SERVO_TARGET_RANGE_RAD,
 )
 from imu_reader import imu_quat_to_body
 from input.input_source import UserInput
@@ -322,9 +322,9 @@ def valid_metadata():
 
 def clipped_target(index, raw_value):
     return max(
-        -POLICY_TARGET_CLIP_RAD,
+        -SERVO_TARGET_RANGE_RAD,
         min(
-            POLICY_TARGET_CLIP_RAD,
+            SERVO_TARGET_RANGE_RAD,
             EXPECTED_ACTION_DEFAULT_JOINT_POS[index] + raw_value,
         ),
     )
@@ -861,14 +861,15 @@ class PicoHybridMoveTest(unittest.TestCase):
         move.on_start(obs, command)
         move.step(obs, command)
 
-        # Every policy: target = clip(HOME + raw * 1.0, -1.57, +1.57), and
+        # Every policy: target = clip(HOME + raw * 1.0, -pi, +pi) (the servo
+        # range, no software clip), and
         # the previous-action observation is the unclipped raw output.
         expected_targets = {
             name: clipped_target(index, float(raw[0, index]))
             for index, name in enumerate(OBSERVATION_DOF_ORDER)
         }
         self.assertTrue(
-            any(abs(value) == POLICY_TARGET_CLIP_RAD for value in expected_targets.values())
+            any(abs(value) == SERVO_TARGET_RANGE_RAD for value in expected_targets.values())
         )
         for name, expected in expected_targets.items():
             self.assertEqual(command.target_angles[name], expected)
@@ -889,7 +890,7 @@ class PicoHybridMoveTest(unittest.TestCase):
 
         np.testing.assert_array_equal(move._last_action, raw[0])
         self.assertEqual(
-            command.target_angles[OBSERVATION_DOF_ORDER[0]], POLICY_TARGET_CLIP_RAD
+            command.target_angles[OBSERVATION_DOF_ORDER[0]], SERVO_TARGET_RANGE_RAD
         )
 
     def test_v12_extreme_targets_are_clipped_at_the_guard_boundary(self):
@@ -915,7 +916,7 @@ class PicoHybridMoveTest(unittest.TestCase):
             self.assertEqual(
                 command.target_angles[name], clipped_target(index, float(raw[0, index]))
             )
-            self.assertEqual(abs(command.target_angles[name]), POLICY_TARGET_CLIP_RAD)
+            self.assertEqual(abs(command.target_angles[name]), SERVO_TARGET_RANGE_RAD)
         np.testing.assert_array_equal(move._last_action, raw[0])
 
     def test_v12_target_clip_metadata_may_narrow_but_never_widen(self):
@@ -931,12 +932,31 @@ class PicoHybridMoveTest(unittest.TestCase):
         for name in OBSERVATION_DOF_ORDER:
             self.assertEqual(command.target_angles[name], 1.0)
 
+        # mjlab's 3-decimal +-3.142 is the servo range; it never widens the
+        # applied bound past the exact +-pi.
+        rounded = valid_v12_metadata()
+        rounded["action_clip_lower"] = ",".join(["-3.142"] * 18)
+        rounded["action_clip_upper"] = ",".join(["3.142"] * 18)
+        huge = np.full((1, 18), 24.0, dtype=np.float32)
+        move = PicoHybridMove(session=FakeSession(metadata=rounded, output=huge))
+        command = MotorCommand()
+        move.on_start(obs, command)
+        move.step(obs, command)
+        for name in OBSERVATION_DOF_ORDER:
+            self.assertEqual(command.target_angles[name], math.pi)
+
         wide = valid_v12_metadata()
-        wide["action_clip_lower"] = ",".join(["-2.0"] * 18)
-        wide["action_clip_upper"] = ",".join(["2.0"] * 18)
+        wide["action_clip_lower"] = ",".join(["-3.2"] * 18)
+        wide["action_clip_upper"] = ",".join(["3.2"] * 18)
+        barely_wide = valid_v12_metadata()
+        barely_wide["action_clip_upper"] = ",".join(["3.143"] * 18)
         half = valid_v12_metadata()
-        half["action_clip_upper"] = ",".join(["1.57"] * 18)
-        for case, metadata in (("wider", wide), ("only_upper", half)):
+        half["action_clip_upper"] = ",".join(["3.142"] * 18)
+        for case, metadata in (
+            ("wider", wide),
+            ("barely_wider", barely_wide),
+            ("only_upper", half),
+        ):
             with (
                 self.subTest(case=case),
                 self.assertRaises(PicoHybridPolicyContractError),

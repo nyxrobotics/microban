@@ -12,7 +12,7 @@ from constants import (
     MOTOR_TO_ID,
     NEUTRAL_POSE,
     OBSERVATION_DOF_ORDER,
-    POLICY_TARGET_CLIP_RAD,
+    SERVO_TARGET_RANGE_RAD,
 )
 from input.input_source import UserInput
 from moves import walk as walk_module
@@ -63,7 +63,7 @@ class SharedHomeTest(unittest.TestCase):
             self.assertEqual(NEUTRAL_POSE[name], math.radians(degrees), name)
         self.assertEqual(HOME_PITCH_RAD, math.radians(1.198384259489))
         self.assertEqual(HOME_ROOT_POS_Z_M, 0.170554885633559)
-        self.assertEqual(POLICY_TARGET_CLIP_RAD, 1.57)
+        self.assertEqual(SERVO_TARGET_RANGE_RAD, math.pi)
 
     def test_every_runtime_copy_derives_from_neutral_pose(self):
         self.assertEqual(PICO_TELEOP_HOME_POSE, NEUTRAL_POSE)
@@ -122,11 +122,48 @@ class GetupHomeTest(unittest.TestCase):
         self.assertEqual(session.calls[0][6 : 6 + ACTION_COUNT], [0.0] * ACTION_COUNT)
         for index, name in enumerate(OBSERVATION_DOF_ORDER):
             expected = max(
-                -POLICY_TARGET_CLIP_RAD,
-                min(POLICY_TARGET_CLIP_RAD, NEUTRAL_POSE[name] + raw[index]),
+                -SERVO_TARGET_RANGE_RAD,
+                min(SERVO_TARGET_RANGE_RAD, NEUTRAL_POSE[name] + raw[index]),
             )
             self.assertEqual(command.target_angles[name], expected)
+        # A huge raw output saturates exactly at the servo range (+pi).
+        self.assertEqual(command.target_angles[OBSERVATION_DOF_ORDER[0]], math.pi)
         self.assertEqual(move._last_action, raw)
+
+    def test_only_the_v5_servo_range_clip_is_accepted(self):
+        def with_clip(lower, upper, version="v5"):
+            metadata = getup_contract_metadata()
+            metadata["microban_getup_contract"] = version
+            metadata["action_clip_lower"] = ",".join(lower)
+            metadata["action_clip_upper"] = ",".join(upper)
+            return metadata
+
+        servo_lo = [repr(-math.pi)] * ACTION_COUNT
+        servo_hi = [repr(math.pi)] * ACTION_COUNT
+        cases = {
+            # The deployed +-1.57 policies (contract v4) and any v4 stamp.
+            "old_v4_clip157": with_clip(["-1.570"] * 18, ["1.570"] * 18, "v4"),
+            "v4_with_servo_clip": with_clip(servo_lo, servo_hi, "v4"),
+            "v5_with_clip157": with_clip(["-1.570"] * 18, ["1.570"] * 18),
+            "narrow_upper": with_clip(servo_lo, ["3.0"] * ACTION_COUNT),
+            "narrow_one_joint": with_clip(servo_lo, servo_hi[:17] + ["3.141"]),
+            # mjlab's 3-decimal formatter would publish 3.142 > pi.
+            "three_decimal": with_clip(["-3.142"] * ACTION_COUNT, ["3.142"] * ACTION_COUNT),
+            "wide_upper": with_clip(servo_lo, [repr(math.pi + 1.0e-5)] * ACTION_COUNT),
+            "wide_one_joint": with_clip(servo_lo[:17] + ["-3.2"], servo_hi),
+            "short": with_clip(servo_lo[:-1], servo_hi[:-1]),
+            "nan": with_clip(["nan"] * ACTION_COUNT, servo_hi),
+            "missing": {
+                key: value
+                for key, value in getup_contract_metadata().items()
+                if key != "action_clip_upper"
+            },
+        }
+        for case, metadata in cases.items():
+            with self.subTest(case=case):
+                move, _ = fake_getup(metadata)
+                self.assertFalse(move.model_ready)
+        self.assertTrue(fake_getup(with_clip(servo_lo, servo_hi))[0].model_ready)
 
     def test_model_trained_at_another_home_is_rejected(self):
         move, _ = fake_getup(getup_contract_metadata(OLD_HOME))
@@ -147,14 +184,11 @@ class GetupHomeTest(unittest.TestCase):
         root["root_pos_m"][2] = 0.175
         wrong_root = getup_contract_metadata()
         wrong_root["microban_getup_home_pose"] = json.dumps(root)
-        wide_clip = getup_contract_metadata()
-        wide_clip["action_clip_upper"] = ",".join(["3.0"] * ACTION_COUNT)
         for case, metadata in (
             ("missing", missing),
             ("stale_stamp", stale_stamp),
             ("stale_defaults", stale_defaults),
             ("wrong_root", wrong_root),
-            ("wide_clip", wide_clip),
         ):
             with self.subTest(case=case):
                 move, _ = fake_getup(metadata)

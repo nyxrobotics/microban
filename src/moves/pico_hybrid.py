@@ -30,7 +30,8 @@ from constants import (
     MOTOR_TO_ID,
     NEUTRAL_POSE,
     OBSERVATION_DOF_ORDER,
-    POLICY_TARGET_CLIP_RAD,
+    SERIALIZED_CLIP_TOLERANCE_RAD,
+    SERVO_TARGET_RANGE_RAD,
 )
 from controller import ControllerProtocol
 from moves.move import MotorCommand, Move, MoveState
@@ -1516,9 +1517,10 @@ class _PolicyContract:
     v12_learned_source_delta_maximum: tuple[float, ...] = ()
     v12_learned_source_delta_absolute_maximum: tuple[float, ...] = ()
     v12_runtime_raw_action_guard_absolute_maximum: tuple[float, ...] = ()
-    # Absolute target clip shared by every policy: target = clip(default + raw
-    # * scale, lower, upper).  From action_clip_lower/upper metadata when
-    # present (never wider than +-POLICY_TARGET_CLIP_RAD), else that default.
+    # Absolute target bound: target = clip(default + raw * scale, lower,
+    # upper).  No software clip by default -- only the servo's one-turn goal
+    # range +-SERVO_TARGET_RANGE_RAD (+-pi).  action_clip_lower/upper metadata,
+    # when present, may narrow it but never widen it past +-pi.
     v12_target_clip_lower: tuple[float, ...] = ()
     v12_target_clip_upper: tuple[float, ...] = ()
 
@@ -2671,14 +2673,14 @@ def _parse_v12_contract(session: Any) -> _PolicyContract:
 def _parse_v12_target_clip(
     metadata: Mapping[str, str], count: int
 ) -> tuple[tuple[float, ...], tuple[float, ...]]:
-    """Return the shared absolute target clip, narrowed only by metadata."""
+    """Return the absolute target bound: the servo range, narrowed only by metadata."""
 
     keys = ("action_clip_lower", "action_clip_upper")
     present = [key in metadata for key in keys]
     if not any(present):
         return (
-            (-POLICY_TARGET_CLIP_RAD,) * count,
-            (POLICY_TARGET_CLIP_RAD,) * count,
+            (-SERVO_TARGET_RANGE_RAD,) * count,
+            (SERVO_TARGET_RANGE_RAD,) * count,
         )
     if not all(present):
         raise PicoHybridPolicyContractError(
@@ -2686,16 +2688,19 @@ def _parse_v12_target_clip(
         )
     lower = _float_csv(metadata.get(keys[0]), keys[0], count)
     upper = _float_csv(metadata.get(keys[1]), keys[1], count)
-    tolerance = 1.0e-6
+    # mjlab's exporter writes 3-decimal CSVs, so +-pi arrives as +-3.142.
+    limit = SERVO_TARGET_RANGE_RAD + SERIALIZED_CLIP_TOLERANCE_RAD
     for lo, hi in zip(lower, upper, strict=True):
-        if not (
-            -POLICY_TARGET_CLIP_RAD - tolerance <= lo < hi <= POLICY_TARGET_CLIP_RAD + tolerance
-        ):
+        if not -limit <= lo < hi <= limit:
             raise PicoHybridPolicyContractError(
-                "action_clip_lower/upper must lie within "
-                f"+-{POLICY_TARGET_CLIP_RAD} rad"
+                "action_clip_lower/upper must lie within the servo range "
+                f"+-{SERVO_TARGET_RANGE_RAD!r} rad"
             )
-    return lower, upper
+    # The rounded +-3.142 never widens a target past the exact servo range.
+    return (
+        tuple(max(-SERVO_TARGET_RANGE_RAD, lo) for lo in lower),
+        tuple(min(SERVO_TARGET_RANGE_RAD, hi) for hi in upper),
+    )
 
 
 def _require_v12_runtime_source_identity(metadata: Mapping[str, str]) -> None:
@@ -2726,8 +2731,9 @@ def _parse_contract(session: Any) -> _PolicyContract:
 def _validate_physical_motor_target_contract(contract: _PolicyContract) -> None:
     """Validate the calibrated joint geometry before inference begins.
 
-    V10 still uses the software soft limits. V12 clips its policy target to
-    the shared +-POLICY_TARGET_CLIP_RAD absolute clip in step().
+    V10 still uses the software soft limits. V12 bounds its policy target
+    only by the servo range +-SERVO_TARGET_RANGE_RAD (or a narrower metadata
+    clip) in step().
     """
 
     vectors = {

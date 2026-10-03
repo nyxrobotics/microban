@@ -4,10 +4,14 @@
 > get-up) now shares one reference pose, the centered HOME (`NEUTRAL_POSE` in
 > `src/constants.py`: shoulder pitch 0, hip pitch +1.198 deg, ankle pitch
 > -1.198 deg, ...), and one target rule,
-> `target = clip(HOME + raw * 1.0, -1.57, +1.57)` on all 18 body joints, with
-> the raw previous output observed. `PICO_TELEOP_HOME_POSE` is now
-> `NEUTRAL_POSE`, and the v12 step clips its target to `action_clip_lower/upper`
-> metadata when present (never wider than +-1.57 rad), else +-1.57 rad. The
+> `target = clip(HOME + raw * 1.0, -pi, +pi)` on all 18 body joints, with
+> the raw previous output observed. There is no software clip: +-pi is the
+> servo's one-turn goal range (`SERVO_TARGET_RANGE_RAD`), and `RobotController`
+> saturates every servo goal into `[-pi, pi - 2*pi/4096]` (raw 0..4095).
+> `PICO_TELEOP_HOME_POSE` is now `NEUTRAL_POSE`, and the v12 step bounds its
+> target by `action_clip_lower/upper` metadata when present (it may narrow the
+> range, never widen it past +-pi; the 3-decimal +-3.142 counts as +-pi), else
+> +-pi. The earlier +-1.57 rad clip of the same day is gone. The
 > currently installed `pico_teleop.onnx` (trained at the older HOME) is rejected
 > until it is retrained and re-exported with a new contract. Statements below
 > that v12 targets are unclipped, or that the PICO HOME differs from
@@ -436,5 +440,8 @@ If either validator fails, do not bypass it. Removing or withholding
 the same left-trigger control. The pinned `walk.onnx` is still an artifact
 dependency of this validator, so an absent or altered copy fails deployment
 preflight even though the production fallback does not execute it. The current
-get-up artifact is the v4 HOME-stance policy (`src/agents/getup.onnx`); see
-`docs/pico_teleop_resilience.md` for automatic get-up and standing balance.
+get-up artifact is the v4 HOME-stance policy (`src/agents/getup.onnx`, +-1.57
+rad clip); the runtime now accepts only contract v5 (+-pi servo-range clip), so
+that artifact is disabled (falls return toward neutral) until a v5 get-up policy
+is installed. See `docs/pico_teleop_resilience.md` for automatic get-up and
+standing balance.

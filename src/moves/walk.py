@@ -15,7 +15,7 @@ from constants import (
     NEUTRAL_POSE,
     OBSERVATION_DOF_ORDER,
     POLICY_ACTION_SCALE,
-    POLICY_TARGET_CLIP_RAD,
+    SERVO_TARGET_RANGE_RAD,
 )
 from controller import ControllerProtocol
 from moves.move import MotorCommand, Move, MoveState
@@ -31,9 +31,11 @@ AGENT_NAME = "walk.onnx"
 
 # Deployment contract of the walking actor, read from the ONNX metadata and
 # checked at construction (fail closed): target = clip(NEUTRAL_POSE + raw *
-# 1.0, -1.57, +1.57) on the 18 OBSERVATION_DOF_ORDER joints, and the previous
-# action observation is the policy's own raw previous output.
-WALK_CONTRACT_VERSION = "v2_centered_home_clip157"
+# 1.0, -pi, +pi) on the 18 OBSERVATION_DOF_ORDER joints -- no software clip,
+# only the servo's one-turn goal range (constants.SERVO_TARGET_RANGE_RAD) --
+# and the previous action observation is the policy's own raw previous output.
+# The older v2_centered_home_clip157 (+-1.57) actors are rejected.
+WALK_CONTRACT_VERSION = "v3_centered_home_servo_range"
 WALK_PREVIOUS_ACTION_SEMANTICS = "raw_policy_output"
 # default_joint_pos must reproduce NEUTRAL_POSE to this tolerance; the
 # exporter therefore has to write full-precision floats (mjlab's base
@@ -127,13 +129,13 @@ def parse_walk_contract(
     lower = _metadata_floats(meta, "action_clip_lower")
     upper = _metadata_floats(meta, "action_clip_upper")
     if len(lower) != action_count or len(upper) != action_count or any(
-        abs(lo + POLICY_TARGET_CLIP_RAD) > _CLIP_TOLERANCE_RAD
-        or abs(hi - POLICY_TARGET_CLIP_RAD) > _CLIP_TOLERANCE_RAD
+        abs(lo + SERVO_TARGET_RANGE_RAD) > _CLIP_TOLERANCE_RAD
+        or abs(hi - SERVO_TARGET_RANGE_RAD) > _CLIP_TOLERANCE_RAD
         for lo, hi in zip(lower, upper)
     ):
         raise WalkPolicyContractError(
-            f"walk policy action_clip_lower/upper must be +-{POLICY_TARGET_CLIP_RAD} "
-            f"on all {action_count} action joints"
+            "walk policy action_clip_lower/upper must be the servo range "
+            f"+-{SERVO_TARGET_RANGE_RAD!r} rad on all {action_count} action joints"
         )
 
     inputs = session.get_inputs()
@@ -153,7 +155,11 @@ def parse_walk_contract(
 
     # Validated equal to NEUTRAL_POSE above; use the full-precision robot copy.
     default_pose = {name: float(NEUTRAL_POSE[name]) for name in joint_names}
-    clip = dict(zip(OBSERVATION_DOF_ORDER, zip(lower, upper)))
+    # Validated equal to +-pi above; apply the exact servo range.
+    clip = {
+        name: (-SERVO_TARGET_RANGE_RAD, SERVO_TARGET_RANGE_RAD)
+        for name in OBSERVATION_DOF_ORDER
+    }
     return default_pose, clip, input_shape[1] > base_obs_size
 
 

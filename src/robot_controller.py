@@ -15,6 +15,8 @@ from constants import (
     MOTOR_TO_ID,
     NEUTRAL_POSE,
     PRESENT_CURRENT_UNIT_A,
+    SERVO_GOAL_MAX_RAD,
+    SERVO_GOAL_MIN_RAD,
 )
 from imu_reader import ThreadedIMUReader
 
@@ -44,6 +46,25 @@ def validated_hardware_offsets(offsets: dict[str, float]) -> dict[str, float]:
     return checked
 
 
+def saturate_servo_goal(servo: float) -> float:
+    """Clamp a servo-coordinate goal (rad) into the servo's raw goal range.
+
+    XC330 in Position Control mode takes raw goals 0..4095 (one turn), which
+    rustypot maps to [SERVO_GOAL_MIN_RAD, SERVO_GOAL_MAX_RAD] = [-pi, pi -
+    2*pi/4096]. Policies have no software clip (their targets reach +-pi) and
+    the sign/offset mapping can push a goal past either edge, so every goal
+    write saturates here. An in-range value is returned unchanged (the same
+    float, bit for bit). A non-finite goal raises before anything is written.
+    """
+    if not math.isfinite(servo):
+        raise ValueError(f"non-finite servo goal {servo!r}")
+    if servo < SERVO_GOAL_MIN_RAD:
+        return SERVO_GOAL_MIN_RAD
+    if servo > SERVO_GOAL_MAX_RAD:
+        return SERVO_GOAL_MAX_RAD
+    return servo
+
+
 class RobotController:
     """Wraps Xl330PyController.
 
@@ -51,7 +72,8 @@ class RobotController:
     targets) is in the logical joint coordinate used by the policies and
     training. ``_to_servo``/``_from_servo`` are the only conversions to and from
     the servo coordinate: MOTOR_SIGN plus the real-robot calibration offset
-    (constants.HARDWARE_JOINT_OFFSET_RAD).
+    (constants.HARDWARE_JOINT_OFFSET_RAD). Every servo goal written to the bus
+    is saturated into the servo's raw goal range (``saturate_servo_goal``).
     """
 
     def __init__(
@@ -157,11 +179,29 @@ class RobotController:
         return float(raw)
 
     def _to_servo(self, motor_id: int, logical: float) -> float:
-        """Logical joint radians -> servo goal radians (sign and calibration offset)."""
+        """Logical joint radians -> servo goal radians.
+
+        Sign and calibration offset, then saturation into the servo's raw goal
+        range (in-range goals are unchanged bit for bit).
+        """
         offset = self._id_to_offset[motor_id]
         if offset:
             logical = logical + offset
-        return logical * self._id_to_sign[motor_id]
+        return saturate_servo_goal(logical * self._id_to_sign[motor_id])
+
+    def _servo_goal(self, motor_id: int, logical: float) -> tuple[float, float]:
+        """Return (servo goal to write, logical goal it commands).
+
+        The logical goal is ``logical`` itself unless the servo goal
+        saturated, in which case it is the saturated goal mapped back, so the
+        cached goal (rejoin slew start, current proxy) is what was written.
+        """
+        servo = self._to_servo(motor_id, logical)
+        offset = self._id_to_offset[motor_id]
+        unbounded = (logical + offset if offset else logical) * self._id_to_sign[motor_id]
+        if servo == unbounded:
+            return servo, logical
+        return servo, self._from_servo(motor_id, servo)
 
     def _from_servo(self, motor_id: int, servo: float) -> float:
         """Servo position radians -> logical joint radians (inverse of _to_servo)."""
@@ -176,17 +216,16 @@ class RobotController:
             # A previously silent joint must receive its measured pose before
             # torque is enabled. A failed write leaves it pending for retry.
             try:
-                self._controller.sync_write_goal_position(
-                    [motor_id], [self._to_servo(motor_id, value)]
-                )
+                servo, goal = self._servo_goal(motor_id, value)
+                self._controller.sync_write_goal_position([motor_id], [servo])
                 self._controller.sync_write_position_p_gain(
                     [motor_id], [self._last_kp[motor_id]]
                 )
                 self._controller.sync_write_torque_enable([motor_id], [True])
-            except (RuntimeError, OSError):
+            except (RuntimeError, OSError, ValueError):
                 self._stale_ids.add(motor_id)
                 return
-            self._last_goals[motor_id] = value
+            self._last_goals[motor_id] = goal
             self._pending_enable.discard(motor_id)
             self._torque_rejoin_last_s[motor_id] = time.monotonic()
         self._stale_ids.discard(motor_id)
@@ -584,17 +623,29 @@ class RobotController:
                 dt = max(0.001, min(0.1, now - last_rejoin_s))
                 max_step = 0.5 * dt
                 previous = self._last_goals[motor_id]
-                delta = max(-max_step, min(max_step, pos - previous))
+                # Slew toward the goal the servo can actually take, so a
+                # saturated target still finishes the rejoin. ``bounded`` is
+                # ``pos`` itself whenever the goal is inside the servo range.
+                bounded = self._servo_goal(motor_id, pos)[1]
+                delta = max(-max_step, min(max_step, bounded - previous))
                 sent = previous + delta
-                rejoining.append((motor_id, abs(sent - pos) <= 1e-9))
-                pos = sent
+                finished = abs(sent - bounded) <= 1e-9
+                rejoining.append((motor_id, finished))
+                # Once a saturated target is reached, send it as is so the
+                # written goal is the exact servo edge.
+                pos = pos if finished and bounded != pos else sent
             live.append((motor_id, pos))
         if live:
+            # Every goal is converted (and saturated) before the one bus
+            # write, so a non-finite goal raises without a partial write.
+            goals = [self._servo_goal(motor_id, pos) for motor_id, pos in live]
             self._controller.sync_write_goal_position(
                 [motor_id for motor_id, _ in live],
-                [self._to_servo(motor_id, pos) for motor_id, pos in live],
+                [servo for servo, _ in goals],
             )
-            self._last_goals.update(live)
+            self._last_goals.update(
+                (motor_id, goal) for (motor_id, _), (_, goal) in zip(live, goals)
+            )
             if advance_stale:
                 self._neutral_fallback_enable_ids.update(
                     motor_id for motor_id, _ in live
@@ -636,9 +687,14 @@ class RobotController:
         if not math.isfinite(measured):
             raise ValueError("non-finite measured position")
         # The servo reading goes back unchanged, so the goal is exactly the
-        # measured physical pose; only the cached goal is logical.
-        self._controller.sync_write_goal_position([motor_id], [motor_position])
-        self._last_goals[motor_id] = measured
+        # measured physical pose; only the cached goal is logical. A reading
+        # is always inside the goal range in Position Control mode, where the
+        # saturation is the identity; it only guards an impossible reading.
+        goal = saturate_servo_goal(motor_position)
+        self._controller.sync_write_goal_position([motor_id], [goal])
+        self._last_goals[motor_id] = (
+            measured if goal == motor_position else self._from_servo(motor_id, goal)
+        )
         # RAM gains may have reset if the servo rebooted.  Preserve the A or
         # policy gain that the scheduler most recently requested for this ID.
         self._controller.sync_write_position_p_gain(

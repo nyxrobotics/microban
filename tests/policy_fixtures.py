@@ -1,4 +1,4 @@
-"""Synthetic policies carrying the deployed (centered HOME, +-1.57 clip) contracts.
+"""Synthetic policies carrying the deployed (centered HOME, +-pi servo range) contracts.
 
 ``WALK_POLICY_FIXTURE`` is a tiny real ONNX walk actor (see
 fixtures/make_walk_policy_fixture.py); ``FakeSession`` lets a test vary one
@@ -16,10 +16,10 @@ from constants import (
     HOME_ROOT_QUAT_WXYZ,
     NEUTRAL_POSE,
     OBSERVATION_DOF_ORDER,
-    POLICY_TARGET_CLIP_RAD,
+    SERVO_TARGET_RANGE_RAD,
 )
 
-WALK_POLICY_FIXTURE = Path(__file__).resolve().parent / "fixtures" / "walk_policy_v2.onnx"
+WALK_POLICY_FIXTURE = Path(__file__).resolve().parent / "fixtures" / "walk_policy_v3.onnx"
 # mjlab's natural joint order (robot.joint_names) as in exported Microban ONNX.
 JOINT_NAMES = ["head", "neck_roll", "neck_pitch", *OBSERVATION_DOF_ORDER]
 ACTION_COUNT = len(OBSERVATION_DOF_ORDER)
@@ -47,14 +47,14 @@ def csv(values) -> str:
 def walk_contract_metadata(home: dict[str, float] | None = None) -> dict[str, str]:
     home = NEUTRAL_POSE if home is None else home
     return {
-        "walk_contract_version": "v2_centered_home_clip157",
+        "walk_contract_version": "v3_centered_home_servo_range",
         "previous_action_semantics": "raw_policy_output",
         "joint_names": ",".join(JOINT_NAMES),
         "default_joint_pos": csv(home[name] for name in JOINT_NAMES),
         "action_joint_names": ",".join(OBSERVATION_DOF_ORDER),
         "action_scale": "1.0",
-        "action_clip_lower": csv([-POLICY_TARGET_CLIP_RAD] * ACTION_COUNT),
-        "action_clip_upper": csv([POLICY_TARGET_CLIP_RAD] * ACTION_COUNT),
+        "action_clip_lower": csv([-SERVO_TARGET_RANGE_RAD] * ACTION_COUNT),
+        "action_clip_upper": csv([SERVO_TARGET_RANGE_RAD] * ACTION_COUNT),
         "observation_names": "base_ang_vel,projected_gravity,joint_pos,joint_vel,actions,command",
         "command_names": "twist",
         "run_path": "synthetic_test_fixture",
@@ -62,19 +62,24 @@ def walk_contract_metadata(home: dict[str, float] | None = None) -> dict[str, st
 
 
 def getup_contract_metadata(home: dict[str, float] | None = None) -> dict[str, str]:
-    """What mjlab_microban's export_getup_onnx.py writes (3-decimal CSVs)."""
+    """What mjlab_microban's export_getup_onnx.py writes for contract v5.
+
+    default_joint_pos goes through mjlab's 3-decimal CSV formatter; the +-pi
+    servo-range clip is written at full precision (mjlab_microban 1290a1e).
+    """
     home = NEUTRAL_POSE if home is None else home
     return {
-        "microban_getup_contract": "v4",
+        "microban_getup_contract": "v5",
         "microban_getup_angular_velocity_frame": "imu_sensor_xyz",
         "microban_getup_previous_action_semantics": "raw_policy_output",
         "joint_names": ",".join(JOINT_NAMES),
         "default_joint_pos": ",".join(f"{home[name]:.3f}" for name in JOINT_NAMES),
         "action_joint_names": ",".join(OBSERVATION_DOF_ORDER),
         "observation_names": "base_ang_vel,projected_gravity,joint_pos,joint_vel,actions",
-        "action_clip_lower": ",".join(["-1.570"] * ACTION_COUNT),
-        "action_clip_upper": ",".join(["1.570"] * ACTION_COUNT),
+        "action_clip_lower": csv([-SERVO_TARGET_RANGE_RAD] * ACTION_COUNT),
+        "action_clip_upper": csv([SERVO_TARGET_RANGE_RAD] * ACTION_COUNT),
         "action_scale": "1.0",
+        "microban_getup_checkpoint_contract_stamp": "v5",
         "checkpoint_sha256": "0" * 64,
         "microban_getup_home_pose": json.dumps(
             {

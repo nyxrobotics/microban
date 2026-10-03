@@ -17,7 +17,7 @@ from constants import (
     MOTOR_TO_ID,
     NEUTRAL_POSE,
     OBSERVATION_DOF_ORDER,
-    POLICY_TARGET_CLIP_RAD,
+    SERVO_TARGET_RANGE_RAD,
 )
 from controller import ControllerProtocol
 from observer import Observation
@@ -26,13 +26,14 @@ from moves.move import MotorCommand, Move, MoveState
 
 # Policy name
 AGENT_NAME = "getup.onnx"
-# v4: absolute target = default + raw action, clipped at the model's own
-# action_clip_lower/upper (a flat +-1.57 rad in training), and the policy
-# observes its own previous RAW output. Every get-up policy that stood in
-# simulation was trained this way, as was the one this robot ran on
-# 2026-09-26 (runtime 9b36403 fed back the raw output too). v3 fed back the
-# applied target instead.
-GETUP_CONTRACT_VERSION = "v4"
+# v5: absolute target = default + raw action with no software clip -- only
+# the servo's one-turn goal range, +-pi (constants.SERVO_TARGET_RANGE_RAD),
+# which training models as the action clip and the exporter writes as
+# action_clip_lower/upper -- and the policy observes its own previous RAW
+# output. v4 was the same rule with a flat +-1.57 rad clip (it capped XC330
+# torque); v4 models are rejected rather than run at another clip. v3 fed
+# back the applied target instead.
+GETUP_CONTRACT_VERSION = "v5"
 GETUP_PREVIOUS_ACTION_SEMANTICS = "raw_policy_output"
 # The model's HOME must be the robot's NEUTRAL_POSE (the one centered HOME
 # every policy shares). microban_getup_home_pose carries it at full precision;
@@ -40,6 +41,9 @@ GETUP_PREVIOUS_ACTION_SEMANTICS = "raw_policy_output"
 _HOME_POSE_TOLERANCE_RAD = 1.0e-6
 _HOME_ROOT_TOLERANCE = 1.0e-6
 _SERIALIZED_DEFAULT_TOLERANCE_RAD = 0.0005 + 1.0e-9
+# The exporter writes action_clip_lower/upper at full precision (repr), so the
+# servo-range clip must match +-pi to float noise, as WalkMove requires.
+_CLIP_TOLERANCE_RAD = 1.0e-6
 
 # "Slowly" for the torque-on-but-unarmed recovery slew (see
 # _step_recover_to_neutral): far below hmd_head.py's 2.5 rad/s, since this is
@@ -156,19 +160,16 @@ class GetupMove(Move):
         clip_upper = _metadata_floats(meta.get("action_clip_upper"))
         action_scale = _metadata_floats(meta.get("action_scale"))
         action_count = len(OBSERVATION_DOF_ORDER)
-        # Well-formedness only: the per-joint values come from training's own
-        # JointPositionActionCfg.clip, whatever it is for this model.
+        # Training's JointPositionActionCfg.clip must be the servo range
+        # (+-pi) on every action joint: a narrower clip (the old +-1.57
+        # policies) trained another action rule, and a wider one (including
+        # mjlab's 3-decimal 3.142) would ask for goals the servo cannot take.
         clip_valid = (
             len(clip_lower) == action_count
             and len(clip_upper) == action_count
-            and all(math.isfinite(value) for value in clip_lower)
-            and all(math.isfinite(value) for value in clip_upper)
-            and all(lo < hi for lo, hi in zip(clip_lower, clip_upper))
-            # Every policy shares the +-POLICY_TARGET_CLIP_RAD absolute clip;
-            # never let metadata widen it.
             and all(
-                lo >= -POLICY_TARGET_CLIP_RAD - 1.0e-6
-                and hi <= POLICY_TARGET_CLIP_RAD + 1.0e-6
+                abs(lo + SERVO_TARGET_RANGE_RAD) <= _CLIP_TOLERANCE_RAD
+                and abs(hi - SERVO_TARGET_RANGE_RAD) <= _CLIP_TOLERANCE_RAD
                 for lo, hi in zip(clip_lower, clip_upper)
             )
         )
@@ -202,7 +203,7 @@ class GetupMove(Move):
         )
         if not self.model_ready:
             print(
-                "Get-up actor disabled: deployed model lacks the v4 action, "
+                "Get-up actor disabled: deployed model lacks the v5 servo-range action, "
                 "IMU-frame or centered-HOME contract; falls return toward neutral",
                 end="\r\n", flush=True,
             )
@@ -211,17 +212,12 @@ class GetupMove(Move):
         ]
 
         self.action_scale = 1.0
-        # From the model's own action_clip_lower/upper metadata (validated
-        # above as clip_valid), i.e. training's JointPositionActionCfg.clip.
-        # Falls back to +-1.57 rad if the metadata is malformed (model_ready
-        # is already False then, so this never reaches the motors).
-        if clip_valid:
-            self._action_clip = dict(zip(OBSERVATION_DOF_ORDER, zip(clip_lower, clip_upper)))
-        else:
-            self._action_clip = {
-                name: (-POLICY_TARGET_CLIP_RAD, POLICY_TARGET_CLIP_RAD)
-                for name in OBSERVATION_DOF_ORDER
-            }
+        # The exact servo range (the metadata was validated equal to it
+        # above; a malformed one leaves model_ready False).
+        self._action_clip = {
+            name: (-SERVO_TARGET_RANGE_RAD, SERVO_TARGET_RANGE_RAD)
+            for name in OBSERVATION_DOF_ORDER
+        }
         self._last_action = [0.0] * len(OBSERVATION_DOF_ORDER)
 
         # Real-hardware test gating (GamepadInputSource B/A/R3; see step()).
@@ -310,7 +306,7 @@ class GetupMove(Move):
         ort_outs = self._ort_session.run(None, ort_inputs)
         action = ort_outs[0][0]
         action_values = [float(value) for value in action]
-        # Only non-finite output is a fault. A v4 policy's raw output is
+        # Only non-finite output is a fault. A get-up policy's raw output is
         # routinely hundreds of radians: it drives the clipped target to a
         # bound to get torque out of the soft P125 servos, and the clip
         # below bounds the physical target no matter how large it is.
@@ -348,7 +344,7 @@ class GetupMove(Move):
             target = max(lo, min(hi, self._default_pose[name] + action_values[i] * self.action_scale))
             self._policy_targets[name] = target
             command.target_angles[name] = target
-        # The v4 training observation is the policy's own raw output, not
+        # The training observation is the policy's own raw output, not
         # the clipped target -- and no per-tick rate limit on either.
         self._last_action = action_values
 

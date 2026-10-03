@@ -108,7 +108,15 @@ joints and every value is `0.0` by default.
   the sign wrong doubles the error instead of removing it.
 - Limit: each value must be finite and at most `HARDWARE_JOINT_OFFSET_MAX_RAD`
   (0.2 rad, about 11.5 deg); otherwise the runtime refuses to start. Nonzero values are
-  printed once when the runtime starts (`Hardware joint offsets (...)`).
+  printed once when the runtime starts (`Hardware joint offsets (...)`). Offsets are
+  calibration trims; they do not keep goals in range.
+- Servo range: policies have no software clip. Every policy target is
+  `clip(HOME + raw * 1.0, -pi, +pi)`, the servo's one-turn goal range. After sign and
+  offset, `RobotController` saturates every servo goal into
+  `[SERVO_GOAL_MIN_RAD, SERVO_GOAL_MAX_RAD] = [-pi, pi - 2*pi/4096]` rad, which is raw
+  0..4095 in XC330 Position Control mode (rustypot: `raw = (rad + pi) * 4096 / (2*pi)`).
+  An in-range goal is sent unchanged. A goal past an edge is sent as that edge, and the
+  cached goal becomes the edge mapped back to the logical coordinate.
 
 Example: to pitch both feet 1 degree forward (the old GC300-only ankle bias), set
 `"left_ankle_pitch": -1.0` and `"right_ankle_pitch": -1.0`, then `make sync` and restart

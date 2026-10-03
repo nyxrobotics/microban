@@ -15,6 +15,8 @@ from constants import (
     MOTOR_SIGN,
     MOTOR_TO_ID,
     NEUTRAL_POSE,
+    SERVO_GOAL_MAX_RAD,
+    SERVO_GOAL_MIN_RAD,
 )
 
 SRC = pathlib.Path(__file__).resolve().parents[1] / "src"
@@ -403,6 +405,181 @@ class NonzeroOffsetTest(unittest.TestCase):
             logical = self.controller._from_servo(motor_id, servo)
             with self.subTest(motor_id=motor_id):
                 self.assertAlmostEqual(self.controller._to_servo(motor_id, logical), servo, places=12)
+
+
+class ServoGoalRangeTest(unittest.TestCase):
+    """Every servo goal is saturated into the servo's raw range [-pi, pi - 2pi/4096]."""
+
+    POSITIVE = "left_knee"  # MOTOR_SIGN +1
+    NEGATIVE = "left_hip_yaw"  # MOTOR_SIGN -1
+
+    def test_range_is_rustypots_raw_0_to_4095(self) -> None:
+        self.assertEqual(SERVO_GOAL_MIN_RAD, raw_to_rad(0))
+        self.assertEqual(SERVO_GOAL_MAX_RAD, raw_to_rad(4095))
+        self.assertEqual(SERVO_GOAL_MIN_RAD, -math.pi)
+        self.assertEqual(SERVO_GOAL_MAX_RAD, math.pi - 2.0 * math.pi / 4096.0)
+        self.assertEqual(MOTOR_SIGN[self.POSITIVE], 1.0)
+        self.assertEqual(MOTOR_SIGN[self.NEGATIVE], -1.0)
+
+    def test_saturate_is_identity_inside_and_clamps_outside(self) -> None:
+        for value in (
+            -0.0, 0.0, 1.0e-300, -1.0, 2.5, SERVO_GOAL_MIN_RAD, SERVO_GOAL_MAX_RAD,
+            np.nextafter(SERVO_GOAL_MIN_RAD, 0.0), np.nextafter(SERVO_GOAL_MAX_RAD, 0.0),
+        ):
+            with self.subTest(value=value):
+                out = rc_module.saturate_servo_goal(float(value))
+                self.assertEqual(out.hex(), float(value).hex())
+        for value, edge in (
+            (math.pi, SERVO_GOAL_MAX_RAD),
+            (np.nextafter(SERVO_GOAL_MAX_RAD, 4.0), SERVO_GOAL_MAX_RAD),
+            (100.0, SERVO_GOAL_MAX_RAD),
+            (np.nextafter(SERVO_GOAL_MIN_RAD, -4.0), SERVO_GOAL_MIN_RAD),
+            (-100.0, SERVO_GOAL_MIN_RAD),
+        ):
+            with self.subTest(value=value):
+                self.assertEqual(rc_module.saturate_servo_goal(float(value)), edge)
+        for value in (math.nan, math.inf, -math.inf):
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                rc_module.saturate_servo_goal(value)
+
+    def _check_saturation(self, offsets_deg) -> None:
+        offsets = offsets_deg or {}
+        for path in ("neutral", "policy"):
+            controller, bus = make_controller(offsets_deg)
+            ids = list(MOTOR_TO_ID.values())
+            if path == "policy":
+                controller.sync_read_present_position(ids)
+                bus.goal_writes.clear()
+                write = controller.sync_write_goal_position
+            else:
+                write = controller.sync_write_neutral_goal_position
+            for name in (self.POSITIVE, self.NEGATIVE, "left_ankle_pitch", "right_ankle_pitch"):
+                motor_id = MOTOR_TO_ID[name]
+                sign = MOTOR_SIGN[name]
+                offset = math.radians(offsets.get(name, 0.0))
+                for logical in (math.pi, -math.pi, 3.2, -3.2, 50.0, -50.0):
+                    unbounded = (logical + offset) * sign
+                    if SERVO_GOAL_MIN_RAD <= unbounded <= SERVO_GOAL_MAX_RAD:
+                        continue
+                    edge = SERVO_GOAL_MAX_RAD if unbounded > 0 else SERVO_GOAL_MIN_RAD
+                    bus.goal_writes.clear()
+                    write([motor_id], [logical])
+                    with self.subTest(path=path, name=name, logical=logical):
+                        self.assertEqual(bus.goals_for(motor_id), [edge])
+                        # The cached goal is the logical pose actually commanded.
+                        self.assertEqual(
+                            controller.last_goal_targets[name],
+                            edge * sign - offset,
+                        )
+
+    def test_out_of_range_goals_saturate_at_the_edges_without_offsets(self) -> None:
+        self._check_saturation(None)
+
+    def test_out_of_range_goals_saturate_at_the_edges_with_offsets(self) -> None:
+        self._check_saturation(TEST_OFFSETS_DEG)
+
+    def test_policy_targets_at_plus_minus_pi_map_to_both_edges(self) -> None:
+        controller, bus = make_controller()
+        ids = [MOTOR_TO_ID[self.POSITIVE], MOTOR_TO_ID[self.NEGATIVE]]
+        controller.sync_write_neutral_goal_position(ids, [math.pi, math.pi])
+        self.assertEqual(
+            [value for _, value in bus.goal_writes], [SERVO_GOAL_MAX_RAD, SERVO_GOAL_MIN_RAD]
+        )
+        bus.goal_writes.clear()
+        controller.sync_write_neutral_goal_position(ids, [-math.pi, -math.pi])
+        # -pi is raw 0 (in range) for +1; +pi is past raw 4095 for -1.
+        self.assertEqual(
+            [value for _, value in bus.goal_writes], [-math.pi, SERVO_GOAL_MAX_RAD]
+        )
+        self.assertEqual(controller.last_goal_targets[self.POSITIVE], -math.pi)
+        self.assertEqual(controller.last_goal_targets[self.NEGATIVE], -SERVO_GOAL_MAX_RAD)
+
+    def test_in_range_edges_are_written_unchanged(self) -> None:
+        controller, bus = make_controller()
+        ids = [MOTOR_TO_ID[self.POSITIVE], MOTOR_TO_ID[self.NEGATIVE]]
+        controller.sync_write_neutral_goal_position(
+            ids, [SERVO_GOAL_MAX_RAD, -SERVO_GOAL_MAX_RAD]
+        )
+        controller.sync_write_neutral_goal_position(ids, [SERVO_GOAL_MIN_RAD, math.pi])
+        self.assertEqual(
+            [value.hex() for _, value in bus.goal_writes],
+            [
+                SERVO_GOAL_MAX_RAD.hex(), SERVO_GOAL_MAX_RAD.hex(),
+                SERVO_GOAL_MIN_RAD.hex(), SERVO_GOAL_MIN_RAD.hex(),
+            ],
+        )
+        self.assertEqual(controller.last_goal_targets[self.POSITIVE], SERVO_GOAL_MIN_RAD)
+        self.assertEqual(controller.last_goal_targets[self.NEGATIVE], math.pi)
+
+    def test_rejoin_slew_toward_a_saturated_target_finishes_at_the_exact_edge(self) -> None:
+        for name, offsets_deg in (
+            (self.POSITIVE, None),
+            (self.NEGATIVE, None),
+            ("right_ankle_pitch", TEST_OFFSETS_DEG),
+            ("left_ankle_pitch", TEST_OFFSETS_DEG),
+        ):
+            with self.subTest(name=name, offsets=offsets_deg is not None):
+                controller, bus = make_controller(offsets_deg)
+                motor_id = MOTOR_TO_ID[name]
+                controller.sync_read_present_position(list(MOTOR_TO_ID.values()))
+                start = controller.last_goal_targets[name]
+                target = 10.0 if MOTOR_SIGN[name] > 0 else -10.0  # past +pi servo
+                controller._torque_rejoin_last_s[motor_id] = 0.0
+                with mock.patch.object(rc_module.time, "monotonic", return_value=0.1):
+                    controller.sync_write_goal_position([motor_id], [target])
+                # One 0.1 s step of the 0.5 rad/s rejoin slew.
+                self.assertAlmostEqual(
+                    controller.last_goal_targets[name] - start,
+                    math.copysign(0.05, target),
+                    places=12,
+                )
+                for tick in range(2, 200):
+                    if motor_id not in controller._torque_rejoin_last_s:
+                        break
+                    with mock.patch.object(
+                        rc_module.time, "monotonic", return_value=0.1 * tick
+                    ):
+                        controller.sync_write_goal_position([motor_id], [target])
+                self.assertNotIn(motor_id, controller._torque_rejoin_last_s)
+                self.assertEqual(bus.goals_for(motor_id)[-1], SERVO_GOAL_MAX_RAD)
+                self.assertTrue(
+                    all(
+                        SERVO_GOAL_MIN_RAD <= value <= SERVO_GOAL_MAX_RAD
+                        for value in bus.goals_for(motor_id)
+                    )
+                )
+
+    def test_non_finite_goal_raises_before_any_write(self) -> None:
+        controller, bus = make_controller()
+        ids = [MOTOR_TO_ID[self.POSITIVE], MOTOR_TO_ID[self.NEGATIVE]]
+        before = controller.last_goal_targets
+        with self.assertRaises(ValueError):
+            controller.sync_write_neutral_goal_position(ids, [0.1, math.nan])
+        self.assertEqual(bus.goal_writes, [])
+        self.assertEqual(controller.last_goal_targets, before)
+
+    def test_rejoin_seed_at_the_raw_edges_writes_the_reading_back_exactly(self) -> None:
+        for raw in (0, 4095):
+            for name in ("right_hip_roll", "right_ankle_pitch", "left_hip_yaw"):
+                controller, bus = make_controller(TEST_OFFSETS_DEG)
+                ids = list(MOTOR_TO_ID.values())
+                controller.sync_read_present_position(ids)
+                motor_id = MOTOR_TO_ID[name]
+                controller.sync_write_torque_enable([motor_id], [True])
+                bus.torque[motor_id] = 0
+                bus.raw_position[motor_id] = raw
+                bus.goal_writes.clear()
+                controller._check_torque_state(motor_id)
+                with self.subTest(raw=raw, name=name):
+                    self.assertEqual(bus.torque[motor_id], 1)
+                    self.assertEqual(
+                        [value.hex() for value in bus.goals_for(motor_id)],
+                        [raw_to_rad(raw).hex()],
+                    )
+                    self.assertEqual(
+                        controller.last_goal_targets[name],
+                        controller._from_servo(motor_id, raw_to_rad(raw)),
+                    )
 
 
 if __name__ == "__main__":
