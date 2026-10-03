@@ -168,6 +168,10 @@ class Scheduler:
         # History of sent target_angles, to align the current proxy with the delayed feedback:
         # the oldest entry is the command issued OVERCURRENT_PROXY_DELAY_TICKS ticks ago.
         self._cmd_history: deque[dict[str, float]] = deque(maxlen=OVERCURRENT_PROXY_DELAY_TICKS + 1)
+        # Checks left at the get-up cutoff after it last applied: a command
+        # written under it stays in _cmd_history (and, on the robot, in the
+        # servos' delayed response) for up to maxlen ticks. Bounded by maxlen.
+        self._getup_cutoff_tail_ticks = 0
 
     def run(self):
         print(f"Starting control loop at {1 / self.dt:.1f} Hz", end="\r\n", flush=True)
@@ -589,6 +593,7 @@ class Scheduler:
                 # would inflate the error term and false-trigger at gait start.
                 if hardware_mode == "limp":
                     self._cmd_history.clear()
+                    self._getup_cutoff_tail_ticks = 0
                     self._overcurrent_ticks = 0
                 else:
                     aligned_targets = (
@@ -602,13 +607,25 @@ class Scheduler:
                     # The fall-debounce hold is part of the same fall
                     # transient: the delay-aligned proxy still pairs the
                     # walk actor's last (falling) goals with a snapped hold.
+                    getup_cutoff = (
+                        "getup" in obs.user_input.active_moves
+                        and not self._getup_balancing
+                    ) or (fall_pending and not self._getup_auto_failed)
+                    # After the get-up (or fall hold) stops -- hand-back to
+                    # walk, standing balance, or a stop -- its last goals,
+                    # often saturated at the servo range, are still what the
+                    # delayed feedback answers to: the proxy pairs them with
+                    # _cmd_history[0] and the servos are still executing them.
+                    # Keep the get-up limit until every command in the history
+                    # was written after it stopped (maxlen ticks), then the
+                    # normal limit applies again.
+                    if getup_cutoff:
+                        self._getup_cutoff_tail_ticks = self._cmd_history.maxlen
+                    elif self._getup_cutoff_tail_ticks > 0:
+                        self._getup_cutoff_tail_ticks -= 1
+                        getup_cutoff = True
                     cutoff = (
-                        OVERCURRENT_CUTOFF_A_GETUP
-                        if (
-                            "getup" in obs.user_input.active_moves
-                            and not self._getup_balancing
-                        )
-                        or (fall_pending and not self._getup_auto_failed)
+                        OVERCURRENT_CUTOFF_A_GETUP if getup_cutoff
                         else OVERCURRENT_CUTOFF_A
                     )
                     if self._check_overcurrent(robot_state, aligned_targets, cutoff):
@@ -767,6 +784,7 @@ class Scheduler:
             self._hardware_neutral_targets = dict(self._last_sent_targets or neutral_seed)
             self._hardware_neutral_last_time_s = obs.robot_state.time_s
             self._cmd_history.clear()
+            self._getup_cutoff_tail_ticks = 0
             self._overcurrent_ticks = 0
             just_enabled = True
             print(
@@ -923,6 +941,7 @@ class Scheduler:
         self._getup_auto_started_s = None
         self._getup_auto_failed = False
         self._cmd_history.clear()
+        self._getup_cutoff_tail_ticks = 0
         self._last_sent_targets = None
         self._serial_write_hold_pending = False
         self._serial_write_hold_since_s = None

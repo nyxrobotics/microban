@@ -447,11 +447,22 @@ class OvercurrentCutoffTest(unittest.TestCase):
             if row["balancing"] and row["tick"] in by_tick
         ]
         self.assertTrue(getting_up and balancing)
-        # rows[t] holds the state left by tick t-1, which chose that tick's cutoff.
+        # rows[t + 1] holds the state left by tick t, which chose that tick's
+        # cutoff. Balancing runs under the normal limit once the attempt's
+        # last command has left the proxy's delay history.
+        tail = h.scheduler._cmd_history.maxlen
+        settled = {
+            c for t, c in cutoffs
+            if t >= tail and t + 1 < len(rows)
+            and all(rows[j]["balancing"] for j in range(t - tail + 1, t + 2))
+        }
+        self.assertEqual(settled, {scheduler_module.OVERCURRENT_CUTOFF_A})
+        # The first `tail` balancing ticks still pair the attempt's goals.
+        first_balancing = next(t for t, _ in cutoffs if rows[t + 1]["balancing"])
         self.assertEqual(
-            {c for t, c in cutoffs if rows[t]["balancing"] and t + 1 < len(rows)
-             and rows[t + 1]["balancing"]},
-            {scheduler_module.OVERCURRENT_CUTOFF_A},
+            [by_tick[t] for t in range(first_balancing, first_balancing + tail + 1)],
+            [scheduler_module.OVERCURRENT_CUTOFF_A_GETUP] * tail
+            + [scheduler_module.OVERCURRENT_CUTOFF_A],
         )
         self.assertIn(scheduler_module.OVERCURRENT_CUTOFF_A_GETUP,
                       {c for t, c in cutoffs if t > second_fall + 16})
@@ -483,6 +494,108 @@ class OvercurrentCutoffTest(unittest.TestCase):
         }
         self.assertEqual(before_fall, {scheduler_module.OVERCURRENT_CUTOFF_A})
         self.assertEqual(debounce, {scheduler_module.OVERCURRENT_CUTOFF_A_GETUP})
+
+
+class SaturatingGetup(FakeGetup):
+    """Get-up actor whose goals sit at the servo range, as the unclipped
+    actor's do while it stands up: ~0.91 A per joint in the current proxy."""
+
+    def step(self, obs, command):
+        super().step(obs, command)
+        for name in MOTOR_TO_ID:
+            command.target_angles[name] = NEUTRAL_POSE[name] + 3.14159
+
+
+class SaturatingWalk(FakeWalk):
+    """Balancing walk that holds the measured pose (no proxy current) until
+    ``saturate`` is set, then commands the servo range on every joint."""
+
+    def __init__(self):
+        super().__init__(balances=True)
+        self.saturate = False
+
+    def step(self, obs, command):
+        super().step(obs, command)
+        if self.saturate:
+            for name in MOTOR_TO_ID:
+                command.target_angles[name] = NEUTRAL_POSE[name] - 3.14159
+
+
+class HandBackOvercurrentTest(unittest.TestCase):
+    """After get-up hands back, the delay-aligned current proxy still pairs
+    the get-up's last (saturated) goals with the feedback for the length of
+    its command history; the get-up limit must cover exactly that window."""
+
+    def run_hand_back(self, saturate_walk_after=None, ticks=STAND_TICK + sec(2.0)):
+        h = Harness(SaturatingWalk())
+        h.getup = SaturatingGetup()
+        h.scheduler.registered_moves["getup"] = h.getup
+        checks = []
+        check = h.scheduler._check_overcurrent
+        hand_back = []
+        got_up = []
+
+        def spy(state, targets, cutoff):
+            tick = len(h.rows) - 1
+            if h.getup.state == MoveState.ACTIVE:
+                got_up.append(tick)
+            elif got_up and not hand_back and h.walk.state == MoveState.ACTIVE:
+                hand_back.append(tick)
+            if (
+                saturate_walk_after is not None and hand_back
+                and tick >= hand_back[0] + saturate_walk_after
+            ):
+                h.walk.saturate = True
+            checks.append(dict(
+                tick=tick,
+                cutoff=cutoff,
+                current=h.scheduler._estimate_total_current(state, targets),
+                getup=h.getup.state,
+            ))
+            return check(state, targets, cutoff)
+
+        h.scheduler._check_overcurrent = spy
+        rows = h.run(fall_then_stand(), ticks)
+        self.assertTrue(hand_back, "walk never took over")
+        return h, rows, checks, hand_back[0]
+
+    def test_hand_back_does_not_trip_on_get_up_goals_in_history(self):
+        h, rows, checks, hand_back = self.run_hand_back()
+        tail = h.scheduler._cmd_history.maxlen
+        after = [c for c in checks if c["tick"] >= hand_back]
+        # The proxy still reads the get-up's saturated goals for `tail`
+        # ticks: above the normal limit (the old trip), below the get-up one.
+        stale = after[:tail]
+        for c in stale:
+            self.assertGreaterEqual(c["current"], scheduler_module.OVERCURRENT_CUTOFF_A)
+            self.assertLess(c["current"], scheduler_module.OVERCURRENT_CUTOFF_A_GETUP)
+            self.assertEqual(c["cutoff"], scheduler_module.OVERCURRENT_CUTOFF_A_GETUP)
+        # Then the history holds only walk goals and the normal limit is back.
+        for c in after[tail:]:
+            self.assertLess(c["current"], 1.0)
+            self.assertEqual(c["cutoff"], scheduler_module.OVERCURRENT_CUTOFF_A)
+        self.assertGreater(len(after), tail + sec(1.0))
+        self.assertNotIn("Overcurrent", h.output)
+        self.assertEqual(len(rows), STAND_TICK + sec(2.0))
+        self.assertEqual(rows[-1]["walk"], MoveState.ACTIVE)
+
+    def test_sustained_walking_overcurrent_still_trips_at_normal_limit(self):
+        tail = scheduler_module.OVERCURRENT_PROXY_DELAY_TICKS + 1
+        start = tail + 10  # well after the get-up goals left the history
+        h, rows, checks, hand_back = self.run_hand_back(saturate_walk_after=start)
+        self.assertIn(
+            f"threshold {scheduler_module.OVERCURRENT_CUTOFF_A:.2f} A", h.output
+        )
+        last = checks[-1]
+        self.assertEqual(last["cutoff"], scheduler_module.OVERCURRENT_CUTOFF_A)
+        self.assertLess(last["current"], scheduler_module.OVERCURRENT_CUTOFF_A_GETUP)
+        # Caught once the saturated goal reaches the delay-aligned history
+        # slot plus the debounce: no later than with a walk-only history.
+        self.assertLessEqual(
+            last["tick"] - (hand_back + start),
+            tail + scheduler_module.OVERCURRENT_DEBOUNCE_TICKS,
+        )
+        self.assertLess(len(rows), STAND_TICK + sec(2.0))
 
 
 class GatelessSourceReleaseTest(unittest.TestCase):
