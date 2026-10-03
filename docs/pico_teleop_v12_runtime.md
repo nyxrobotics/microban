@@ -11,7 +11,10 @@
 > currently installed `pico_teleop.onnx` (trained at the older HOME) is rejected
 > until it is retrained and re-exported with a new contract. Statements below
 > that v12 targets are unclipped, or that the PICO HOME differs from
-> `NEUTRAL_POSE`, describe the pre-unification runtime.
+> `NEUTRAL_POSE`, describe the pre-unification runtime. Per-robot calibration
+> trims (`HARDWARE_JOINT_OFFSET_DEG`, all 0 by default) are added only at the
+> real servo boundary and never change these logical targets or observations;
+> see [Real-robot joint offsets](usage.md#real-robot-joint-offsets).
 
 ## Live checkpoint: 2026-09-27
 

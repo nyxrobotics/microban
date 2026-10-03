@@ -83,6 +83,33 @@ keyboard, gamepad and sim. Defaults (in [constants.py](../src/constants.py)):
 | `vtheta` (turning in place, `vx = vy = 0`) | ±3.0 |
 | `vtheta` (while translating) | ±1.5 |
 
+## Real-robot joint offsets
+
+If one robot holds a joint slightly off from where the policies expect it (a servo
+horn mounted one spline tooth off, a slightly bent bracket, a robot that wants its
+ankles pitched forward a little), correct it with the per-joint table
+`HARDWARE_JOINT_OFFSET_DEG` in [constants.py](../src/constants.py). It lists all 21
+joints and every value is `0.0` by default.
+
+- Units: degrees of the **logical** joint coordinate (the one used by the policies,
+  training, `NEUTRAL_POSE` and the observations; before `MOTOR_SIGN`). A positive value
+  moves the real joint further in that joint's positive direction.
+- Convention: `servo command = MOTOR_SIGN * (logical target + offset)` and
+  `logical measurement = MOTOR_SIGN * servo reading - offset`.
+- Scope: applied only inside `RobotController` (the real servo bus), on every goal
+  write and every position read. Every move (walk, PICO tracking, get-up, the A /
+  policy-off neutral pose, arms, head and neck) and every input source (keyboard,
+  gamepad, GC300, PICO) gets it automatically, and the policies keep observing
+  training coordinates. Velocities and currents are unchanged. MuJoCo / placo
+  simulation (`make sim`, `make viewer`) and training ignore it.
+- Limit: each value must be finite and at most `HARDWARE_JOINT_OFFSET_MAX_RAD`
+  (0.2 rad, about 11.5 deg); otherwise the runtime refuses to start. Nonzero values are
+  printed once when the runtime starts (`Hardware joint offsets (...)`).
+
+Example: to pitch both feet 1 degree forward (the old GC300-only ankle bias), set
+`"left_ankle_pitch": -1.0` and `"right_ankle_pitch": -1.0`, then `make sync` and restart
+the runtime.
+
 ## Developing: adding your own moves
 
 Each behavior is a subclass of `Move` ([src/moves/move.py](../src/moves/move.py)) with

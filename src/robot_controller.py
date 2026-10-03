@@ -6,19 +6,76 @@ import numpy as np
 import math
 import time
 
-from constants import MOTOR_TO_ID, MOTOR_SIGN, NEUTRAL_POSE, IMU_I2C_BUS, PRESENT_CURRENT_UNIT_A, KP_DEFAULT
+from constants import (
+    HARDWARE_JOINT_OFFSET_MAX_RAD,
+    HARDWARE_JOINT_OFFSET_RAD,
+    IMU_I2C_BUS,
+    KP_DEFAULT,
+    MOTOR_SIGN,
+    MOTOR_TO_ID,
+    NEUTRAL_POSE,
+    PRESENT_CURRENT_UNIT_A,
+)
 from imu_reader import ThreadedIMUReader
 
 
 TORQUE_VERIFY_TIMEOUT_S = 1.0
 
 
-class RobotController:
-    """Wraps Xl330PyController."""
+def validated_hardware_offsets(offsets: dict[str, float]) -> dict[str, float]:
+    """Check a per-joint real-robot offset table (logical radians)."""
+    missing = sorted(set(MOTOR_TO_ID) - set(offsets))
+    unknown = sorted(set(offsets) - set(MOTOR_TO_ID))
+    if missing or unknown:
+        raise ValueError(
+            f"hardware joint offsets must list every joint: missing={missing}, unknown={unknown}"
+        )
+    checked = {}
+    for name in MOTOR_TO_ID:
+        value = float(offsets[name])
+        if not math.isfinite(value) or abs(value) > HARDWARE_JOINT_OFFSET_MAX_RAD:
+            raise ValueError(
+                f"hardware joint offset {name}={offsets[name]!r} rad must be finite "
+                f"and within +-{HARDWARE_JOINT_OFFSET_MAX_RAD} rad"
+            )
+        checked[name] = value
+    return checked
 
-    def __init__(self, serial_port: str = "/dev/ttyAMA0", baudrate: int = 1_000_000, timeout: float = 0.001) -> None:
+
+class RobotController:
+    """Wraps Xl330PyController.
+
+    Every value above this class (goals, measurements, caches, last goal
+    targets) is in the logical joint coordinate used by the policies and
+    training. ``_to_servo``/``_from_servo`` are the only conversions to and from
+    the servo coordinate: MOTOR_SIGN plus the real-robot calibration offset
+    (constants.HARDWARE_JOINT_OFFSET_RAD).
+    """
+
+    def __init__(
+        self,
+        serial_port: str = "/dev/ttyAMA0",
+        baudrate: int = 1_000_000,
+        timeout: float = 0.001,
+        joint_offsets_rad: dict[str, float] | None = None,
+    ) -> None:
         self._controller = Xl330PyController(serial_port=serial_port, baudrate=baudrate, timeout=timeout)
         self._id_to_sign: dict[int, float] = {MOTOR_TO_ID[name]: MOTOR_SIGN[name] for name in MOTOR_TO_ID}
+        offsets = validated_hardware_offsets(
+            HARDWARE_JOINT_OFFSET_RAD if joint_offsets_rad is None else joint_offsets_rad
+        )
+        self._id_to_offset: dict[int, float] = {
+            MOTOR_TO_ID[name]: offset for name, offset in offsets.items()
+        }
+        nonzero = [
+            f"{name}={math.degrees(offset):+.3f}deg"
+            for name, offset in offsets.items() if offset != 0.0
+        ]
+        if nonzero:
+            print(
+                "Hardware joint offsets (servo = logical + offset): " + ", ".join(nonzero),
+                end="\r\n", flush=True,
+            )
         self._id_to_name = {motor_id: name for name, motor_id in MOTOR_TO_ID.items()}
         self._core_groups = [
             [motor_id for motor_id in MOTOR_TO_ID.values() if motor_id // 10 == decade]
@@ -97,6 +154,17 @@ class RobotController:
             raw = raw[0]
         return float(raw)
 
+    def _to_servo(self, motor_id: int, logical: float) -> float:
+        """Logical joint radians -> servo goal radians (sign and calibration offset)."""
+        offset = self._id_to_offset[motor_id]
+        if offset:
+            logical = logical + offset
+        return logical * self._id_to_sign[motor_id]
+
+    def _from_servo(self, motor_id: int, servo: float) -> float:
+        """Servo position radians -> logical joint radians (inverse of _to_servo)."""
+        return servo * self._id_to_sign[motor_id] - self._id_to_offset[motor_id]
+
     def _position_recovered(self, motor_id: int, value: float) -> None:
         was_stale = motor_id in self._stale_ids
         self._last_positions[motor_id] = value
@@ -107,7 +175,7 @@ class RobotController:
             # torque is enabled. A failed write leaves it pending for retry.
             try:
                 self._controller.sync_write_goal_position(
-                    [motor_id], [value * self._id_to_sign[motor_id]]
+                    [motor_id], [self._to_servo(motor_id, value)]
                 )
                 self._controller.sync_write_position_p_gain(
                     [motor_id], [self._last_kp[motor_id]]
@@ -170,7 +238,10 @@ class RobotController:
                     raw_velocity = int.from_bytes(row[:4], "little", signed=True)
                     raw_position = int.from_bytes(row[4:8], "little", signed=True)
                     sign = self._id_to_sign[motor_id]
-                    position = (2.0 * math.pi * raw_position / 4096.0 - math.pi) * sign
+                    # Same raw->rad mapping as rustypot: raw 0..4095 is [-pi, pi).
+                    position = self._from_servo(
+                        motor_id, 2.0 * math.pi * raw_position / 4096.0 - math.pi
+                    )
                     velocity = raw_velocity * 0.229 * math.pi / 30.0 * sign
                     values.append((position, velocity))
             except (RuntimeError, OSError, TypeError, ValueError):
@@ -221,7 +292,7 @@ class RobotController:
                 continue
             try:
                 raw = self._controller.read_present_position(motor_id)
-                value = self._scalar(raw) * self._id_to_sign[motor_id]
+                value = self._from_servo(motor_id, self._scalar(raw))
                 if not math.isfinite(value):
                     raise RuntimeError("non-finite head position")
             except (RuntimeError, OSError, TypeError, ValueError):
@@ -515,7 +586,7 @@ class RobotController:
         if live:
             self._controller.sync_write_goal_position(
                 [motor_id for motor_id, _ in live],
-                [pos * self._id_to_sign[motor_id] for motor_id, pos in live],
+                [self._to_servo(motor_id, pos) for motor_id, pos in live],
             )
             self._last_goals.update(live)
             if advance_stale:
@@ -555,9 +626,11 @@ class RobotController:
         motor_position = self._scalar(
             self._controller.read_present_position(motor_id)
         )
-        measured = motor_position * self._id_to_sign[motor_id]
+        measured = self._from_servo(motor_id, motor_position)
         if not math.isfinite(measured):
             raise ValueError("non-finite measured position")
+        # The servo reading goes back unchanged, so the goal is exactly the
+        # measured physical pose; only the cached goal is logical.
         self._controller.sync_write_goal_position([motor_id], [motor_position])
         self._last_goals[motor_id] = measured
         # RAM gains may have reset if the servo rebooted.  Preserve the A or
@@ -749,7 +822,9 @@ class RobotController:
 
     def read_present_position(self, motor_id: int) -> float:
         try:
-            value = self._scalar(self._controller.read_present_position(motor_id)) * self._id_to_sign[motor_id]
+            value = self._from_servo(
+                motor_id, self._scalar(self._controller.read_present_position(motor_id))
+            )
             if not math.isfinite(value):
                 raise RuntimeError("non-finite position")
         except (RuntimeError, OSError, TypeError, ValueError):

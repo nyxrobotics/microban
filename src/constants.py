@@ -99,6 +99,49 @@ MOTOR_SIGN = {
     "neck_pitch": 1.0,
 }
 
+# Real-robot joint calibration offsets, in degrees of the LOGICAL joint coordinate
+# (the policy/training coordinate, before MOTOR_SIGN). Use them to correct a
+# servo horn that is mounted a little off on one particular robot. They act ONLY
+# at the real-hardware servo boundary (RobotController) and apply to every move
+# (walk, PICO, get-up, neutral/A return, arms, head/neck):
+#   servo command       = MOTOR_SIGN * (logical target + offset)
+#   logical measurement = MOTOR_SIGN * servo reading - offset
+# so everything above RobotController (policies, observations, scheduler, goal
+# caches) keeps seeing training coordinates. A positive offset makes the servo
+# hold the joint further in the joint's positive direction for the same logical
+# target. Simulation (src/sim/*) and training never use these values. Every
+# joint in MOTOR_TO_ID must be listed; 0.0 everywhere means no correction.
+HARDWARE_JOINT_OFFSET_DEG = {
+    "left_hip_yaw": 0.0,
+    "left_hip_roll": 0.0,
+    "left_hip_pitch": 0.0,
+    "left_knee": 0.0,
+    "left_ankle_pitch": 0.0,
+    "left_ankle_roll": 0.0,
+    "right_hip_yaw": 0.0,
+    "right_hip_roll": 0.0,
+    "right_hip_pitch": 0.0,
+    "right_knee": 0.0,
+    "right_ankle_pitch": 0.0,
+    "right_ankle_roll": 0.0,
+    "left_shoulder_pitch": 0.0,
+    "left_shoulder_roll": 0.0,
+    "left_elbow": 0.0,
+    "right_shoulder_pitch": 0.0,
+    "right_shoulder_roll": 0.0,
+    "right_elbow": 0.0,
+    "head": 0.0,
+    "neck_roll": 0.0,
+    "neck_pitch": 0.0,
+}
+HARDWARE_JOINT_OFFSET_RAD = {
+    name: float(np.deg2rad(value)) for name, value in HARDWARE_JOINT_OFFSET_DEG.items()
+}
+# Offsets are calibration trims, not pose changes. Bounding them keeps every
+# commanded servo angle inside the servo's raw position range (0..4095, i.e.
+# [-pi, pi) rad) for any logical target within +-(pi - 0.2) rad.
+HARDWARE_JOINT_OFFSET_MAX_RAD = 0.2
+
 # Position P Gain (Dynamixel register value)
 KP_DEFAULT: int = 400        # Legacy gain used by existing policy and simulation
 KP_HARDWARE_NEUTRAL: int = 900  # XC330-T288-T factory P gain for A neutral hold
