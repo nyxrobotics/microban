@@ -118,11 +118,14 @@ joints and every value is `0.0` by default.
   An in-range goal is sent unchanged. A goal past an edge is sent as that edge, and the
   cached goal becomes the edge mapped back to the logical coordinate. At startup the
   runtime reads every servo's Operating Mode and Min/Max Position Limit: a servo that
-  answers with a mode other than Position Control (3) stops startup with an error naming
-  the joints; a servo with narrower limits gets them as its own goal range (intersected
-  with 0..4095) and is printed once (`Servo position limits: ... raw [min, max] ->
-  logical [lo, hi] rad`); a servo that does not answer keeps the full range with a
-  warning.
+  answers with a mode other than Position Control (3), or with fewer than two raw values
+  between its limits, stops startup with an error naming the joints and every servo's
+  torque OFF; a servo with narrower limits (read the same twice) gets them as its own
+  goal range (intersected with 0..4095) and is printed once (`Servo position limits: ...
+  raw [min, max] -> logical [lo, hi] rad`, plus a WARNING if its neutral pose is outside);
+  a servo that does not answer keeps the full range with one warning line and is read
+  again when it first answers a position read (a non-position mode found then stops the
+  runtime the same way).
 
 Example: to pitch both feet 1 degree forward (the old GC300-only ankle bias), set
 `"left_ankle_pitch": -1.0` and `"right_ankle_pitch": -1.0`, then `make sync` and restart

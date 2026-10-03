@@ -92,27 +92,33 @@ def servo_goal_bounds(raw_min: int, raw_max: int) -> tuple[float, float]:
     """Goal bounds (servo rad) for Min/Max Position Limit registers.
 
     The limits are intersected with the raw goal range 0..4095; the full range
-    returns exactly (SERVO_GOAL_MIN_RAD, SERVO_GOAL_MAX_RAD). Narrower bounds
-    are nudged by at most a few ulps so rustypot's raw conversion maps them
-    back inside the limits whether it truncates or rounds. Raises ValueError
-    when the intersection is empty (Min Position Limit above Max Position
-    Limit).
+    returns exactly (SERVO_GOAL_MIN_RAD, SERVO_GOAL_MAX_RAD). A narrowed edge
+    is nudged up by at most a few ulps so rustypot's raw conversion (it
+    truncates; verified on its sync-write bytes) lands exactly on the limit
+    (rounding would too). Raises ValueError when the intersection holds fewer
+    than two raw values (Min Position Limit at or above Max Position Limit):
+    such a servo cannot move, and a zero-width range is more likely a corrupt
+    read than a real setting.
     """
     low = max(SERVO_GOAL_RAW_MIN, int(raw_min))
     high = min(SERVO_GOAL_RAW_MAX, int(raw_max))
-    if low > high:
-        raise ValueError(f"empty position limit range raw [{raw_min}, {raw_max}]")
+    if low >= high:
+        raise ValueError(f"no usable position limit range raw [{raw_min}, {raw_max}]")
     lower = SERVO_GOAL_MIN_RAD if low == SERVO_GOAL_RAW_MIN else servo_raw_to_rad(low)
     upper = SERVO_GOAL_MAX_RAD if high == SERVO_GOAL_RAW_MAX else servo_raw_to_rad(high)
     while _rad_to_raw_exact(lower) < low:
         lower = math.nextafter(lower, math.inf)
-    while _rad_to_raw_exact(upper) > high:
-        upper = math.nextafter(upper, -math.inf)
-    if upper < lower:
-        # A single raw value with no exact float: a hair above it still
-        # truncates and rounds to it.
-        upper = lower
+    while _rad_to_raw_exact(upper) < high:
+        upper = math.nextafter(upper, math.inf)
     return lower, upper
+
+
+class ServoConfigurationError(Exception):
+    """A servo's EEPROM configuration the runtime cannot drive.
+
+    Deliberately not a RuntimeError: the scheduler treats RuntimeError as a
+    transient serial fault and may hold through it.
+    """
 
 
 class RobotController:
@@ -196,18 +202,24 @@ class RobotController:
         self._proxy_ignore_until: dict[int, float] = {}
         self._head_last_read_s: dict[int, float] = {}
         # Per-servo goal bounds (servo rad); refuses to start on a servo that
-        # reports a mode other than Position Control.
-        self._id_to_goal_bounds: dict[int, tuple[float, float]] = self._read_servo_limits()
+        # reports a mode other than Position Control. A servo whose
+        # configuration was unreadable is read again when it next answers.
+        self._id_to_goal_bounds: dict[int, tuple[float, float]] = {}
+        self._config_pending_ids: set[int] = set()
+        self._config_retry_after_s: dict[int, float] = {}
+        self._read_servo_limits()
         self._imu_reader = ThreadedIMUReader(i2c_bus=IMU_I2C_BUS, frequency_hz=100.0)
         self._imu_reader.start()
 
-    def _read_servo_register(self, motor_id: int, method: str) -> tuple[int | None, str]:
+    def _read_servo_register(
+        self, motor_id: int, method: str, attempts: int = SERVO_CONFIG_READ_ATTEMPTS
+    ) -> tuple[int | None, str]:
         """Read one integer register with retries; (None, error) if silent."""
         error = ""
-        for _ in range(SERVO_CONFIG_READ_ATTEMPTS):
+        for _ in range(attempts):
             try:
                 value = self._scalar(getattr(self._controller, method)(motor_id))
-            except (RuntimeError, OSError, ValueError) as exc:
+            except (RuntimeError, OSError, TypeError, ValueError) as exc:
                 error = str(exc) or type(exc).__name__
                 continue
             if not math.isfinite(value) or value != int(value):
@@ -216,69 +228,146 @@ class RobotController:
             return int(value), ""
         return None, error
 
-    def _read_servo_limits(self) -> dict[int, tuple[float, float]]:
-        """Read every servo's Operating Mode and Min/Max Position Limit.
+    def _read_position_limits(
+        self, motor_id: int, attempts: int
+    ) -> tuple[tuple[int, int] | None, str]:
+        """Min/Max Position Limit (raw), or (None, why) if unreadable.
 
-        Returns per-servo goal bounds in servo radians. A servo that answers
-        with a mode other than Position Control (3), or with an empty limit
-        range, stops startup. A servo that stays silent keeps the full raw
-        goal range with a warning (it is stale until it answers, like every
-        other register read in this class).
+        Limits narrower than the raw goal range must read the same twice
+        before they are used: a late reply from a timed-out request can
+        otherwise be taken as the answer to the next one.
         """
-        bounds: dict[int, tuple[float, float]] = {}
-        refused: list[str] = []
-        for name, motor_id in MOTOR_TO_ID.items():
-            bounds[motor_id] = (SERVO_GOAL_MIN_RAD, SERVO_GOAL_MAX_RAD)
-            mode, mode_error = self._read_servo_register(motor_id, "read_operating_mode")
+        pairs: list[tuple[int, int]] = []
+        for _ in range(2):
             raw_min, min_error = self._read_servo_register(
-                motor_id, "read_raw_min_position_limit"
+                motor_id, "read_raw_min_position_limit", attempts
             )
             raw_max, max_error = self._read_servo_register(
-                motor_id, "read_raw_max_position_limit"
+                motor_id, "read_raw_max_position_limit", attempts
             )
-            if mode is None:
-                print(
-                    f"Servo config: id={motor_id} name={name} operating mode unreadable "
-                    f"({mode_error}); assuming Position Control",
-                    end="\r\n", flush=True,
-                )
-            elif mode != POSITION_CONTROL_MODE:
-                refused.append(f"{name} (id={motor_id}) operating mode {mode}")
             if raw_min is None or raw_max is None:
-                print(
-                    f"Servo config: id={motor_id} name={name} position limits unreadable "
-                    f"({min_error or max_error}); using the full goal range raw "
-                    f"{SERVO_GOAL_RAW_MIN}..{SERVO_GOAL_RAW_MAX}",
-                    end="\r\n", flush=True,
+                return None, f"unreadable ({min_error or max_error})"
+            pairs.append((raw_min, raw_max))
+            if raw_min <= SERVO_GOAL_RAW_MIN and raw_max >= SERVO_GOAL_RAW_MAX:
+                return pairs[-1], ""
+        if pairs[0] != pairs[1]:
+            return None, f"inconsistent between two reads (raw {pairs[0]} then {pairs[1]})"
+        return pairs[0], ""
+
+    def _read_servo_config(
+        self, motor_id: int, attempts: int, warn: bool
+    ) -> tuple[str | None, tuple[float, float] | None, bool]:
+        """Read one servo's Operating Mode and Min/Max Position Limit.
+
+        Returns (refusal, bounds, complete): what makes the servo unusable (or
+        None), its goal bounds in servo radians (None when the limits could
+        not be read) and whether everything was read. A mode other than
+        Position Control must read the same twice before it refuses.
+        """
+        name = self._id_to_name[motor_id]
+        mode, mode_error = self._read_servo_register(motor_id, "read_operating_mode", attempts)
+        if mode is not None and mode != POSITION_CONTROL_MODE:
+            again, _error = self._read_servo_register(motor_id, "read_operating_mode", attempts)
+            if again == mode:
+                return f"{name} (id={motor_id}) operating mode {mode}", None, True
+            mode, mode_error = None, f"inconsistent between two reads ({mode} then {again})"
+        elif mode is None:
+            mode_error = f"unreadable ({mode_error})"
+        limits, limits_error = self._read_position_limits(motor_id, attempts)
+        if warn and (mode is None or limits is None):
+            problems = []
+            if mode is None:
+                problems.append(f"operating mode {mode_error}; assuming Position Control")
+            if limits is None:
+                problems.append(
+                    f"position limits {limits_error}; using the full goal range raw "
+                    f"{SERVO_GOAL_RAW_MIN}..{SERVO_GOAL_RAW_MAX}"
                 )
-                continue
-            try:
-                lower, upper = servo_goal_bounds(raw_min, raw_max)
-            except ValueError:
-                refused.append(
-                    f"{name} (id={motor_id}) Min/Max Position Limit raw {raw_min}/{raw_max} "
-                    "leave no goal range"
-                )
-                continue
-            bounds[motor_id] = (lower, upper)
-            if (lower, upper) != (SERVO_GOAL_MIN_RAD, SERVO_GOAL_MAX_RAD):
-                sign = self._id_to_sign[motor_id]
-                offset = self._id_to_offset[motor_id]
-                ends = sorted((lower * sign - offset, upper * sign - offset))
-                print(
-                    f"Servo position limits: id={motor_id} name={name} "
-                    f"raw [{raw_min}, {raw_max}] -> logical "
-                    f"[{ends[0]:+.4f}, {ends[1]:+.4f}] rad",
-                    end="\r\n", flush=True,
-                )
-        if refused:
-            raise RuntimeError(
-                "servo configuration refused: " + "; ".join(refused)
-                + ". The runtime needs every servo in Position Control mode "
-                f"(Operating Mode {POSITION_CONTROL_MODE}) with Min Position Limit <= "
-                "Max Position Limit; fix the EEPROM (e.g. Dynamixel Wizard) and restart."
+            print(
+                f"Servo config: id={motor_id} name={name} " + "; ".join(problems)
+                + " (read again when it answers)",
+                end="\r\n", flush=True,
             )
-        return bounds
+        if limits is None:
+            return None, None, False
+        raw_min, raw_max = limits
+        try:
+            lower, upper = servo_goal_bounds(raw_min, raw_max)
+        except ValueError:
+            return (
+                f"{name} (id={motor_id}) Min/Max Position Limit raw {raw_min}/{raw_max} "
+                "leave no usable goal range"
+            ), None, True
+        if (lower, upper) != (SERVO_GOAL_MIN_RAD, SERVO_GOAL_MAX_RAD):
+            sign = self._id_to_sign[motor_id]
+            offset = self._id_to_offset[motor_id]
+            ends = sorted((lower * sign - offset, upper * sign - offset))
+            print(
+                f"Servo position limits: id={motor_id} name={name} "
+                f"raw [{raw_min}, {raw_max}] -> logical "
+                f"[{ends[0]:+.4f}, {ends[1]:+.4f}] rad",
+                end="\r\n", flush=True,
+            )
+            neutral = float(NEUTRAL_POSE[name])
+            if not ends[0] <= neutral <= ends[1]:
+                print(
+                    f"WARNING: servo {name} (id={motor_id}) neutral pose {neutral:+.4f} rad "
+                    "is outside its position limits; neutral goals saturate at the limit",
+                    end="\r\n", flush=True,
+                )
+        return None, (lower, upper), mode is not None
+
+    def _refuse_servo_config(self, refused: list[str], ids: list[int]) -> None:
+        """Torque the given servos OFF (best effort) and raise."""
+        try:
+            self._controller.sync_write_torque_enable(ids, [False] * len(ids))
+        except (RuntimeError, OSError, TypeError, ValueError):
+            pass
+        raise ServoConfigurationError(
+            "servo configuration refused: " + "; ".join(refused)
+            + ". The runtime needs every servo in Position Control mode "
+            f"(Operating Mode {POSITION_CONTROL_MODE}) with Max Position Limit above "
+            "Min Position Limit; fix the EEPROM (e.g. Dynamixel Wizard) and restart."
+        )
+
+    def _read_servo_limits(self) -> None:
+        """Read every servo's Operating Mode and Min/Max Position Limit.
+
+        Fills the per-servo goal bounds. A servo that answers with a mode
+        other than Position Control (3), or with no usable limit range, stops
+        startup with every servo's torque OFF. A servo that stays silent keeps
+        the full raw goal range with a warning and is read again when it next
+        answers (``_recheck_servo_config``).
+        """
+        refused: list[str] = []
+        for motor_id in MOTOR_TO_ID.values():
+            refusal, bounds, complete = self._read_servo_config(
+                motor_id, SERVO_CONFIG_READ_ATTEMPTS, warn=True
+            )
+            if refusal is not None:
+                refused.append(refusal)
+            self._id_to_goal_bounds[motor_id] = bounds or (SERVO_GOAL_MIN_RAD, SERVO_GOAL_MAX_RAD)
+            if not complete:
+                self._config_pending_ids.add(motor_id)
+        if refused:
+            self._refuse_servo_config(refused, list(MOTOR_TO_ID.values()))
+
+    def _recheck_servo_config(self, motor_id: int) -> None:
+        """Read a servo's configuration that was unreadable at startup.
+
+        Runs once the servo answers a position read, before any rejoin goal
+        or torque ON is written for it. One attempt per register so a servo
+        that still ignores these reads costs little; retried each second.
+        """
+        refusal, bounds, complete = self._read_servo_config(motor_id, 1, warn=False)
+        if refusal is not None:
+            self._refuse_servo_config([refusal], [motor_id])
+        if bounds is not None:
+            self._id_to_goal_bounds[motor_id] = bounds
+        if complete:
+            self._config_pending_ids.discard(motor_id)
+        else:
+            self._config_retry_after_s[motor_id] = time.monotonic() + 1.0
 
     @property
     def stale_motor_names(self) -> frozenset[str]:
@@ -344,6 +433,11 @@ class RobotController:
         return servo * self._id_to_sign[motor_id] - self._id_to_offset[motor_id]
 
     def _position_recovered(self, motor_id: int, value: float) -> None:
+        if (
+            motor_id in self._config_pending_ids
+            and time.monotonic() >= self._config_retry_after_s.get(motor_id, 0.0)
+        ):
+            self._recheck_servo_config(motor_id)
         was_stale = motor_id in self._stale_ids
         self._last_positions[motor_id] = value
         if motor_id in self._pending_enable and motor_id not in self._requested_torque_ids:
