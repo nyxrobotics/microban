@@ -1,5 +1,18 @@
 # Contract-v12 PICO policy runtime
 
+> **2026-10-03 unification.** Every policy (walking, PICO full-body tracking,
+> get-up) now shares one reference pose, the centered HOME (`NEUTRAL_POSE` in
+> `src/constants.py`: shoulder pitch 0, hip pitch +1.198 deg, ankle pitch
+> -1.198 deg, ...), and one target rule,
+> `target = clip(HOME + raw * 1.0, -1.57, +1.57)` on all 18 body joints, with
+> the raw previous output observed. `PICO_TELEOP_HOME_POSE` is now
+> `NEUTRAL_POSE`, and the v12 step clips its target to `action_clip_lower/upper`
+> metadata when present (never wider than +-1.57 rad), else +-1.57 rad. The
+> currently installed `pico_teleop.onnx` (trained at the older HOME) is rejected
+> until it is retrained and re-exported with a new contract. Statements below
+> that v12 targets are unclipped, or that the PICO HOME differs from
+> `NEUTRAL_POSE`, describe the pre-unification runtime.
+
 ## Live checkpoint: 2026-09-27
 
 The operator reported that walking improved on the physical robot after the
