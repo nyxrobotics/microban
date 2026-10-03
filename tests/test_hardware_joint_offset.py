@@ -39,6 +39,13 @@ class FakeBus:
         self.torque = {motor_id: 0 for motor_id in MOTOR_TO_ID.values()}
         self.goal_writes: list[tuple[int, float]] = []
         self.kp = {}
+        # EEPROM configuration: factory Position Control mode and limits.
+        self.operating_mode = {motor_id: 3 for motor_id in MOTOR_TO_ID.values()}
+        self.raw_min_limit = {motor_id: 0 for motor_id in MOTOR_TO_ID.values()}
+        self.raw_max_limit = {motor_id: 4095 for motor_id in MOTOR_TO_ID.values()}
+        # Remaining failed replies per ID for the configuration reads.
+        self.config_failures: dict[int, int] = {}
+        self.config_reads = 0
 
     def servo_rad(self, motor_id: int) -> float:
         return raw_to_rad(self.raw_position[motor_id])
@@ -71,6 +78,22 @@ class FakeBus:
 
     def read_present_position(self, motor_id):
         return [self.servo_rad(motor_id)]
+
+    def _config_read(self, motor_id, table):
+        self.config_reads += 1
+        if self.config_failures.get(motor_id, 0) > 0:
+            self.config_failures[motor_id] -= 1
+            raise RuntimeError("Timeout")
+        return [table[motor_id]]
+
+    def read_operating_mode(self, motor_id):
+        return self._config_read(motor_id, self.operating_mode)
+
+    def read_raw_min_position_limit(self, motor_id):
+        return self._config_read(motor_id, self.raw_min_limit)
+
+    def read_raw_max_position_limit(self, motor_id):
+        return self._config_read(motor_id, self.raw_max_limit)
 
     def read_present_velocity(self, motor_id):
         return [float(self.raw_velocity[motor_id])]
@@ -105,14 +128,26 @@ class FakeIMU:
         pass
 
 
-def make_controller(offsets_deg: dict[str, float] | None = None):
+def make_controller(offsets_deg: dict[str, float] | None = None, configure=None, printed=None):
+    """Build a RobotController on a FakeBus; ``configure(bus)`` edits it first."""
     offsets = None
     if offsets_deg is not None:
         offsets = {name: float(np.deg2rad(offsets_deg.get(name, 0.0))) for name in MOTOR_TO_ID}
-    with mock.patch.object(rc_module, "Xl330PyController", FakeBus), \
+
+    def bus_factory(**kwargs):
+        bus = FakeBus(**kwargs)
+        if configure is not None:
+            configure(bus)
+        return bus
+
+    with mock.patch.object(rc_module, "Xl330PyController", bus_factory), \
             mock.patch.object(rc_module, "ThreadedIMUReader", FakeIMU), \
-            mock.patch("builtins.print"):
-        controller = rc_module.RobotController(joint_offsets_rad=offsets)
+            mock.patch("builtins.print") as print_mock:
+        try:
+            controller = rc_module.RobotController(joint_offsets_rad=offsets)
+        finally:
+            if printed is not None:
+                printed.extend(call.args[0] for call in print_mock.call_args_list)
     return controller, controller._controller
 
 
@@ -595,6 +630,163 @@ class ServoGoalRangeTest(unittest.TestCase):
                         controller.last_goal_targets[name],
                         controller._from_servo(motor_id, raw_to_rad(raw)),
                     )
+
+
+class ServoLimitsTest(unittest.TestCase):
+    """Operating Mode and Min/Max Position Limit are read at startup."""
+
+    # Sign -1 with offset -3 deg, sign +1 with offset -1 deg, sign -1 with +1.5 deg.
+    NARROW = {
+        "left_hip_yaw": (1024, 3072),
+        "left_ankle_pitch": (1500, 2600),
+        "right_ankle_pitch": (1800, 4095),
+    }
+
+    def _narrow(self, bus) -> None:
+        for name, (low, high) in self.NARROW.items():
+            bus.raw_min_limit[MOTOR_TO_ID[name]] = low
+            bus.raw_max_limit[MOTOR_TO_ID[name]] = high
+
+    def test_default_limits_keep_the_full_range_exactly(self) -> None:
+        lines: list[str] = []
+        controller, _bus = make_controller(printed=lines)
+        self.assertEqual(lines, [])
+        for motor_id in MOTOR_TO_ID.values():
+            lower, upper = controller._id_to_goal_bounds[motor_id]
+            self.assertEqual(lower.hex(), SERVO_GOAL_MIN_RAD.hex())
+            self.assertEqual(upper.hex(), SERVO_GOAL_MAX_RAD.hex())
+        # Limits wider than the raw goal range are intersected with it.
+        self.assertEqual(
+            rc_module.servo_goal_bounds(-100, 5000), (SERVO_GOAL_MIN_RAD, SERVO_GOAL_MAX_RAD)
+        )
+
+    def test_non_position_mode_refuses_to_start(self) -> None:
+        def configure(bus) -> None:
+            bus.operating_mode[MOTOR_TO_ID["left_knee"]] = 4  # extended position
+            bus.operating_mode[MOTOR_TO_ID["neck_roll"]] = 1  # velocity
+
+        with self.assertRaises(RuntimeError) as raised:
+            make_controller(configure=configure)
+        message = str(raised.exception)
+        self.assertIn("left_knee", message)
+        self.assertIn("operating mode 4", message)
+        self.assertIn("neck_roll", message)
+        self.assertNotIn("right_knee", message)
+
+    def test_empty_limit_range_refuses_to_start(self) -> None:
+        def configure(bus) -> None:
+            bus.raw_min_limit[MOTOR_TO_ID["right_elbow"]] = 3000
+            bus.raw_max_limit[MOTOR_TO_ID["right_elbow"]] = 1000
+
+        with self.assertRaisesRegex(RuntimeError, "right_elbow"):
+            make_controller(configure=configure)
+
+    def test_unreadable_servo_keeps_full_range_with_a_warning(self) -> None:
+        silent = MOTOR_TO_ID["left_hip_yaw"]
+        flaky = MOTOR_TO_ID["left_ankle_pitch"]
+
+        def configure(bus) -> None:
+            self._narrow(bus)
+            bus.config_failures[silent] = 1000
+            # Fewer failures than attempts per register: the retry reads it.
+            bus.config_failures[flaky] = rc_module.SERVO_CONFIG_READ_ATTEMPTS - 1
+
+        lines: list[str] = []
+        controller, bus = make_controller(configure=configure, printed=lines)
+        self.assertEqual(
+            controller._id_to_goal_bounds[silent], (SERVO_GOAL_MIN_RAD, SERVO_GOAL_MAX_RAD)
+        )
+        self.assertEqual(
+            controller._id_to_goal_bounds[flaky], rc_module.servo_goal_bounds(1500, 2600)
+        )
+        warnings = [line for line in lines if "unreadable" in line]
+        self.assertTrue(warnings)
+        self.assertTrue(all("left_hip_yaw" in line for line in warnings))
+        self.assertTrue(any("full goal range" in line for line in warnings))
+        # The silent servo still takes full-range goals.
+        controller.sync_write_neutral_goal_position([silent], [-3.0])
+        self.assertEqual(bus.goals_for(silent), [3.0])
+
+    def test_bounds_map_back_inside_the_raw_limits(self) -> None:
+        for low, high in ((1, 4094), (1024, 3072), (1500, 2600), (7, 7), (0, 2048), (100, 4095)):
+            lower, upper = rc_module.servo_goal_bounds(low, high)
+            with self.subTest(low=low, high=high):
+                self.assertLessEqual(lower, upper)
+                for bound in (lower, upper):
+                    exact = (bound + math.pi) * 4096.0 / (2.0 * math.pi)
+                    for raw in (int(exact), round(exact)):
+                        self.assertGreaterEqual(raw, low)
+                        self.assertLessEqual(raw, high)
+                self.assertAlmostEqual(lower, raw_to_rad(low), places=12)
+                self.assertAlmostEqual(upper, raw_to_rad(high), places=12)
+
+    def test_narrow_limits_saturate_per_joint_with_sign_and_offset(self) -> None:
+        lines: list[str] = []
+        for path in ("neutral", "policy"):
+            lines.clear()
+            controller, bus = make_controller(
+                TEST_OFFSETS_DEG, configure=self._narrow, printed=lines
+            )
+            limit_lines = [line for line in lines if line.startswith("Servo position limits")]
+            self.assertEqual(len(limit_lines), len(self.NARROW))
+            ids = list(MOTOR_TO_ID.values())
+            if path == "policy":
+                controller.sync_read_present_position(ids)
+                write = controller.sync_write_goal_position
+            else:
+                write = controller.sync_write_neutral_goal_position
+            for name, (low, high) in self.NARROW.items():
+                motor_id = MOTOR_TO_ID[name]
+                lower, upper = rc_module.servo_goal_bounds(low, high)
+                sign = MOTOR_SIGN[name]
+                offset = math.radians(TEST_OFFSETS_DEG[name])
+                line = next(line for line in limit_lines if f"name={name} " in line)
+                self.assertIn(f"raw [{low}, {high}]", line)
+                ends = sorted((lower * sign - offset, upper * sign - offset))
+                self.assertIn(f"[{ends[0]:+.4f}, {ends[1]:+.4f}]", line)
+                for logical in (math.pi, -math.pi, 2.0, -2.0, 0.3, -0.3):
+                    unbounded = (logical + offset) * sign
+                    bus.goal_writes.clear()
+                    write([motor_id], [logical])
+                    with self.subTest(path=path, name=name, logical=logical):
+                        if lower <= unbounded <= upper:
+                            self.assertEqual(bus.goals_for(motor_id), [unbounded])
+                            self.assertEqual(controller.last_goal_targets[name], logical)
+                        else:
+                            edge = upper if unbounded > upper else lower
+                            self.assertEqual(bus.goals_for(motor_id), [edge])
+                            self.assertEqual(
+                                controller.last_goal_targets[name], edge * sign - offset
+                            )
+            # Joints with factory limits keep the full range.
+            knee = MOTOR_TO_ID["left_knee"]
+            bus.goal_writes.clear()
+            write([knee], [math.pi])
+            self.assertEqual(bus.goals_for(knee), [SERVO_GOAL_MAX_RAD])
+
+    def test_rejoin_seed_saturates_a_reading_outside_narrow_limits(self) -> None:
+        name = "left_hip_yaw"
+        motor_id = MOTOR_TO_ID[name]
+        low, high = self.NARROW[name]
+        lower, upper = rc_module.servo_goal_bounds(low, high)
+        for raw, expected in ((2000, raw_to_rad(2000)), (high, upper), (high + 50, upper),
+                              (low - 50, lower)):
+            controller, bus = make_controller(TEST_OFFSETS_DEG, configure=self._narrow)
+            controller.sync_read_present_position(list(MOTOR_TO_ID.values()))
+            controller.sync_write_torque_enable([motor_id], [True])
+            bus.torque[motor_id] = 0
+            bus.raw_position[motor_id] = raw
+            bus.goal_writes.clear()
+            controller._check_torque_state(motor_id)
+            with self.subTest(raw=raw):
+                self.assertEqual(bus.torque[motor_id], 1)
+                self.assertEqual(
+                    [value.hex() for value in bus.goals_for(motor_id)], [expected.hex()]
+                )
+                self.assertEqual(
+                    controller.last_goal_targets[name],
+                    controller._from_servo(motor_id, expected),
+                )
 
 
 if __name__ == "__main__":

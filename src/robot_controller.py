@@ -22,6 +22,12 @@ from imu_reader import ThreadedIMUReader
 
 
 TORQUE_VERIFY_TIMEOUT_S = 1.0
+# XC330 raw goal range in Position Control mode and the factory Min/Max
+# Position Limit register values.
+SERVO_GOAL_RAW_MIN = 0
+SERVO_GOAL_RAW_MAX = 4095
+POSITION_CONTROL_MODE = 3
+SERVO_CONFIG_READ_ATTEMPTS = 3
 
 
 def validated_hardware_offsets(offsets: dict[str, float]) -> dict[str, float]:
@@ -46,24 +52,67 @@ def validated_hardware_offsets(offsets: dict[str, float]) -> dict[str, float]:
     return checked
 
 
-def saturate_servo_goal(servo: float) -> float:
-    """Clamp a servo-coordinate goal (rad) into the servo's raw goal range.
+def saturate_servo_goal(
+    servo: float,
+    lower: float = SERVO_GOAL_MIN_RAD,
+    upper: float = SERVO_GOAL_MAX_RAD,
+) -> float:
+    """Clamp a servo-coordinate goal (rad) into a servo's goal range.
 
     XC330 in Position Control mode takes raw goals 0..4095 (one turn), which
     rustypot maps to [SERVO_GOAL_MIN_RAD, SERVO_GOAL_MAX_RAD] = [-pi, pi -
-    2*pi/4096]. Policies have no software clip (their targets reach +-pi) and
-    the sign/offset mapping can push a goal past either edge, so every goal
-    write saturates here. An in-range value is returned unchanged (the same
-    float, bit for bit). A non-finite goal raises; the write path never passes
-    one (it holds that joint's last goal instead).
+    2*pi/4096], the default bounds. A servo whose Min/Max Position Limit
+    registers are narrower gets its own bounds (``servo_goal_bounds``), since
+    it rejects a goal outside them and keeps its previous one. Policies have
+    no software clip (their targets reach +-pi) and the sign/offset mapping can
+    push a goal past either edge, so every goal write saturates here. An
+    in-range value is returned unchanged (the same float, bit for bit). A
+    non-finite goal raises; the write path never passes one (it holds that
+    joint's last goal instead).
     """
     if not math.isfinite(servo):
         raise ValueError(f"non-finite servo goal {servo!r}")
-    if servo < SERVO_GOAL_MIN_RAD:
-        return SERVO_GOAL_MIN_RAD
-    if servo > SERVO_GOAL_MAX_RAD:
-        return SERVO_GOAL_MAX_RAD
+    if servo < lower:
+        return lower
+    if servo > upper:
+        return upper
     return servo
+
+
+def servo_raw_to_rad(raw: int) -> float:
+    """rustypot's position mapping, raw = (rad + pi) * 4096 / (2*pi), inverted."""
+    return 2.0 * math.pi * raw / 4096.0 - math.pi
+
+
+def _rad_to_raw_exact(rad: float) -> float:
+    return (rad + math.pi) * 4096.0 / (2.0 * math.pi)
+
+
+def servo_goal_bounds(raw_min: int, raw_max: int) -> tuple[float, float]:
+    """Goal bounds (servo rad) for Min/Max Position Limit registers.
+
+    The limits are intersected with the raw goal range 0..4095; the full range
+    returns exactly (SERVO_GOAL_MIN_RAD, SERVO_GOAL_MAX_RAD). Narrower bounds
+    are nudged by at most a few ulps so rustypot's raw conversion maps them
+    back inside the limits whether it truncates or rounds. Raises ValueError
+    when the intersection is empty (Min Position Limit above Max Position
+    Limit).
+    """
+    low = max(SERVO_GOAL_RAW_MIN, int(raw_min))
+    high = min(SERVO_GOAL_RAW_MAX, int(raw_max))
+    if low > high:
+        raise ValueError(f"empty position limit range raw [{raw_min}, {raw_max}]")
+    lower = SERVO_GOAL_MIN_RAD if low == SERVO_GOAL_RAW_MIN else servo_raw_to_rad(low)
+    upper = SERVO_GOAL_MAX_RAD if high == SERVO_GOAL_RAW_MAX else servo_raw_to_rad(high)
+    while _rad_to_raw_exact(lower) < low:
+        lower = math.nextafter(lower, math.inf)
+    while _rad_to_raw_exact(upper) > high:
+        upper = math.nextafter(upper, -math.inf)
+    if upper < lower:
+        # A single raw value with no exact float: a hair above it still
+        # truncates and rounds to it.
+        upper = lower
+    return lower, upper
 
 
 class RobotController:
@@ -74,7 +123,8 @@ class RobotController:
     training. ``_to_servo``/``_from_servo`` are the only conversions to and from
     the servo coordinate: MOTOR_SIGN plus the real-robot calibration offset
     (constants.HARDWARE_JOINT_OFFSET_RAD). Every servo goal written to the bus
-    is saturated into the servo's raw goal range (``saturate_servo_goal``).
+    is saturated into that servo's goal range (``saturate_servo_goal``): raw
+    0..4095 intersected with its Min/Max Position Limit, read at startup.
     """
 
     def __init__(
@@ -145,8 +195,90 @@ class RobotController:
         self._last_kp = {motor_id: KP_DEFAULT for motor_id in MOTOR_TO_ID.values()}
         self._proxy_ignore_until: dict[int, float] = {}
         self._head_last_read_s: dict[int, float] = {}
+        # Per-servo goal bounds (servo rad); refuses to start on a servo that
+        # reports a mode other than Position Control.
+        self._id_to_goal_bounds: dict[int, tuple[float, float]] = self._read_servo_limits()
         self._imu_reader = ThreadedIMUReader(i2c_bus=IMU_I2C_BUS, frequency_hz=100.0)
         self._imu_reader.start()
+
+    def _read_servo_register(self, motor_id: int, method: str) -> tuple[int | None, str]:
+        """Read one integer register with retries; (None, error) if silent."""
+        error = ""
+        for _ in range(SERVO_CONFIG_READ_ATTEMPTS):
+            try:
+                value = self._scalar(getattr(self._controller, method)(motor_id))
+            except (RuntimeError, OSError, ValueError) as exc:
+                error = str(exc) or type(exc).__name__
+                continue
+            if not math.isfinite(value) or value != int(value):
+                error = f"invalid value {value!r}"
+                continue
+            return int(value), ""
+        return None, error
+
+    def _read_servo_limits(self) -> dict[int, tuple[float, float]]:
+        """Read every servo's Operating Mode and Min/Max Position Limit.
+
+        Returns per-servo goal bounds in servo radians. A servo that answers
+        with a mode other than Position Control (3), or with an empty limit
+        range, stops startup. A servo that stays silent keeps the full raw
+        goal range with a warning (it is stale until it answers, like every
+        other register read in this class).
+        """
+        bounds: dict[int, tuple[float, float]] = {}
+        refused: list[str] = []
+        for name, motor_id in MOTOR_TO_ID.items():
+            bounds[motor_id] = (SERVO_GOAL_MIN_RAD, SERVO_GOAL_MAX_RAD)
+            mode, mode_error = self._read_servo_register(motor_id, "read_operating_mode")
+            raw_min, min_error = self._read_servo_register(
+                motor_id, "read_raw_min_position_limit"
+            )
+            raw_max, max_error = self._read_servo_register(
+                motor_id, "read_raw_max_position_limit"
+            )
+            if mode is None:
+                print(
+                    f"Servo config: id={motor_id} name={name} operating mode unreadable "
+                    f"({mode_error}); assuming Position Control",
+                    end="\r\n", flush=True,
+                )
+            elif mode != POSITION_CONTROL_MODE:
+                refused.append(f"{name} (id={motor_id}) operating mode {mode}")
+            if raw_min is None or raw_max is None:
+                print(
+                    f"Servo config: id={motor_id} name={name} position limits unreadable "
+                    f"({min_error or max_error}); using the full goal range raw "
+                    f"{SERVO_GOAL_RAW_MIN}..{SERVO_GOAL_RAW_MAX}",
+                    end="\r\n", flush=True,
+                )
+                continue
+            try:
+                lower, upper = servo_goal_bounds(raw_min, raw_max)
+            except ValueError:
+                refused.append(
+                    f"{name} (id={motor_id}) Min/Max Position Limit raw {raw_min}/{raw_max} "
+                    "leave no goal range"
+                )
+                continue
+            bounds[motor_id] = (lower, upper)
+            if (lower, upper) != (SERVO_GOAL_MIN_RAD, SERVO_GOAL_MAX_RAD):
+                sign = self._id_to_sign[motor_id]
+                offset = self._id_to_offset[motor_id]
+                ends = sorted((lower * sign - offset, upper * sign - offset))
+                print(
+                    f"Servo position limits: id={motor_id} name={name} "
+                    f"raw [{raw_min}, {raw_max}] -> logical "
+                    f"[{ends[0]:+.4f}, {ends[1]:+.4f}] rad",
+                    end="\r\n", flush=True,
+                )
+        if refused:
+            raise RuntimeError(
+                "servo configuration refused: " + "; ".join(refused)
+                + ". The runtime needs every servo in Position Control mode "
+                f"(Operating Mode {POSITION_CONTROL_MODE}) with Min Position Limit <= "
+                "Max Position Limit; fix the EEPROM (e.g. Dynamixel Wizard) and restart."
+            )
+        return bounds
 
     @property
     def stale_motor_names(self) -> frozenset[str]:
@@ -189,7 +321,9 @@ class RobotController:
         offset = self._id_to_offset[motor_id]
         if offset:
             logical = logical + offset
-        return saturate_servo_goal(logical * self._id_to_sign[motor_id])
+        return saturate_servo_goal(
+            logical * self._id_to_sign[motor_id], *self._id_to_goal_bounds[motor_id]
+        )
 
     def _servo_goal(self, motor_id: int, logical: float) -> tuple[float, float]:
         """Return (servo goal to write, logical goal it commands).
@@ -704,9 +838,11 @@ class RobotController:
             raise ValueError("non-finite measured position")
         # The servo reading goes back unchanged, so the goal is exactly the
         # measured physical pose; only the cached goal is logical. A reading
-        # is always inside the goal range in Position Control mode, where the
-        # saturation is the identity; it only guards an impossible reading.
-        goal = saturate_servo_goal(motor_position)
+        # inside this servo's goal range (always, with the factory limits) is
+        # written back bit for bit; one outside narrowed Min/Max Position
+        # Limits (the joint was pushed past them) is saturated into them,
+        # since the servo would reject it and keep a stale goal.
+        goal = saturate_servo_goal(motor_position, *self._id_to_goal_bounds[motor_id])
         self._controller.sync_write_goal_position([motor_id], [goal])
         self._last_goals[motor_id] = (
             measured if goal == motor_position else self._from_servo(motor_id, goal)

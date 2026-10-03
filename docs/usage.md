@@ -116,7 +116,13 @@ joints and every value is `0.0` by default.
   `[SERVO_GOAL_MIN_RAD, SERVO_GOAL_MAX_RAD] = [-pi, pi - 2*pi/4096]` rad, which is raw
   0..4095 in XC330 Position Control mode (rustypot: `raw = (rad + pi) * 4096 / (2*pi)`).
   An in-range goal is sent unchanged. A goal past an edge is sent as that edge, and the
-  cached goal becomes the edge mapped back to the logical coordinate.
+  cached goal becomes the edge mapped back to the logical coordinate. At startup the
+  runtime reads every servo's Operating Mode and Min/Max Position Limit: a servo that
+  answers with a mode other than Position Control (3) stops startup with an error naming
+  the joints; a servo with narrower limits gets them as its own goal range (intersected
+  with 0..4095) and is printed once (`Servo position limits: ... raw [min, max] ->
+  logical [lo, hi] rad`); a servo that does not answer keeps the full range with a
+  warning.
 
 Example: to pitch both feet 1 degree forward (the old GC300-only ankle bias), set
 `"left_ankle_pitch": -1.0` and `"right_ankle_pitch": -1.0`, then `make sync` and restart

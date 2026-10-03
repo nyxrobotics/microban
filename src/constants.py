@@ -149,7 +149,8 @@ HARDWARE_JOINT_OFFSET_RAD = {
 # Offsets are calibration trims, not pose changes, hence the small bound. They
 # do not keep goals in range: policy targets reach +-pi, so sign * (target +
 # offset) can leave the servo's goal range, and RobotController saturates
-# every servo goal into [SERVO_GOAL_MIN_RAD, SERVO_GOAL_MAX_RAD] instead.
+# every servo goal into [SERVO_GOAL_MIN_RAD, SERVO_GOAL_MAX_RAD] instead (or
+# into a servo's narrower Min/Max Position Limit, read at startup).
 HARDWARE_JOINT_OFFSET_MAX_RAD = 0.2
 # The servo's raw goal range in rustypot radians, raw = (rad + pi) * 4096 /
 # (2 * pi): raw 0 is -pi and raw 4095 is pi - 2 * pi / 4096 (one turn).
