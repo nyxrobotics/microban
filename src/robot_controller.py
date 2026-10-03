@@ -54,7 +54,8 @@ def saturate_servo_goal(servo: float) -> float:
     2*pi/4096]. Policies have no software clip (their targets reach +-pi) and
     the sign/offset mapping can push a goal past either edge, so every goal
     write saturates here. An in-range value is returned unchanged (the same
-    float, bit for bit). A non-finite goal raises before anything is written.
+    float, bit for bit). A non-finite goal raises; the write path never passes
+    one (it holds that joint's last goal instead).
     """
     if not math.isfinite(servo):
         raise ValueError(f"non-finite servo goal {servo!r}")
@@ -132,6 +133,7 @@ class RobotController:
         self._torque_recovery_cursor = 0
         self._torque_check_next_s = time.monotonic() + 0.1
         self._torque_warn_after_s: dict[int, float] = {}
+        self._goal_warn_after_s: dict[int, float] = {}
         # A servo that reappears after losing torque must join a moving target
         # gradually, even if the scheduler has already finished its A slew.
         self._torque_rejoin_last_s: dict[int, float] = {}
@@ -618,6 +620,11 @@ class RobotController:
                     pos = self._last_goals[motor_id]
                 else:
                     pos = float(raw_pos)
+            if not math.isfinite(pos):
+                # A non-finite goal must neither reach the bus nor stop the
+                # control loop: this joint keeps its last written goal.
+                self._goal_warn(motor_id, f"non-finite goal {pos!r}; holding last goal")
+                pos = self._last_goals[motor_id]
             last_rejoin_s = self._torque_rejoin_last_s.get(motor_id)
             if last_rejoin_s is not None:
                 dt = max(0.001, min(0.1, now - last_rejoin_s))
@@ -636,8 +643,7 @@ class RobotController:
                 pos = pos if finished and bounded != pos else sent
             live.append((motor_id, pos))
         if live:
-            # Every goal is converted (and saturated) before the one bus
-            # write, so a non-finite goal raises without a partial write.
+            # Every goal is converted (and saturated) before the one bus write.
             goals = [self._servo_goal(motor_id, pos) for motor_id, pos in live]
             self._controller.sync_write_goal_position(
                 [motor_id for motor_id, _ in live],
@@ -666,6 +672,16 @@ class RobotController:
             self._poll_one_head_position()
         self._poll_torque_state()
         return [self._last_positions[motor_id] for motor_id in ids]
+
+    def _goal_warn(self, motor_id: int, detail: str) -> None:
+        now = time.monotonic()
+        if now < self._goal_warn_after_s.get(motor_id, 0.0):
+            return
+        self._goal_warn_after_s[motor_id] = now + 10.0
+        print(
+            f"Servo goal: id={motor_id} name={self._id_to_name[motor_id]} {detail}",
+            end="\r\n", flush=True,
+        )
 
     def _torque_warn(self, motor_id: int, detail: str) -> None:
         now = time.monotonic()

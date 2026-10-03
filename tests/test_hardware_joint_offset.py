@@ -549,14 +549,29 @@ class ServoGoalRangeTest(unittest.TestCase):
                     )
                 )
 
-    def test_non_finite_goal_raises_before_any_write(self) -> None:
-        controller, bus = make_controller()
-        ids = [MOTOR_TO_ID[self.POSITIVE], MOTOR_TO_ID[self.NEGATIVE]]
-        before = controller.last_goal_targets
-        with self.assertRaises(ValueError):
-            controller.sync_write_neutral_goal_position(ids, [0.1, math.nan])
-        self.assertEqual(bus.goal_writes, [])
-        self.assertEqual(controller.last_goal_targets, before)
+    def test_non_finite_goal_holds_that_joints_last_goal(self) -> None:
+        for path in ("neutral", "policy"):
+            for bad in (math.nan, math.inf, -math.inf):
+                with self.subTest(path=path, bad=bad):
+                    controller, bus = make_controller(TEST_OFFSETS_DEG)
+                    ids = [MOTOR_TO_ID[self.POSITIVE], MOTOR_TO_ID[self.NEGATIVE]]
+                    if path == "policy":
+                        controller.sync_read_present_position(list(MOTOR_TO_ID.values()))
+                        write = controller.sync_write_goal_position
+                    else:
+                        write = controller.sync_write_neutral_goal_position
+                    write(ids, [0.1, 0.2])
+                    held = bus.goals_for(ids[1])[-1]
+                    before = controller.last_goal_targets[self.NEGATIVE]
+                    bus.goal_writes.clear()
+                    with mock.patch("builtins.print") as printed:
+                        write(ids, [0.3, bad])
+                    # The finite joint moves; the bad one re-sends its last goal.
+                    self.assertEqual(bus.goals_for(ids[0]), [controller._to_servo(ids[0], 0.3)])
+                    self.assertEqual(bus.goals_for(ids[1]), [held])
+                    self.assertEqual(controller.last_goal_targets[self.NEGATIVE], before)
+                    self.assertTrue(all(math.isfinite(v) for _, v in bus.goal_writes))
+                    self.assertIn("non-finite goal", printed.call_args.args[0])
 
     def test_rejoin_seed_at_the_raw_edges_writes_the_reading_back_exactly(self) -> None:
         for raw in (0, 4095):
