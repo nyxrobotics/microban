@@ -8,6 +8,8 @@ from unittest.mock import patch
 import numpy as np
 
 from constants import (
+    HOME_ROOT_POS_Z_M,
+    HOME_ROOT_QUAT_WXYZ,
     IMU_MOUNT_QUAT,
     MOTOR_TO_ID,
     NEUTRAL_POSE,
@@ -71,14 +73,18 @@ from moves.pico_hybrid import (
     EXPECTED_TRAINING_FIXED_LEARNING_RATE,
     EXPECTED_TRAINING_PROVENANCE_MODE,
     EXPECTED_TRAINING_PROVENANCE_SCHEMA_VERSION,
+    EXPECTED_V12_ACTION_CLIP_SEMANTICS,
     EXPECTED_V12_ACTION_DISTRIBUTION_SEMANTICS,
+    EXPECTED_V12_ACTION_TARGET_SEMANTICS,
     EXPECTED_V12_ACTUAL_DYNAMIC_SOFT_LIMIT_OVERSHOOT_MAX_DEG,
     EXPECTED_V12_ACTUAL_DYNAMIC_SOFT_LIMIT_OVERSHOOT_MAX_RAD,
     EXPECTED_V12_BOOTSTRAP_MAPPING_VERSION,
+    EXPECTED_V12_BOOTSTRAP_PROVENANCE_SCHEMA_VERSION,
     EXPECTED_V12_COMMANDED_TARGET_SOFT_LIMIT_EXCESS_MAX_RAD,
     EXPECTED_V12_DEADLINE_FINAL_TRACKING_PROFILE,
     EXPECTED_V12_EXTRA_OBSERVATION_COLUMNS,
     EXPECTED_V12_HAND_TARGET_FK,
+    EXPECTED_V12_HOME_POSE_REVISION,
     EXPECTED_V12_LEGACY_PROBE_SHA256,
     EXPECTED_V12_LEGACY_SOURCE_CHECKPOINT_ITERATION,
     EXPECTED_V12_LEGACY_SOURCE_CHECKPOINT_SHA256,
@@ -91,6 +97,8 @@ from moves.pico_hybrid import (
     EXPECTED_V12_RECIPE_REVISION,
     EXPECTED_V12_RUNTIME_ACTION_SEMANTICS,
     EXPECTED_V12_SOURCE_TO_TARGET_COLUMNS,
+    EXPECTED_V12_STRICT_TRACKING_PROFILE,
+    EXPECTED_V12_TRACKING_PROFILE,
     EXPECTED_V12_TRAINING_CONTRACT_VERSION,
     PHYSICAL_MOTOR_TARGET_GUARD_SEMANTICS,
     PICO_TELEOP_HOME_POSE,
@@ -330,6 +338,62 @@ def clipped_target(index, raw_value):
     )
 
 
+# Exact values the centered-HOME packager writes
+# (mjlab_microban track-centered-home-clip,
+# scripts/export_teleop_v12_deployment.py and the checkpoint's
+# microban_teleop_v12_home_pose marker), copied verbatim so a drift on
+# either side fails here rather than on the robot.
+PACKAGER_V12_HOME_POSE_JSON = (
+    '{"schema_version":2,"revision":"centered_home_hip_plus1p198384259489_'
+    'ankle_minus1p198384259489_shoulder_zero_v5","root_pos_xyz_m":[0.0,0.0,'
+    '0.170554885633559],"root_quat_wxyz":[1.0,0.0,0.0,0.0],"joint_names":'
+    '["head","neck_roll","neck_pitch","right_shoulder_pitch",'
+    '"right_shoulder_roll","right_elbow","right_hip_yaw","right_hip_roll",'
+    '"right_hip_pitch","right_knee","right_ankle_pitch","right_ankle_roll",'
+    '"left_shoulder_pitch","left_shoulder_roll","left_elbow","left_hip_yaw",'
+    '"left_hip_roll","left_hip_pitch","left_knee","left_ankle_pitch",'
+    '"left_ankle_roll"],"joint_pos_rad":[0.0,0.0,0.0,0.0,'
+    '-0.17453292519943295,-0.3490658503988659,0.0,-0.08726646259971647,'
+    '0.020915751032157148,0.0,-0.020915751032157148,0.08726646259971647,'
+    '0.0,0.17453292519943295,-0.3490658503988659,0.0,0.08726646259971647,'
+    '0.020915751032157148,0.0,-0.020915751032157148,-0.08726646259971647]}'
+)
+PACKAGER_V12_ACTION_CLIP_LOWER = ",".join(["-3.141592653589793"] * 18)
+PACKAGER_V12_ACTION_CLIP_UPPER = ",".join(["3.141592653589793"] * 18)
+PACKAGER_V12_SEMANTICS = {
+    "previous_action_semantics": "raw_actor_output",
+    "action_target_semantics": (
+        "default_joint_pos_plus_raw_action_times_scale_saturated_at_action_clip"
+    ),
+    "action_clip_semantics": (
+        "absolute_target_saturated_at_servo_goal_range_pi_no_software_clip_"
+        "all_body_joints_radians"
+    ),
+    "runtime_action_semantics": (
+        "raw_default_plus_scale_then_servo_goal_range_saturation_v3"
+    ),
+    "physical_motor_target_guard_semantics": (
+        "finite_target_then_servo_goal_range_saturation_pi_v3"
+    ),
+    "microban_teleop_recipe_revision": (
+        "centered_home_velocity_source_staged_mask_reachable_fk_elbow_minus10_"
+        "raw_prev_action_servo_range_pi_v11"
+    ),
+    "v12_tracking_profile": (
+        "full_body_reachable_performance_perturbation_v2_deployed_accuracy_v1"
+    ),
+    "v12_bootstrap_provenance_schema_version": "2",
+    "v12_legacy_source_checkpoint_sha256": (
+        "f395d04c324b6eca339e40a20c64b21b5a22e944c99f7b590235e355b429b565"
+    ),
+    "v12_legacy_source_checkpoint_iteration": "20000",
+    "v12_legacy_probe_sha256": (
+        "ac47d437639bb43176f3dddb24ca8bc8bdad425d63e95c8176e615ef1573a25a"
+    ),
+    "v12_lr_order_migration_revision": "none_corrected_site_order_from_bootstrap_v1",
+}
+
+
 def valid_v12_metadata():
     """Metadata fixture shared by every contract-v12 runtime test."""
 
@@ -378,7 +442,12 @@ def valid_v12_metadata():
             ),
             "observation_joint_names": _csv(EXPECTED_V12_OBSERVATION_JOINT_NAMES),
             "previous_action_semantics": "raw_actor_output",
-            "action_clip_semantics": "none",
+            "action_target_semantics": EXPECTED_V12_ACTION_TARGET_SEMANTICS,
+            "action_clip_semantics": EXPECTED_V12_ACTION_CLIP_SEMANTICS,
+            "action_clip_lower": PACKAGER_V12_ACTION_CLIP_LOWER,
+            "action_clip_upper": PACKAGER_V12_ACTION_CLIP_UPPER,
+            "v12_home_pose_revision": EXPECTED_V12_HOME_POSE_REVISION,
+            "v12_training_home_pose_json": PACKAGER_V12_HOME_POSE_JSON,
             "action_distribution_semantics": (
                 EXPECTED_V12_ACTION_DISTRIBUTION_SEMANTICS
             ),
@@ -395,7 +464,7 @@ def valid_v12_metadata():
             "v12_locomotion_report_sha256": "b" * 64,
             "v12_onnx_report_sha256": "c" * 64,
             "v12_tracking_report_sha256": "d" * 64,
-            "v12_tracking_profile": "full_body_reachable_performance_perturbation_v2",
+            "v12_tracking_profile": EXPECTED_V12_TRACKING_PROFILE,
             "v12_raw_action_envelope_schema_version": str(
                 EXPECTED_V12_RAW_ACTION_ENVELOPE_SCHEMA_VERSION
             ),
@@ -419,7 +488,9 @@ def valid_v12_metadata():
             "runtime_raw_action_guard_semantics": (
                 EXPECTED_V12_RAW_ACTION_GUARD_SEMANTICS
             ),
-            "v12_bootstrap_provenance_schema_version": "1",
+            "v12_bootstrap_provenance_schema_version": str(
+                EXPECTED_V12_BOOTSTRAP_PROVENANCE_SCHEMA_VERSION
+            ),
             "v12_bootstrap_mapping_version": EXPECTED_V12_BOOTSTRAP_MAPPING_VERSION,
             "v12_legacy_source_checkpoint_sha256": (
                 EXPECTED_V12_LEGACY_SOURCE_CHECKPOINT_SHA256
@@ -450,6 +521,9 @@ def valid_v12_metadata():
                 list(EXPECTED_V12_EXTRA_OBSERVATION_COLUMNS), separators=(",", ":")
             ),
             "v12_frozen_legacy_tensors_verified": "true",
+            "v12_lr_order_migration_revision": (
+                "none_corrected_site_order_from_bootstrap_v1"
+            ),
             "v12_locomotion_gate": ("microban_teleop_v12_neutral_locomotion_9x300"),
             "v12_locomotion_status": "pass",
             "v12_locomotion_seed": "42",
@@ -614,8 +688,46 @@ class PicoHybridMoveTest(unittest.TestCase):
         self.assertEqual(session.run_count, 16)
         self.assertEqual(
             PHYSICAL_MOTOR_TARGET_GUARD_SEMANTICS,
-            "finite_target_no_software_clip_v1",
+            "finite_target_then_servo_goal_range_saturation_pi_v3",
         )
+        self.assertEqual(
+            move._contract.v12_target_clip_lower, (-SERVO_TARGET_RANGE_RAD,) * 18
+        )
+        self.assertEqual(
+            move._contract.v12_target_clip_upper, (SERVO_TARGET_RANGE_RAD,) * 18
+        )
+
+    def test_v12_fixture_carries_the_centered_home_packager_values(self):
+        # The fixture must be what the centered-HOME packager actually writes,
+        # so the parser's pins are checked against literal exporter strings.
+        metadata = valid_v12_metadata()
+        for name, value in PACKAGER_V12_SEMANTICS.items():
+            with self.subTest(name=name):
+                self.assertEqual(metadata[name], value)
+        self.assertEqual(metadata["v12_training_home_pose_json"], PACKAGER_V12_HOME_POSE_JSON)
+        home = json.loads(PACKAGER_V12_HOME_POSE_JSON)
+        self.assertEqual(home["revision"], EXPECTED_V12_HOME_POSE_REVISION)
+        self.assertEqual(home["root_pos_xyz_m"][2], HOME_ROOT_POS_Z_M)
+        self.assertEqual(tuple(home["root_quat_wxyz"]), HOME_ROOT_QUAT_WXYZ)
+        self.assertEqual(
+            home["joint_pos_rad"],
+            [PICO_TELEOP_HOME_POSE[name] for name in home["joint_names"]],
+        )
+        self.assertEqual(
+            metadata["action_clip_lower"].split(","), [repr(-math.pi)] * 18
+        )
+        self.assertEqual(
+            metadata["action_clip_upper"].split(","), [repr(math.pi)] * 18
+        )
+        PicoHybridMove(session=FakeSession(metadata=metadata))
+
+    def test_v12_contract_accepts_strict_final_tracking_profile(self):
+        # The packager accepts a gate made under the stricter original profile
+        # in place of the deployed-accuracy one; so does the robot.
+        metadata = valid_v12_metadata()
+        metadata["v12_tracking_profile"] = EXPECTED_V12_STRICT_TRACKING_PROFILE
+        move = PicoHybridMove(session=FakeSession(metadata=metadata))
+        self.assertEqual(move._contract.training_contract_version, "12")
 
     def test_v12_contract_accepts_deadline_final_tracking_profile(self):
         metadata = valid_v12_metadata()
@@ -722,6 +834,67 @@ class PicoHybridMoveTest(unittest.TestCase):
             ),
             "parity_error": ("v12_onnxruntime_cpu_max_abs_error", "0.001"),
             "action_clip": ("action_clip_semantics", "soft_limits"),
+            # The archived old-HOME chain's identities are retired.
+            "old_home_source": (
+                "v12_legacy_source_checkpoint_sha256",
+                "b0bcdadac39716be784207dd6b2b93157162a3e80650e23c05f490c400b9e141",
+            ),
+            "old_home_source_iteration": (
+                "v12_legacy_source_checkpoint_iteration",
+                "14999",
+            ),
+            "old_home_probe": (
+                "v12_legacy_probe_sha256",
+                "f51378d59ff4d68fb1185a91eb2a863749e5c7be6ec4cd0ab4a0b08f1565e69d",
+            ),
+            "provenance_schema_1": ("v12_bootstrap_provenance_schema_version", "1"),
+            "old_home_recipe": (
+                "microban_teleop_recipe_revision",
+                "legacy_velocity_model14999_staged_mask_reachable_fk_elbow_minus10_"
+                "raw_actions_v5",
+            ),
+            "hand_pose_release_recipe": (
+                "microban_teleop_recipe_revision",
+                "centered_home_velocity_source_staged_mask_reachable_fk_elbow_"
+                "minus10_raw_prev_action_servo_range_pi_active_hand_arm_pose_"
+                "release_v12",
+            ),
+            "old_target_semantics": (
+                "action_target_semantics",
+                "default_joint_pos_plus_raw_action_times_scale",
+            ),
+            "old_clip_semantics": ("action_clip_semantics", "none"),
+            "old_runtime_semantics": (
+                "runtime_action_semantics",
+                "raw_unbounded_default_plus_scale_no_target_clip_v1",
+            ),
+            "old_motor_guard_semantics": (
+                "physical_motor_target_guard_semantics",
+                "finite_target_no_software_clip_v1",
+            ),
+            "unknown_tracking_profile": (
+                "v12_tracking_profile",
+                "full_body_reachable_performance_perturbation_v2_deployed_accuracy_v2",
+            ),
+            "home_revision": ("v12_home_pose_revision", "upright_home_v4"),
+            "home_json_missing": ("v12_training_home_pose_json", ""),
+            "home_json_old_shoulder": (
+                "v12_training_home_pose_json",
+                PACKAGER_V12_HOME_POSE_JSON.replace(
+                    '"joint_pos_rad":[0.0,0.0,0.0,0.0,',
+                    '"joint_pos_rad":[0.0,0.0,0.0,0.17453292519943295,',
+                ),
+            ),
+            "home_json_root": (
+                "v12_training_home_pose_json",
+                PACKAGER_V12_HOME_POSE_JSON.replace(
+                    "0.170554885633559", "0.1705549"
+                ),
+            ),
+            "home_json_revision": (
+                "v12_training_home_pose_json",
+                PACKAGER_V12_HOME_POSE_JSON.replace("shoulder_zero_v5", "shoulder_zero_v4"),
+            ),
             "raw_envelope_joint_order": (
                 "v12_raw_action_joint_names_json",
                 json.dumps(list(reversed(OBSERVATION_DOF_ORDER))),
@@ -919,44 +1092,44 @@ class PicoHybridMoveTest(unittest.TestCase):
             self.assertEqual(abs(command.target_angles[name]), SERVO_TARGET_RANGE_RAD)
         np.testing.assert_array_equal(move._last_action, raw[0])
 
-    def test_v12_target_clip_metadata_may_narrow_but_never_widen(self):
-        raw = np.full((1, 18), 3.0, dtype=np.float32)
-        narrow = valid_v12_metadata()
-        narrow["action_clip_lower"] = ",".join(["-1.0"] * 18)
-        narrow["action_clip_upper"] = ",".join(["1.0"] * 18)
-        move = PicoHybridMove(session=FakeSession(metadata=narrow, output=raw))
-        obs = observation()
-        command = MotorCommand()
-        move.on_start(obs, command)
-        move.step(obs, command)
-        for name in OBSERVATION_DOF_ORDER:
-            self.assertEqual(command.target_angles[name], 1.0)
-
-        # mjlab's 3-decimal +-3.142 is the servo range; it never widens the
-        # applied bound past the exact +-pi.
-        rounded = valid_v12_metadata()
-        rounded["action_clip_lower"] = ",".join(["-3.142"] * 18)
-        rounded["action_clip_upper"] = ",".join(["3.142"] * 18)
+    def test_v12_target_clip_metadata_must_be_full_precision_servo_range(self):
+        # The packager writes repr(+-pi); that is applied as the exact +-pi.
         huge = np.full((1, 18), 24.0, dtype=np.float32)
-        move = PicoHybridMove(session=FakeSession(metadata=rounded, output=huge))
+        move = PicoHybridMove(
+            session=FakeSession(metadata=valid_v12_metadata(), output=huge)
+        )
+        obs = observation()
         command = MotorCommand()
         move.on_start(obs, command)
         move.step(obs, command)
         for name in OBSERVATION_DOF_ORDER:
             self.assertEqual(command.target_angles[name], math.pi)
 
-        wide = valid_v12_metadata()
-        wide["action_clip_lower"] = ",".join(["-3.2"] * 18)
-        wide["action_clip_upper"] = ",".join(["3.2"] * 18)
-        barely_wide = valid_v12_metadata()
-        barely_wide["action_clip_upper"] = ",".join(["3.143"] * 18)
-        half = valid_v12_metadata()
-        half["action_clip_upper"] = ",".join(["3.142"] * 18)
-        for case, metadata in (
-            ("wider", wide),
-            ("barely_wider", barely_wide),
-            ("only_upper", half),
-        ):
+        def with_clip(lower=None, upper=None, drop=()):
+            metadata = valid_v12_metadata()
+            if lower is not None:
+                metadata["action_clip_lower"] = ",".join([lower] * 18)
+            if upper is not None:
+                metadata["action_clip_upper"] = ",".join([upper] * 18)
+            for key in drop:
+                metadata.pop(key)
+            return metadata
+
+        cases = {
+            # A narrower clip is another action rule than training's +-pi.
+            "narrower": with_clip("-1.0", "1.0"),
+            "old_1p57": with_clip("-1.57", "1.57"),
+            # mjlab's 3-decimal formatter writes 3.142 > pi.
+            "three_decimal": with_clip("-3.142", "3.142"),
+            "wider": with_clip("-3.2", "3.2"),
+            "barely_wider": with_clip(upper=repr(math.pi + 2.0e-6)),
+            "barely_narrower": with_clip(lower=repr(-math.pi + 2.0e-6)),
+            "only_upper": with_clip(drop=("action_clip_lower",)),
+            "missing": with_clip(drop=("action_clip_lower", "action_clip_upper")),
+            "short": with_clip(),
+        }
+        cases["short"]["action_clip_upper"] = ",".join([repr(math.pi)] * 17)
+        for case, metadata in cases.items():
             with (
                 self.subTest(case=case),
                 self.assertRaises(PicoHybridPolicyContractError),

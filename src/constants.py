@@ -46,9 +46,6 @@ HOME_PITCH_RAD = float(np.deg2rad(1.198384259489))
 # saturates every servo goal into SERVO_GOAL_MIN_RAD..SERVO_GOAL_MAX_RAD.
 SERVO_TARGET_RANGE_RAD = float(np.pi)
 POLICY_ACTION_SCALE = 1.0
-# mjlab's base ONNX exporter writes CSV metadata with 3 decimals, so a +-pi
-# action clip arrives as +-3.142; accept that rounding and nothing more.
-SERIALIZED_CLIP_TOLERANCE_RAD = 0.0005 + 1.0e-9
 # Trunk pose of HOME in the training scene: the lowest sole collision corner
 # touches the ground at this z, upright (identity quaternion).
 HOME_ROOT_POS_Z_M = 0.170554885633559

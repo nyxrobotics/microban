@@ -24,13 +24,14 @@ import numpy as np
 import onnxruntime as ort
 
 from constants import (
+    HOME_ROOT_POS_Z_M,
+    HOME_ROOT_QUAT_WXYZ,
     IMU_MOUNT_QUAT,
     KP_DEFAULT,
     KP_RL,
     MOTOR_TO_ID,
     NEUTRAL_POSE,
     OBSERVATION_DOF_ORDER,
-    SERIALIZED_CLIP_TOLERANCE_RAD,
     SERVO_TARGET_RANGE_RAD,
 )
 from controller import ControllerProtocol
@@ -189,20 +190,37 @@ def require_unchanged_runtime_source_identity(
 # actor instead of the bounded v10 action transform.  These identities are
 # pinned on the robot so arbitrary 83-input ONNX files cannot opt themselves
 # into the raw-action execution path by adding a version string.
+#
+# Centered-HOME chain (mjlab_microban track-centered-home-clip): the frozen
+# source is the centered-HOME walking checkpoint
+# checkpoints/centered_home_velocity_cont/model_20000.pt (bootstrap provenance
+# schema 2 records its SHA-256 and its saved "iter" 20000), probed by
+# artifacts/legacy_teleop_probe/velocity_f395d04c324b6eca_teleop83_raw_9x300.json.
+# The deployed walk.onnx is that same checkpoint's export.
 EXPECTED_V12_LEGACY_SOURCE_CHECKPOINT_SHA256 = (
-    "b0bcdadac39716be784207dd6b2b93157162a3e80650e23c05f490c400b9e141"
+    "f395d04c324b6eca339e40a20c64b21b5a22e944c99f7b590235e355b429b565"
 )
-EXPECTED_V12_LEGACY_SOURCE_CHECKPOINT_ITERATION = 14_999
+EXPECTED_V12_LEGACY_SOURCE_CHECKPOINT_ITERATION = 20_000
 EXPECTED_V12_LEGACY_PROBE_SHA256 = (
-    "f51378d59ff4d68fb1185a91eb2a863749e5c7be6ec4cd0ab4a0b08f1565e69d"
+    "ac47d437639bb43176f3dddb24ca8bc8bdad425d63e95c8176e615ef1573a25a"
 )
-EXPECTED_V12_BOOTSTRAP_PROVENANCE_SCHEMA_VERSION = 1
+EXPECTED_V12_BOOTSTRAP_PROVENANCE_SCHEMA_VERSION = 2
 EXPECTED_V12_BOOTSTRAP_MAPPING_VERSION = (
     "normalized_legacy_velocity_63_to_teleop83_reachable_fk_elbow_minus10_v4"
 )
 EXPECTED_V12_RECIPE_REVISION = (
-    "legacy_velocity_model14999_staged_mask_reachable_fk_elbow_minus10_raw_actions_v5"
+    "centered_home_velocity_source_staged_mask_reachable_fk_elbow_minus10_"
+    "raw_prev_action_servo_range_pi_v11"
 )
+# The training HOME marker the packager copies from the checkpoint.  Its
+# joint_pos_rad must equal PICO_TELEOP_HOME_POSE (NEUTRAL_POSE) at full
+# precision; default_joint_pos is only the 3-decimal mjlab serialization.
+EXPECTED_V12_HOME_POSE_REVISION = (
+    "centered_home_hip_plus1p198384259489_ankle_minus1p198384259489_"
+    "shoulder_zero_v5"
+)
+EXPECTED_V12_HOME_POSE_SCHEMA_VERSION = 2
+V12_HOME_POSE_TOLERANCE = 1.0e-9
 EXPECTED_V12_ADAPTER_GRADIENT_SCHEDULE_REVISION = (
     "freeze_extra_to7000_then_hmd_hand_to10000_then_all_v1"
 )
@@ -212,22 +230,44 @@ EXPECTED_V12_NORMALIZER_SEMANTICS = (
     "frozen_source63_identity_hmd_flags_reachable_fk_target_scaling_v3"
 )
 EXPECTED_V12_PREVIOUS_ACTION_SEMANTICS = "raw_actor_output"
-EXPECTED_V12_ACTION_CLIP_SEMANTICS = "none"
+# Shared target rule of every policy: target = HOME + raw_action * scale with
+# no software clip, saturated only at the servo's one-turn goal range (+-pi).
+# Training models that as action_clip_lower/upper = -/+pi, which the packager
+# writes at full precision (repr) and step() applies as v12_target_clip.
+EXPECTED_V12_ACTION_TARGET_SEMANTICS = (
+    "default_joint_pos_plus_raw_action_times_scale_saturated_at_action_clip"
+)
+EXPECTED_V12_ACTION_CLIP_SEMANTICS = (
+    "absolute_target_saturated_at_servo_goal_range_pi_no_software_clip_"
+    "all_body_joints_radians"
+)
+# action_clip_lower/upper must be -/+SERVO_TARGET_RANGE_RAD to float noise,
+# the same rule WalkMove and GetupMove apply.  The 3-decimal +-3.142 (wider
+# than the servo range) and any narrower clip (another action rule) are refused.
+V12_ACTION_CLIP_TOLERANCE_RAD = 1.0e-6
 EXPECTED_V12_ACTION_DISTRIBUTION_SEMANTICS = "unbounded_gaussian_deterministic_mean_raw"
 EXPECTED_V12_RUNTIME_ACTION_SEMANTICS = (
-    "raw_unbounded_default_plus_scale_no_target_clip_v1"
+    "raw_default_plus_scale_then_servo_goal_range_saturation_v3"
 )
-# V12 uses the same unbounded finite target as its training action.  The
+# The finite target is saturated at the servo goal range, as in training.  The
 # authenticated raw-action amplitude guard and non-finite check remain active.
 PHYSICAL_MOTOR_TARGET_GUARD_SEMANTICS = (
-    "finite_target_no_software_clip_v1"
+    "finite_target_then_servo_goal_range_saturation_pi_v3"
 )
 EXPECTED_V12_FINAL_CHECKPOINT_ITERATION = 14_999
 EXPECTED_V12_FINAL_COMPLETED_UPDATES = 15_000
 EXPECTED_V12_STAGE_GATE = "microban_teleop_v12_stage"
 EXPECTED_V12_LOCOMOTION_GATE = "microban_teleop_v12_neutral_locomotion_9x300"
 EXPECTED_V12_ONNX_GATE = "microban_teleop_v12_checkpoint_onnx"
-EXPECTED_V12_TRACKING_PROFILE = "full_body_reachable_performance_perturbation_v2"
+# The canonical final profile judges the deployed model's hand/foot accuracy
+# (user-approved 2026-10-04); a gate made under the stricter original profile
+# is also accepted, as the packager does.
+EXPECTED_V12_STRICT_TRACKING_PROFILE = (
+    "full_body_reachable_performance_perturbation_v2"
+)
+EXPECTED_V12_TRACKING_PROFILE = (
+    f"{EXPECTED_V12_STRICT_TRACKING_PROFILE}_deployed_accuracy_v1"
+)
 EXPECTED_V12_DEADLINE_FINAL_TRACKING_PROFILE = (
     "deadline_full_body_hand_rms35mm_p95_70mm_foot_rms50mm_p95_80mm_"
     "perturbation_v2"
@@ -235,6 +275,7 @@ EXPECTED_V12_DEADLINE_FINAL_TRACKING_PROFILE = (
 EXPECTED_V12_TRACKING_PROFILES = frozenset(
     (
         EXPECTED_V12_TRACKING_PROFILE,
+        EXPECTED_V12_STRICT_TRACKING_PROFILE,
         EXPECTED_V12_DEADLINE_FINAL_TRACKING_PROFILE,
     )
 )
@@ -1518,9 +1559,9 @@ class _PolicyContract:
     v12_learned_source_delta_absolute_maximum: tuple[float, ...] = ()
     v12_runtime_raw_action_guard_absolute_maximum: tuple[float, ...] = ()
     # Absolute target bound: target = clip(default + raw * scale, lower,
-    # upper).  No software clip by default -- only the servo's one-turn goal
-    # range +-SERVO_TARGET_RANGE_RAD (+-pi).  action_clip_lower/upper metadata,
-    # when present, may narrow it but never widen it past +-pi.
+    # upper).  No software clip -- only the servo's one-turn goal range
+    # +-SERVO_TARGET_RANGE_RAD (+-pi), which action_clip_lower/upper metadata
+    # must state at full precision.
     v12_target_clip_lower: tuple[float, ...] = ()
     v12_target_clip_upper: tuple[float, ...] = ()
 
@@ -2131,6 +2172,7 @@ def _parse_v12_contract(session: Any) -> _PolicyContract:
         "microban_teleop_recipe_revision",
         EXPECTED_V12_RECIPE_REVISION,
     )
+    _require_v12_home_pose(metadata)
     _require_v12_runtime_source_identity(metadata)
 
     filename = metadata.get("checkpoint_filename", "")
@@ -2452,7 +2494,7 @@ def _parse_v12_contract(session: Any) -> _PolicyContract:
     _require_exact_metadata(
         metadata,
         "action_target_semantics",
-        "default_joint_pos_plus_raw_action_times_scale",
+        EXPECTED_V12_ACTION_TARGET_SEMANTICS,
     )
     _require_exact_metadata(
         metadata, "action_clip_semantics", EXPECTED_V12_ACTION_CLIP_SEMANTICS
@@ -2502,7 +2544,7 @@ def _parse_v12_contract(session: Any) -> _PolicyContract:
     )
 
     # The current v12 deployment exporter does not serialize soft limits because
-    # its actor semantics intentionally have no environment target clip.  Older
+    # its only target bound is the servo range above, not a soft limit.  Older
     # base graphs and future exporters may nevertheless carry both vectors.  If
     # present, authenticate them against the same compiled contract as v10;
     # otherwise the constructor validates the compiled fallback before inference.
@@ -2673,34 +2715,93 @@ def _parse_v12_contract(session: Any) -> _PolicyContract:
 def _parse_v12_target_clip(
     metadata: Mapping[str, str], count: int
 ) -> tuple[tuple[float, ...], tuple[float, ...]]:
-    """Return the absolute target bound: the servo range, narrowed only by metadata."""
+    """Return the absolute target bound, which must be the servo range +-pi.
+
+    The packager writes action_clip_lower/upper at full precision.  A missing,
+    one-sided, rounded (+-3.142 is wider than pi), narrower or wider clip is a
+    different action rule from training and is refused.
+    """
 
     keys = ("action_clip_lower", "action_clip_upper")
-    present = [key in metadata for key in keys]
-    if not any(present):
-        return (
-            (-SERVO_TARGET_RANGE_RAD,) * count,
-            (SERVO_TARGET_RANGE_RAD,) * count,
-        )
-    if not all(present):
+    if not all(key in metadata for key in keys):
         raise PicoHybridPolicyContractError(
-            "action_clip_lower and action_clip_upper must be supplied together"
+            "action_clip_lower and action_clip_upper are required"
         )
     lower = _float_csv(metadata.get(keys[0]), keys[0], count)
     upper = _float_csv(metadata.get(keys[1]), keys[1], count)
-    # mjlab's exporter writes 3-decimal CSVs, so +-pi arrives as +-3.142.
-    limit = SERVO_TARGET_RANGE_RAD + SERIALIZED_CLIP_TOLERANCE_RAD
     for lo, hi in zip(lower, upper, strict=True):
-        if not -limit <= lo < hi <= limit:
+        if (
+            abs(lo + SERVO_TARGET_RANGE_RAD) > V12_ACTION_CLIP_TOLERANCE_RAD
+            or abs(hi - SERVO_TARGET_RANGE_RAD) > V12_ACTION_CLIP_TOLERANCE_RAD
+        ):
             raise PicoHybridPolicyContractError(
-                "action_clip_lower/upper must lie within the servo range "
-                f"+-{SERVO_TARGET_RANGE_RAD!r} rad"
+                "action_clip_lower/upper must be the servo range "
+                f"+-{SERVO_TARGET_RANGE_RAD!r} rad at full precision"
             )
-    # The rounded +-3.142 never widens a target past the exact servo range.
+    # Apply the robot's exact +-pi rather than the parsed copy.
     return (
-        tuple(max(-SERVO_TARGET_RANGE_RAD, lo) for lo in lower),
-        tuple(min(SERVO_TARGET_RANGE_RAD, hi) for hi in upper),
+        (-SERVO_TARGET_RANGE_RAD,) * count,
+        (SERVO_TARGET_RANGE_RAD,) * count,
     )
+
+
+def _require_v12_home_pose(metadata: Mapping[str, str]) -> None:
+    """Require the checkpoint's full-precision training HOME to be NEUTRAL_POSE."""
+
+    _require_exact_metadata(
+        metadata, "v12_home_pose_revision", EXPECTED_V12_HOME_POSE_REVISION
+    )
+    home = _strict_json_metadata(metadata, "v12_training_home_pose_json")
+    if not isinstance(home, dict) or set(home) != {
+        "schema_version",
+        "revision",
+        "root_pos_xyz_m",
+        "root_quat_wxyz",
+        "joint_names",
+        "joint_pos_rad",
+    }:
+        raise PicoHybridPolicyContractError(
+            "v12_training_home_pose_json has an unexpected shape"
+        )
+
+    def numbers(value: Any, count: int) -> tuple[float, ...] | None:
+        if (
+            not isinstance(value, list)
+            or len(value) != count
+            or any(
+                isinstance(item, bool) or not isinstance(item, (int, float))
+                for item in value
+            )
+        ):
+            return None
+        result = tuple(float(item) for item in value)
+        return result if all(math.isfinite(item) for item in result) else None
+
+    joint_names = home["joint_names"]
+    joint_pos = numbers(home["joint_pos_rad"], len(EXPECTED_V12_OBSERVATION_JOINT_NAMES))
+    root_pos = numbers(home["root_pos_xyz_m"], 3)
+    root_quat = numbers(home["root_quat_wxyz"], 4)
+    if (
+        home["schema_version"] != EXPECTED_V12_HOME_POSE_SCHEMA_VERSION
+        or isinstance(home["schema_version"], bool)
+        or home["revision"] != EXPECTED_V12_HOME_POSE_REVISION
+        or joint_names != list(EXPECTED_V12_OBSERVATION_JOINT_NAMES)
+        or joint_pos is None
+        or root_pos is None
+        or root_quat is None
+        or any(
+            abs(angle - float(PICO_TELEOP_HOME_POSE[name])) > V12_HOME_POSE_TOLERANCE
+            for name, angle in zip(joint_names, joint_pos, strict=True)
+        )
+        or abs(root_pos[2] - HOME_ROOT_POS_Z_M) > V12_HOME_POSE_TOLERANCE
+        or any(
+            abs(actual - expected) > V12_HOME_POSE_TOLERANCE
+            for actual, expected in zip(root_quat, HOME_ROOT_QUAT_WXYZ, strict=True)
+        )
+    ):
+        raise PicoHybridPolicyContractError(
+            "v12 training HOME is not the robot's centered HOME (NEUTRAL_POSE)"
+        )
 
 
 def _require_v12_runtime_source_identity(metadata: Mapping[str, str]) -> None:
@@ -2732,8 +2833,7 @@ def _validate_physical_motor_target_contract(contract: _PolicyContract) -> None:
     """Validate the calibrated joint geometry before inference begins.
 
     V10 still uses the software soft limits. V12 bounds its policy target
-    only by the servo range +-SERVO_TARGET_RANGE_RAD (or a narrower metadata
-    clip) in step().
+    only by the servo range +-SERVO_TARGET_RANGE_RAD in step().
     """
 
     vectors = {
