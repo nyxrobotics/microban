@@ -9,6 +9,7 @@ import numpy as np
 
 from constants import (
     HOME_PROJECTED_GRAVITY,
+    HOME_TRUNK_PITCH_RAD,
     IMU_MOUNT_QUAT,
     MOTOR_TO_ID,
     NEUTRAL_POSE,
@@ -17,6 +18,7 @@ from constants import (
 )
 from imu_reader import imu_quat_to_body
 from input.input_source import UserInput
+from input.network_input import _PICO_HAND_TARGET_LOWER, _PICO_HAND_TARGET_UPPER
 from moves.move import MotorCommand, MoveState
 from moves.pico_hybrid import (
     EXPECTED_ACCEPTANCE_EVALUATOR_REVISION,
@@ -713,6 +715,24 @@ class PicoHybridMoveTest(unittest.TestCase):
                 "hand_target_frame",
                 "robot_trunk_xyz_forward_left_up",
             ),
+            # v13 trained the same HOME with leaning-trunk-frame targets.
+            "leaning_trunk_frame_v13_recipe": (
+                "microban_teleop_recipe_revision",
+                "forward_lean_home_velocity_source_staged_mask_reachable_fk_"
+                "elbow_minus10_raw_prev_action_servo_range_pi_v13",
+            ),
+            "trunk_frame_hand_fk_v2": (
+                "hand_target_fk",
+                json.dumps(
+                    {
+                        **EXPECTED_V12_HAND_TARGET_FK,
+                        "revision": (
+                            "microban_robot_xml_arm_fk_reachable_box_"
+                            "elbow_upper_minus10_v2"
+                        ),
+                    }
+                ),
+            ),
         }
         for case, (key, value) in cases.items():
             metadata = valid_v12_metadata()
@@ -723,6 +743,35 @@ class PicoHybridMoveTest(unittest.TestCase):
             with self.subTest(case=case):
                 with self.assertRaises(PicoHybridPolicyContractError):
                     PicoHybridMove(session=FakeSession(metadata=metadata))
+
+    def test_v12_hand_targets_are_in_the_home_levelled_frame(self):
+        self.assertEqual(
+            EXPECTED_V12_HAND_TARGET_FK["target_frame"], PICO_V12_TARGET_FRAME
+        )
+        self.assertEqual(
+            EXPECTED_V12_HAND_TARGET_FK["target_frame_trunk_pitch_rad"],
+            HOME_TRUNK_PITCH_RAD,
+        )
+        self.assertTrue(EXPECTED_V12_RECIPE_REVISION.endswith("_v15"))
+        normalizer = EXPECTED_V12_HAND_TARGET_FK["normalizer_abs_bound_m"]
+        contract_limit = EXPECTED_V12_HAND_TARGET_FK["runtime_validated_abs_limit_m"]
+        wire = EXPECTED_V12_HAND_TARGET_FK["wire_abs_bound_m"]
+        for side_min, side_max in zip(
+            EXPECTED_V12_HAND_TARGET_FK["offset_aabb_min_m"],
+            EXPECTED_V12_HAND_TARGET_FK["offset_aabb_max_m"],
+            strict=True,
+        ):
+            for axis in range(3):
+                reach = max(abs(side_min[axis]), abs(side_max[axis]))
+                self.assertLessEqual(reach, normalizer[axis])
+                self.assertLess(normalizer[axis], contract_limit[axis])
+                self.assertLess(contract_limit[axis], wire[axis])
+        # The live receiver is never wider than the exporter's contract.
+        for axis in range(3):
+            self.assertLessEqual(_PICO_HAND_TARGET_UPPER[axis], contract_limit[axis])
+            self.assertGreaterEqual(
+                _PICO_HAND_TARGET_LOWER[axis], -contract_limit[axis]
+            )
 
     def test_v12_soft_limits_match_metadata_or_compiled_fallback(self):
         metadata = valid_v12_metadata()
@@ -1119,8 +1168,11 @@ class PicoHybridMoveTest(unittest.TestCase):
         corpus = onnxruntime_compatibility_smoke_inputs()
         self.assertEqual(corpus.shape, (16, 1, 83))
         self.assertTrue(np.isfinite(corpus).all())
-        self.assertEqual(corpus[0, 0, 5], -1.0)
-        self.assertEqual(np.count_nonzero(corpus[0]), 1)
+        np.testing.assert_array_equal(
+            corpus[0, 0, 3:6],
+            np.asarray(HOME_PROJECTED_GRAVITY, dtype=np.float32),
+        )
+        self.assertEqual(np.count_nonzero(corpus[0]), 2)
         self.assertTrue(np.all(corpus[1] <= corpus[2]))
 
         session = FakeSession()

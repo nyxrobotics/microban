@@ -24,6 +24,7 @@ import numpy as np
 import onnxruntime as ort
 
 from constants import (
+    HOME_PROJECTED_GRAVITY,
     HOME_ROOT_POS_Z_M,
     HOME_ROOT_QUAT_WXYZ,
     IMU_MOUNT_QUAT,
@@ -202,12 +203,14 @@ EXPECTED_V12_BOOTSTRAP_PROVENANCE_SCHEMA_VERSION = 1
 EXPECTED_V12_BOOTSTRAP_MAPPING_VERSION = (
     "normalized_legacy_velocity_63_to_teleop83_reachable_fk_elbow_minus10_v4"
 )
-# mjlab_microban forward-lean-centered-home (8d42377): the v12 chain trained
-# at the forward-lean HOME. Earlier recipes (v5 legacy, centered-HOME) were
-# trained at another HOME.
+# mjlab_microban forward-lean-centered-home (c0f492f): the v12 chain trained
+# at the forward-lean HOME with hand/foot targets in the HOME-levelled trunk
+# frame and the level-headset neutral neck pose (v15). Earlier recipes (v5
+# legacy, centered-HOME, forward-lean v13 with leaning-trunk-frame targets)
+# were trained at another HOME or in another target frame.
 EXPECTED_V12_RECIPE_REVISION = (
     "forward_lean_home_velocity_source_staged_mask_reachable_fk_elbow_minus10_"
-    "raw_prev_action_servo_range_pi_v13"
+    "raw_prev_action_servo_range_pi_home_levelled_targets_level_hmd_v15"
 )
 # The training HOME the v12 checkpoint is bound to (microban_teleop_v12_home_pose
 # marker, written as v12_home_pose_revision and v12_training_home_pose_json),
@@ -306,24 +309,44 @@ EXPECTED_V12_EXTRA_OBSERVATION_COLUMNS = (
 # Merely trusting the model's revision label would let a differently scaled or
 # differently framed hand policy opt itself into the raw-action v12 runtime.
 EXPECTED_V12_HAND_TARGET_FK = {
-    "revision": "microban_robot_xml_arm_fk_reachable_box_elbow_upper_minus10_v2",
+    # v3: hand targets (and these bounds/evaluation offsets) are in the
+    # HOME-levelled trunk frame PICO_V12_TARGET_FRAME: the trunk-frame FK
+    # rotated by R_y(+HOME_TRUNK_PITCH_RAD). The levelled reach is 70.6 mm
+    # forward, so the exporter's contract states a 72 mm (0.9 * 0.08) live
+    # limit. network_input still accepts only 64 mm (0.8 * 0.08) hand
+    # targets: forward reach beyond 64 mm (about 1 % of the training box,
+    # the F evaluation pose at 68.6 mm) is dropped until that is widened.
+    "revision": (
+        "microban_robot_xml_arm_fk_reachable_box_elbow_upper_minus10_"
+        "home_levelled_lean10_v3"
+    ),
+    "target_frame": "robot_home_levelled_trunk_xyz_forward_left_up",
+    "target_frame_trunk_pitch_rad": 0.17453292519943295,
     "side_order": ["left", "right"],
     "joint_order": ["shoulder_pitch", "shoulder_roll", "elbow"],
     "joint_lower_deg": [[-25.0, 10.0, -50.0], [-25.0, -30.0, -50.0]],
     "joint_upper_deg": [[25.0, 30.0, -10.0], [25.0, -10.0, -10.0]],
     "home_joint_deg": [[0.0, 10.0, -20.0], [0.0, -10.0, -20.0]],
     "bound_grid_points_per_axis": 401,
-    "offset_aabb_min_m": [
+    "trunk_offset_aabb_min_m": [
         [-0.06120170602356862, -0.0034550417440758485, -0.0035619649312883805],
         [-0.06120170602356864, -0.0387512193701912, -0.0035619649312883944],
     ],
-    "offset_aabb_max_m": [
+    "trunk_offset_aabb_max_m": [
         [0.06289464331528255, 0.0387512193701912, 0.060477220857479266],
         [0.06289464331528258, 0.0034550417440758485, 0.060477220857479225],
     ],
-    "normalizer_abs_bound_m": [0.063, 0.0388, 0.0605],
+    "offset_aabb_min_m": [
+        [-0.05976319909948816, -0.0034550417440758485, -0.0012919613069190107],
+        [-0.05976319909948818, -0.0387512193701912, -0.0012919613069190233],
+    ],
+    "offset_aabb_max_m": [
+        [0.07062154916197355, 0.0387512193701912, 0.049485269073683856],
+        [0.07062154916197358, 0.0034550417440758485, 0.04948526907368383],
+    ],
+    "normalizer_abs_bound_m": [0.0707, 0.0388, 0.0495],
     "wire_abs_bound_m": [0.08, 0.08, 0.08],
-    "runtime_validated_abs_limit_m": [0.064, 0.064, 0.064],
+    "runtime_validated_abs_limit_m": [0.072, 0.072, 0.072],
     "evaluation_joint_degrees": [
         ["F", [-25.0, 25.0, -50.0]],
         ["B", [25.0, 20.0, -10.0]],
@@ -334,34 +357,37 @@ EXPECTED_V12_HAND_TARGET_FK = {
         [
             "F",
             [
-                [0.05965182377803401, 0.02001299541823158, 0.05695429454214103],
-                [0.059651823778034005, -0.02001299541823158, 0.056954294542141],
+                [0.06863558799547426, 0.02001299541823158, 0.0457306003388769],
+                [0.06863558799547426, -0.02001299541823158, 0.045730600338876874],
             ],
         ],
         [
             "B",
             [
-                [-0.05889031574552025, 0.020262900077370374, 0.00788636819595702],
-                [-0.058890315745520276, -0.020262900077370388, 0.007886368195956998],
+                [-0.05662618605788688, 0.020262900077370374, 0.017992752553927096],
+                [-0.05662618605788691, -0.020262900077370388, 0.017992752553927082],
             ],
         ],
         [
             "f",
             [
-                [0.03317253316144149, 0.013564446512561182, 0.01946788065760361],
-                [0.0331725331614415, -0.013564446512561182, 0.019467880657603583],
+                [0.0360491298436723, 0.013564446512561182, 0.01341176987424431],
+                [0.036049129843672305, -0.013564446512561182, 0.013411769874244278],
             ],
         ],
         [
             "b",
             [
-                [-0.009540835008328632, 0.013564446512561182, 0.004701156748151122],
-                [-0.009540835008328644, -0.013564446512561182, 0.0047011567481511154],
+                [-0.008579540984169296, 0.013564446512561182, 0.006286484226322005],
+                [-0.00857954098416931, -0.013564446512561182, 0.0062864842263219995],
             ],
         ],
     ],
     "source": "src/mjlab_microban/robot/microban/robot.xml",
-    "sampling": "uniform_independent_joint_box_then_exact_fk_offset_from_home",
+    "sampling": (
+        "uniform_independent_joint_box_then_exact_fk_offset_from_home_"
+        "rotated_into_home_levelled_frame"
+    ),
 }
 EXPECTED_ONNX_PARITY_GATE_VERSION = "1"
 EXPECTED_ONNX_PARITY_RUNTIME = "onnx.reference.ReferenceEvaluator"
@@ -1212,7 +1238,8 @@ def onnxruntime_compatibility_smoke_inputs() -> np.ndarray:
         raise RuntimeError("ORT smoke bounds do not match the 83-value schema")
 
     neutral = np.zeros(EXPECTED_OBSERVATION_WIDTH, dtype=np.float32)
-    neutral[5] = -1.0
+    # Standing at the forward-lean HOME (as the exporter's parity corpus).
+    neutral[3:6] = HOME_PROJECTED_GRAVITY
     rows = [neutral, lower, upper, (lower + upper) * np.float32(0.5)]
     rng = np.random.default_rng(EXPECTED_ONNX_PARITY_SEED)
     random_rows = rng.uniform(
