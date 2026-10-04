@@ -1,3 +1,4 @@
+import hashlib
 import json
 import math
 import unittest
@@ -110,6 +111,7 @@ from moves.pico_hybrid import (
     sensor_gyro_to_body,
     validate_onnxruntime_compatibility,
     validate_v12_onnxruntime_compatibility,
+    EXPECTED_V12_RUNTIME_SMOKE_CORPUS_SEMANTICS,
 )
 from observer import Observation, RobotState
 
@@ -394,6 +396,27 @@ PACKAGER_V12_SEMANTICS = {
 }
 
 
+def v12_smoke_rows(count: int = 16) -> list[list[float]]:
+    """Plausible recorded observations: unit gravity, HOME pose, small motion."""
+    rows = []
+    for index in range(count):
+        row = [0.0] * 83
+        row[0:3] = [0.01 * index, -0.02, 0.03]
+        row[5] = -1.0
+        row[27:48] = [0.05 * ((index % 3) - 1)] * 21
+        rows.append(row)
+    return rows
+
+
+def v12_smoke_corpus_metadata(rows: list[list[float]] | None = None) -> dict[str, str]:
+    text = json.dumps(v12_smoke_rows() if rows is None else rows, separators=(",", ":"))
+    return {
+        "v12_runtime_smoke_corpus_semantics": EXPECTED_V12_RUNTIME_SMOKE_CORPUS_SEMANTICS,
+        "v12_runtime_smoke_observations_json": text,
+        "v12_runtime_smoke_observations_sha256": hashlib.sha256(text.encode()).hexdigest(),
+    }
+
+
 def valid_v12_metadata():
     """Metadata fixture shared by every contract-v12 runtime test."""
 
@@ -488,6 +511,7 @@ def valid_v12_metadata():
             "runtime_raw_action_guard_semantics": (
                 EXPECTED_V12_RAW_ACTION_GUARD_SEMANTICS
             ),
+            **v12_smoke_corpus_metadata(),
             "v12_bootstrap_provenance_schema_version": str(
                 EXPECTED_V12_BOOTSTRAP_PROVENANCE_SCHEMA_VERSION
             ),
@@ -1023,7 +1047,52 @@ class PicoHybridMoveTest(unittest.TestCase):
                     FakeSession(metadata=valid_v12_metadata(), output=output),
                     "obs",
                     (8.0,) * 18,
+                    np.asarray(v12_smoke_rows(), dtype=np.float32).reshape(-1, 1, 83),
                 )
+
+    def test_v12_self_test_runs_the_recorded_corpus(self):
+        rows = v12_smoke_rows(16)
+        metadata = valid_v12_metadata()
+        metadata.update(v12_smoke_corpus_metadata(rows))
+        session = FakeSession(metadata=metadata)
+        PicoHybridMove(session=session)
+        fed = [feed["obs"] for feed in getattr(session, "feeds", [])] or None
+        self.assertGreaterEqual(session.run_count, 16)
+        if fed is not None:
+            self.assertTrue(
+                any(np.array_equal(item[0], np.float32(rows[0])) for item in fed)
+            )
+
+    def test_v12_self_test_corpus_is_authenticated_and_physical(self):
+        good = v12_smoke_rows(16)
+        far_joint = [list(row) for row in good]
+        far_joint[3][6 + 3 + 3] = 4.0  # right_hip_yaw relative angle past its range
+        fast = [list(row) for row in good]
+        fast[2][30] = 30.0
+        bad_gravity = [list(row) for row in good]
+        bad_gravity[1][3:6] = [1.0, 1.0, 1.0]
+        cases = {
+            "missing": {"v12_runtime_smoke_corpus_semantics": None},
+            "semantics": {"v12_runtime_smoke_corpus_semantics": "synthetic_v1"},
+            "sha": {"v12_runtime_smoke_observations_sha256": "0" * 64},
+            "too_few": v12_smoke_corpus_metadata(good[:7]),
+            "width": v12_smoke_corpus_metadata([row[:82] for row in good]),
+            "joint_range": v12_smoke_corpus_metadata(far_joint),
+            "joint_speed": v12_smoke_corpus_metadata(fast),
+            "gravity": v12_smoke_corpus_metadata(bad_gravity),
+        }
+        for case, update in cases.items():
+            metadata = valid_v12_metadata()
+            for key, value in update.items():
+                if value is None:
+                    metadata.pop(key, None)
+                else:
+                    metadata[key] = value
+            with (
+                self.subTest(case=case),
+                self.assertRaises(PicoHybridPolicyContractError),
+            ):
+                PicoHybridMove(session=FakeSession(metadata=metadata))
 
     def test_v12_step_clips_target_and_preserves_raw_recurrence(self):
         raw = np.linspace(-3.5, 3.5, 18, dtype=np.float32).reshape(1, 18)

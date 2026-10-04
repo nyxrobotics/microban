@@ -292,8 +292,15 @@ PYTHONPATH=src uv run --locked python tools/validate_pico_policy.py \
   /path/to/final-pico-teleop-v12.onnx
 ```
 
-For v12, the learned-policy load smoke checks the fixed output shape, float32
-finiteness and the authenticated finite-amplitude guard on every fixed sample.
+For v12, the learned-policy load smoke runs the package's recorded corpus
+(`v12_runtime_smoke_observations_json`: 8-64 real actor observations from the
+final tracking rollouts, the same rollouts the guard comes from, bound by
+`v12_runtime_smoke_observations_sha256`). The runtime refuses a corpus with
+non-unit gravity, a joint speed above 12.1 rad/s (XC330 no-load speed at a full
+3S pack) or a joint angle outside its MJCF range by more than 5 deg. It checks the
+fixed output shape, float32 finiteness and the authenticated finite-amplitude
+guard on every sample. (The former synthetic corpus put every joint at random
+angles up to +-pi past its limits, states the guard does not describe.)
 The validator reports that guard and an explicit `walk_fallback` record containing
 the pinned old actor's path, digest, tensor contract, providers and smoke result.
 This is an artifact-admission check; production fallback holds body goals.

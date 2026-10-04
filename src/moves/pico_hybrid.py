@@ -1334,18 +1334,111 @@ def validate_onnxruntime_compatibility(
     return len(observations)
 
 
+# The v12 package carries real actor observations from the final tracking
+# rollouts (the same rollouts its raw-action guard comes from) as the startup
+# self-test corpus.  Synthetic observations with every joint at random angles
+# past its limits and non-unit gravity are not states the guard describes.
+EXPECTED_V12_RUNTIME_SMOKE_CORPUS_SEMANTICS = (
+    "final_tracking_rollout_actor_observations_first_scored_and_last_step_v1"
+)
+V12_RUNTIME_SMOKE_CORPUS_MIN_ROWS = 8
+V12_RUNTIME_SMOKE_CORPUS_MAX_ROWS = 64
+# Physical plausibility of each recorded observation: unit gravity, joint speeds
+# within the XC330 no-load speed at a full 3S pack (12.6 V / kt 1.0425 V*s/rad
+# = 12.09 rad/s), joint angles within the MJCF range (reconstructed from the
+# 0.9 soft limits) plus the overshoot the tracking gate allows.
+V12_RUNTIME_SMOKE_GRAVITY_NORM_TOLERANCE = 0.05
+V12_RUNTIME_SMOKE_MAX_JOINT_SPEED_RAD_S = 12.1
+V12_RUNTIME_SMOKE_JOINT_RANGE_MARGIN_RAD = math.radians(5.0)
+
+
+def _parse_v12_runtime_smoke_corpus(metadata: Mapping[str, str]) -> np.ndarray:
+    """Return the package's recorded self-test corpus as (N, 1, 83) float32."""
+
+    if (
+        metadata.get("v12_runtime_smoke_corpus_semantics")
+        != EXPECTED_V12_RUNTIME_SMOKE_CORPUS_SEMANTICS
+    ):
+        raise PicoHybridPolicyContractError(
+            "contract-v12 runtime self-test corpus semantics are missing or unsupported"
+        )
+    text = metadata.get("v12_runtime_smoke_observations_json")
+    digest = metadata.get("v12_runtime_smoke_observations_sha256")
+    if (
+        not isinstance(text, str)
+        or not isinstance(digest, str)
+        or not _CHECKPOINT_SHA256_RE.fullmatch(digest)
+        or hashlib.sha256(text.encode("utf-8")).hexdigest() != digest
+    ):
+        raise PicoHybridPolicyContractError(
+            "contract-v12 runtime self-test corpus does not match its SHA-256"
+        )
+    try:
+        rows = json.loads(text)
+    except json.JSONDecodeError as exc:
+        raise PicoHybridPolicyContractError(
+            "contract-v12 runtime self-test corpus is not JSON"
+        ) from exc
+    if (
+        not isinstance(rows, list)
+        or not V12_RUNTIME_SMOKE_CORPUS_MIN_ROWS
+        <= len(rows)
+        <= V12_RUNTIME_SMOKE_CORPUS_MAX_ROWS
+        or any(
+            not isinstance(row, list)
+            or len(row) != EXPECTED_OBSERVATION_WIDTH
+            or any(isinstance(value, bool) or not isinstance(value, (int, float)) for value in row)
+            for row in rows
+        )
+    ):
+        raise PicoHybridPolicyContractError(
+            "contract-v12 runtime self-test corpus is malformed"
+        )
+    corpus = np.asarray(rows, dtype=np.float64)
+    if not np.isfinite(corpus).all():
+        raise PicoHybridPolicyContractError(
+            "contract-v12 runtime self-test corpus is non-finite"
+        )
+    gravity_norm = np.linalg.norm(corpus[:, 3:6], axis=1)
+    joint_pos = corpus[:, 6:27]
+    joint_vel = corpus[:, 27:48]
+    soft_lower = np.asarray(EXPECTED_SOFT_JOINT_POS_LOWER)
+    soft_upper = np.asarray(EXPECTED_SOFT_JOINT_POS_UPPER)
+    middle = 0.5 * (soft_lower + soft_upper)
+    half_range = 0.5 * (soft_upper - soft_lower) / 0.9
+    body_angles = joint_pos[:, 3:] + np.asarray(EXPECTED_ACTION_DEFAULT_JOINT_POS)
+    if (
+        bool(np.any(np.abs(gravity_norm - 1.0) > V12_RUNTIME_SMOKE_GRAVITY_NORM_TOLERANCE))
+        or bool(np.any(np.abs(joint_vel) > V12_RUNTIME_SMOKE_MAX_JOINT_SPEED_RAD_S))
+        or bool(
+            np.any(
+                np.abs(body_angles - middle)
+                > half_range + V12_RUNTIME_SMOKE_JOINT_RANGE_MARGIN_RAD
+            )
+        )
+    ):
+        raise PicoHybridPolicyContractError(
+            "contract-v12 runtime self-test corpus contains a physically "
+            "impossible observation"
+        )
+    return corpus.astype(np.float32).reshape(-1, 1, EXPECTED_OBSERVATION_WIDTH)
+
+
 def validate_v12_onnxruntime_compatibility(
     session: Any,
     input_name: str,
     raw_action_absolute_maximum: Sequence[float],
+    observations: np.ndarray,
 ) -> int:
     """Exercise a raw/unbounded v12 graph under its evidence-derived guard.
 
     The legacy actor was trained with an unbounded Gaussian mean and its proven
     closed-loop contract sends that raw value directly to the joint-position
     action term.  This gate does not reuse v10's bounded transform or modify an
-    output.  It checks numeric type, fixed shape, float32 finiteness and the
-    final tracking evidence's gross finite-amplitude envelope.
+    output.  It runs the package's recorded tracking observations
+    (``_parse_v12_runtime_smoke_corpus``) and checks numeric type, fixed shape,
+    float32 finiteness and the final tracking evidence's gross
+    finite-amplitude envelope.
     """
 
     guard = np.asarray(raw_action_absolute_maximum, dtype=np.float64)
@@ -1357,7 +1450,18 @@ def validate_v12_onnxruntime_compatibility(
         raise PicoHybridPolicyContractError(
             "contract-v12 runtime raw-action guard is malformed"
         )
-    observations = onnxruntime_compatibility_smoke_inputs()
+    observations = np.asarray(observations, dtype=np.float32)
+    if (
+        observations.ndim != 3
+        or observations.shape[1:] != (1, EXPECTED_OBSERVATION_WIDTH)
+        or not V12_RUNTIME_SMOKE_CORPUS_MIN_ROWS
+        <= observations.shape[0]
+        <= V12_RUNTIME_SMOKE_CORPUS_MAX_ROWS
+        or not np.isfinite(observations).all()
+    ):
+        raise PicoHybridPolicyContractError(
+            "contract-v12 runtime self-test corpus is malformed"
+        )
     for sample_index, observation in enumerate(observations):
         try:
             outputs = session.run(None, {input_name: observation})
@@ -1558,6 +1662,8 @@ class _PolicyContract:
     v12_learned_source_delta_maximum: tuple[float, ...] = ()
     v12_learned_source_delta_absolute_maximum: tuple[float, ...] = ()
     v12_runtime_raw_action_guard_absolute_maximum: tuple[float, ...] = ()
+    # Recorded final-tracking observations for the startup self-test.
+    v12_runtime_smoke_observations: tuple[tuple[float, ...], ...] = ()
     # Absolute target bound: target = clip(default + raw * scale, lower,
     # upper).  No software clip -- only the servo's one-turn goal range
     # +-SERVO_TARGET_RANGE_RAD (+-pi), which action_clip_lower/upper metadata
@@ -2464,6 +2570,10 @@ def _parse_v12_contract(session: Any) -> _PolicyContract:
         v12_learned_source_delta_absolute_maximum,
         v12_runtime_raw_action_guard_absolute_maximum,
     ) = _parse_v12_raw_action_envelope(metadata, action_joints)
+    v12_runtime_smoke_observations = tuple(
+        tuple(float(value) for value in row[0])
+        for row in _parse_v12_runtime_smoke_corpus(metadata)
+    )
 
     if metadata.get("base_ang_vel_frame") != "imu_sensor_xyz":
         raise PicoHybridPolicyContractError("base_ang_vel_frame must be imu_sensor_xyz")
@@ -2707,6 +2817,7 @@ def _parse_v12_contract(session: Any) -> _PolicyContract:
         v12_runtime_raw_action_guard_absolute_maximum=(
             v12_runtime_raw_action_guard_absolute_maximum
         ),
+        v12_runtime_smoke_observations=v12_runtime_smoke_observations,
         v12_target_clip_lower=target_clip_lower,
         v12_target_clip_upper=target_clip_upper,
     )
@@ -2948,6 +3059,10 @@ class PicoHybridMove(Move):
                     self._session,
                     self._contract.input_name,
                     self._contract.v12_runtime_raw_action_guard_absolute_maximum,
+                    np.asarray(
+                        self._contract.v12_runtime_smoke_observations,
+                        dtype=np.float32,
+                    ).reshape(-1, 1, EXPECTED_OBSERVATION_WIDTH),
                 )
             )
             # Rehash after ONNX Runtime execution so an rsync/atomic replacement
