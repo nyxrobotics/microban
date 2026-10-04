@@ -234,7 +234,7 @@ The ONNX metadata must bind the final checkpoint to all of the following:
 `tools/validate_pico_policy.py` performs this parser check and a fixed 16-input
 ONNX Runtime CPU smoke without opening motor or network interfaces. The same
 command also authenticates the installed fallback as SHA-256
-`10c58a63c66337669c3d4c588732d541a6a07eea3291c0401f79893c7f60f15d`,
+`c9cdd8527704046d5c8058fc63fc3ef148716d659509666d0dc844b64c18fa40`,
 requires its graph to be float32 `obs[1,63] -> actions[1,18]`, and runs a
 separate fixed 16-input smoke with `CPUExecutionProvider` only:
 
