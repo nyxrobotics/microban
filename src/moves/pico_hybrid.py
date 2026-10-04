@@ -203,14 +203,17 @@ EXPECTED_V12_BOOTSTRAP_PROVENANCE_SCHEMA_VERSION = 1
 EXPECTED_V12_BOOTSTRAP_MAPPING_VERSION = (
     "normalized_legacy_velocity_63_to_teleop83_reachable_fk_elbow_minus10_v4"
 )
-# mjlab_microban forward-lean-centered-home (c0f492f): the v12 chain trained
-# at the forward-lean HOME with hand/foot targets in the HOME-levelled trunk
-# frame and the level-headset neutral neck pose (v15). Earlier recipes (v5
-# legacy, centered-HOME, forward-lean v13 with leaning-trunk-frame targets)
-# were trained at another HOME or in another target frame.
+# mjlab_microban forward-lean-centered-home: the v12 chain trained at the
+# forward-lean HOME with hand/foot targets in the HOME-levelled trunk frame,
+# the level-headset neutral neck pose (v15, c0f492f) and hand targets capped
+# to this receiver's +-64 mm hand box (v17). Earlier recipes (v5 legacy,
+# centered-HOME, forward-lean v13 with leaning-trunk-frame targets, v15 with
+# forward hand targets up to 70.6 mm) were trained at another HOME, in another
+# target frame or on hand targets this receiver drops.
 EXPECTED_V12_RECIPE_REVISION = (
     "forward_lean_home_velocity_source_staged_mask_reachable_fk_elbow_minus10_"
-    "raw_prev_action_servo_range_pi_home_levelled_targets_level_hmd_v15"
+    "raw_prev_action_servo_range_pi_home_levelled_targets_level_hmd_"
+    "receiver_box_hands_v17"
 )
 # The training HOME the v12 checkpoint is bound to (microban_teleop_v12_home_pose
 # marker, written as v12_home_pose_revision and v12_training_home_pose_json),
@@ -309,16 +312,17 @@ EXPECTED_V12_EXTRA_OBSERVATION_COLUMNS = (
 # Merely trusting the model's revision label would let a differently scaled or
 # differently framed hand policy opt itself into the raw-action v12 runtime.
 EXPECTED_V12_HAND_TARGET_FK = {
-    # v3: hand targets (and these bounds/evaluation offsets) are in the
+    # v4: hand targets (and these bounds/evaluation offsets) are in the
     # HOME-levelled trunk frame PICO_V12_TARGET_FRAME: the trunk-frame FK
-    # rotated by R_y(+HOME_TRUNK_PITCH_RAD). The levelled reach is 70.6 mm
-    # forward, so the exporter's contract states a 72 mm (0.9 * 0.08) live
-    # limit. network_input still accepts only 64 mm (0.8 * 0.08) hand
-    # targets: forward reach beyond 64 mm (about 1 % of the training box,
-    # the F evaluation pose at 68.6 mm) is dropped until that is widened.
+    # rotated by R_y(+HOME_TRUNK_PITCH_RAD). The levelled joint box reaches
+    # 70.6 mm forward; training rejects joint samples whose target leaves
+    # network_input's hand box (each component within +-0.8 * 0.08 = 64 mm),
+    # about 1 % of the box, so every trained target is deliverable. The AABB
+    # and normalizer are of that restricted set and the F evaluation pose
+    # moved from (-25, 25, -50) deg (68.6 mm forward) to (-20, 25, -50) deg.
     "revision": (
         "microban_robot_xml_arm_fk_reachable_box_elbow_upper_minus10_"
-        "home_levelled_lean10_v3"
+        "home_levelled_lean10_receiver_box64mm_v4"
     ),
     "target_frame": "robot_home_levelled_trunk_xyz_forward_left_up",
     "target_frame_trunk_pitch_rad": 0.17453292519943295,
@@ -341,14 +345,15 @@ EXPECTED_V12_HAND_TARGET_FK = {
         [-0.05976319909948818, -0.0387512193701912, -0.0012919613069190233],
     ],
     "offset_aabb_max_m": [
-        [0.07062154916197355, 0.0387512193701912, 0.049485269073683856],
-        [0.07062154916197358, 0.0034550417440758485, 0.04948526907368383],
+        [0.06399997388471845, 0.0387512193701912, 0.04573068026176937],
+        [0.06399997388471848, 0.0034550417440758485, 0.04573068026176935],
     ],
-    "normalizer_abs_bound_m": [0.0707, 0.0388, 0.0495],
+    "normalizer_abs_bound_m": [0.064, 0.0388, 0.0458],
     "wire_abs_bound_m": [0.08, 0.08, 0.08],
-    "runtime_validated_abs_limit_m": [0.072, 0.072, 0.072],
+    "runtime_validated_abs_limit_m": [0.064, 0.064, 0.064],
+    "max_rejection_rounds": 64,
     "evaluation_joint_degrees": [
-        ["F", [-25.0, 25.0, -50.0]],
+        ["F", [-20.0, 25.0, -50.0]],
         ["B", [25.0, 20.0, -10.0]],
         ["f", [-12.0, 18.0, -32.0]],
         ["b", [12.0, 18.0, -32.0]],
@@ -357,8 +362,8 @@ EXPECTED_V12_HAND_TARGET_FK = {
         [
             "F",
             [
-                [0.06863558799547426, 0.02001299541823158, 0.0457306003388769],
-                [0.06863558799547426, -0.02001299541823158, 0.045730600338876874],
+                [0.06234049962549173, 0.020012995418231566, 0.0397478141516205],
+                [0.06234049962549175, -0.02001299541823158, 0.039747814151620486],
             ],
         ],
         [
@@ -386,7 +391,8 @@ EXPECTED_V12_HAND_TARGET_FK = {
     "source": "src/mjlab_microban/robot/microban/robot.xml",
     "sampling": (
         "uniform_independent_joint_box_then_exact_fk_offset_from_home_"
-        "rotated_into_home_levelled_frame"
+        "rotated_into_home_levelled_frame_rejecting_joint_samples_outside_"
+        "runtime_validated_abs_limit"
     ),
 }
 EXPECTED_ONNX_PARITY_GATE_VERSION = "1"

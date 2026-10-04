@@ -721,6 +721,27 @@ class PicoHybridMoveTest(unittest.TestCase):
                 "forward_lean_home_velocity_source_staged_mask_reachable_fk_"
                 "elbow_minus10_raw_prev_action_servo_range_pi_v13",
             ),
+            # v15 trained hand targets up to 70.6 mm forward, which
+            # network_input drops beyond its 64 mm hand box.
+            "uncapped_hand_v15_recipe": (
+                "microban_teleop_recipe_revision",
+                "forward_lean_home_velocity_source_staged_mask_reachable_fk_"
+                "elbow_minus10_raw_prev_action_servo_range_pi_home_levelled_"
+                "targets_level_hmd_v15",
+            ),
+            "uncapped_hand_fk_v3": (
+                "hand_target_fk",
+                json.dumps(
+                    {
+                        **EXPECTED_V12_HAND_TARGET_FK,
+                        "revision": (
+                            "microban_robot_xml_arm_fk_reachable_box_"
+                            "elbow_upper_minus10_home_levelled_lean10_v3"
+                        ),
+                        "runtime_validated_abs_limit_m": [0.072, 0.072, 0.072],
+                    }
+                ),
+            ),
             "trunk_frame_hand_fk_v2": (
                 "hand_target_fk",
                 json.dumps(
@@ -752,7 +773,7 @@ class PicoHybridMoveTest(unittest.TestCase):
             EXPECTED_V12_HAND_TARGET_FK["target_frame_trunk_pitch_rad"],
             HOME_TRUNK_PITCH_RAD,
         )
-        self.assertTrue(EXPECTED_V12_RECIPE_REVISION.endswith("_v15"))
+        self.assertTrue(EXPECTED_V12_RECIPE_REVISION.endswith("_v17"))
         normalizer = EXPECTED_V12_HAND_TARGET_FK["normalizer_abs_bound_m"]
         contract_limit = EXPECTED_V12_HAND_TARGET_FK["runtime_validated_abs_limit_m"]
         wire = EXPECTED_V12_HAND_TARGET_FK["wire_abs_bound_m"]
@@ -764,14 +785,19 @@ class PicoHybridMoveTest(unittest.TestCase):
             for axis in range(3):
                 reach = max(abs(side_min[axis]), abs(side_max[axis]))
                 self.assertLessEqual(reach, normalizer[axis])
-                self.assertLess(normalizer[axis], contract_limit[axis])
+                self.assertLessEqual(normalizer[axis], contract_limit[axis])
                 self.assertLess(contract_limit[axis], wire[axis])
-        # The live receiver is never wider than the exporter's contract.
+        # The policy was trained exactly on the live receiver's hand box, and
+        # every evaluation pose passes it.
+        self.assertEqual(contract_limit, [0.064, 0.064, 0.064])
         for axis in range(3):
-            self.assertLessEqual(_PICO_HAND_TARGET_UPPER[axis], contract_limit[axis])
-            self.assertGreaterEqual(
-                _PICO_HAND_TARGET_LOWER[axis], -contract_limit[axis]
-            )
+            self.assertEqual(_PICO_HAND_TARGET_UPPER[axis], contract_limit[axis])
+            self.assertEqual(_PICO_HAND_TARGET_LOWER[axis], -contract_limit[axis])
+        for _name, sides in EXPECTED_V12_HAND_TARGET_FK["evaluation_offsets_m"]:
+            for vector in sides:
+                for axis, component in enumerate(vector):
+                    self.assertGreaterEqual(component, _PICO_HAND_TARGET_LOWER[axis])
+                    self.assertLessEqual(component, _PICO_HAND_TARGET_UPPER[axis])
 
     def test_v12_soft_limits_match_metadata_or_compiled_fallback(self):
         metadata = valid_v12_metadata()
