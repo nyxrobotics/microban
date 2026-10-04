@@ -148,7 +148,12 @@ class HmdHeadTrackingMove(Move):
             _ry(values["pitch"]),
         )
         # IMU yaw is not a stable global heading, so compensate only the measured
-        # ZYX roll/pitch tilt and keep HMD yaw relative to the trunk heading.
+        # ZYX roll/pitch tilt and keep HMD yaw relative to the trunk heading. The
+        # HMD attitude is a world (gravity-levelled) one, so the full trunk tilt is
+        # cancelled, including HOME's 10 deg forward lean: a level HMD at HOME gives
+        # neck_pitch ~ -10 deg (camera level). Contract-v12 training samples HMD neck
+        # targets around the HOME neck angle 0, so this most common pose sits 10 deg
+        # from that centre (still inside the trained neck range).
         trunk_tilt = _matmul(_ry(trunk_pitch), _rx(trunk_roll))
         neck_rotation = _matmul(_transpose(trunk_tilt), desired_camera)
         solved_yaw, solved_roll, solved_pitch = _extract_zxy(neck_rotation)

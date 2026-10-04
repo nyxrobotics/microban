@@ -1,4 +1,4 @@
-"""One reference pose (the centered HOME) and one target rule for every policy."""
+"""One reference pose (the forward-lean HOME) and one target rule for every policy."""
 
 import inspect
 import json
@@ -7,8 +7,12 @@ import unittest
 
 import gc300_main
 from constants import (
-    HOME_PITCH_RAD,
+    HOME_ANKLE_PITCH_RAD,
+    HOME_HIP_PITCH_RAD,
+    HOME_PROJECTED_GRAVITY,
     HOME_ROOT_POS_Z_M,
+    HOME_ROOT_QUAT_WXYZ,
+    HOME_TRUNK_PITCH_RAD,
     MOTOR_TO_ID,
     NEUTRAL_POSE,
     OBSERVATION_DOF_ORDER,
@@ -23,14 +27,18 @@ from observer import Observation, RobotState
 from pico_arm_contract import PICO_ARM_HOME_RAD, PICO_ARM_JOINT_NAMES
 from policy_fixtures import (
     ACTION_COUNT,
+    CENTERED_HOME,
+    CENTERED_ROOT_POS_M,
+    CENTERED_ROOT_QUAT_WXYZ,
     GETUP_OBS_WIDTH,
     OLD_HOME,
     FakeSession,
     getup_contract_metadata,
+    home_pose_json,
 )
 from scheduler import Scheduler
 
-# mjlab_microban HOME_FRAME (commit cb55431), in degrees.
+# mjlab_microban HOME_FRAME (forward-lean-centered-home, commit 8d42377), in degrees.
 TRAINING_HOME_DEG = {
     "head": 0.0,
     "neck_roll": 0.0,
@@ -43,27 +51,55 @@ TRAINING_HOME_DEG = {
     "right_elbow": -20.0,
     "left_hip_roll": 5.0,
     "right_hip_roll": -5.0,
-    "left_hip_pitch": 1.198384259489,
-    "right_hip_pitch": 1.198384259489,
+    "left_hip_pitch": -14.166561199931119,
+    "right_hip_pitch": -14.166561199931119,
     "left_hip_yaw": 0.0,
     "right_hip_yaw": 0.0,
     "left_knee": 0.0,
     "right_knee": 0.0,
     "left_ankle_roll": -5.0,
     "right_ankle_roll": 5.0,
-    "left_ankle_pitch": -1.198384259489,
-    "right_ankle_pitch": -1.198384259489,
+    "left_ankle_pitch": 4.127976841869204,
+    "right_ankle_pitch": 4.127976841869204,
 }
+# mjlab_microban getup_home_pose() at the forward-lean HOME, as its get-up and
+# walking exporters write it (copied from the training repository's output).
+TRAINING_HOME_POSE_JSON = (
+    '{"joint_pos_rad":{"head":0.0,"left_ankle_pitch":0.07204678733669492,'
+    '"left_ankle_roll":-0.08726646259971647,"left_elbow":-0.3490658503988659,'
+    '"left_hip_pitch":-0.24725313662407672,"left_hip_roll":0.08726646259971647,'
+    '"left_hip_yaw":0.0,"left_knee":0.0,"left_shoulder_pitch":0.0,'
+    '"left_shoulder_roll":0.17453292519943295,"neck_pitch":0.0,"neck_roll":0.0,'
+    '"right_ankle_pitch":0.07204678733669492,"right_ankle_roll":0.08726646259971647,'
+    '"right_elbow":-0.3490658503988659,"right_hip_pitch":-0.24725313662407672,'
+    '"right_hip_roll":-0.08726646259971647,"right_hip_yaw":0.0,"right_knee":0.0,'
+    '"right_shoulder_pitch":0.0,"right_shoulder_roll":-0.17453292519943295},'
+    '"root_pos_m":[0.0,0.0,0.170430569776402],'
+    '"root_quat_wxyz":[0.9961946980917455,0.0,0.08715574274765817,0.0]}'
+)
 
 
 class SharedHomeTest(unittest.TestCase):
-    def test_neutral_pose_is_the_centered_training_home(self):
+    def test_neutral_pose_is_the_forward_lean_training_home(self):
         self.assertEqual(set(NEUTRAL_POSE), set(MOTOR_TO_ID))
         for name, degrees in TRAINING_HOME_DEG.items():
             self.assertEqual(NEUTRAL_POSE[name], math.radians(degrees), name)
-        self.assertEqual(HOME_PITCH_RAD, math.radians(1.198384259489))
-        self.assertEqual(HOME_ROOT_POS_Z_M, 0.170554885633559)
+        self.assertEqual(HOME_TRUNK_PITCH_RAD, math.radians(10.0))
+        self.assertEqual(HOME_HIP_PITCH_RAD, math.radians(-14.166561199931119))
+        self.assertEqual(HOME_ANKLE_PITCH_RAD, math.radians(4.127976841869204))
+        self.assertEqual(HOME_ROOT_POS_Z_M, 0.170430569776402)
+        self.assertEqual(
+            HOME_ROOT_QUAT_WXYZ,
+            (math.cos(math.radians(5.0)), 0.0, math.sin(math.radians(5.0)), 0.0),
+        )
+        self.assertEqual(
+            HOME_PROJECTED_GRAVITY,
+            (math.sin(math.radians(10.0)), 0.0, -math.cos(math.radians(10.0))),
+        )
         self.assertEqual(SERVO_TARGET_RANGE_RAD, math.pi)
+
+    def test_home_stamp_is_the_training_exporters_stamp_bit_for_bit(self):
+        self.assertEqual(home_pose_json(), TRAINING_HOME_POSE_JSON)
 
     def test_every_runtime_copy_derives_from_neutral_pose(self):
         self.assertEqual(PICO_TELEOP_HOME_POSE, NEUTRAL_POSE)
@@ -108,7 +144,7 @@ def fake_getup(metadata, outputs=None):
 
 
 class GetupHomeTest(unittest.TestCase):
-    def test_model_at_the_centered_home_is_ready_and_uses_full_precision_home(self):
+    def test_model_at_the_forward_lean_home_is_ready_and_uses_full_precision_home(self):
         raw = [0.25 * (index - 9) for index in range(ACTION_COUNT)]
         raw[0] = 400.0
         move, session = fake_getup(getup_contract_metadata(), outputs=[raw])
@@ -130,8 +166,8 @@ class GetupHomeTest(unittest.TestCase):
         self.assertEqual(command.target_angles[OBSERVATION_DOF_ORDER[0]], math.pi)
         self.assertEqual(move._last_action, raw)
 
-    def test_only_the_v5_servo_range_clip_is_accepted(self):
-        def with_clip(lower, upper, version="v5"):
+    def test_only_the_v6_servo_range_clip_is_accepted(self):
+        def with_clip(lower, upper, version="v6"):
             metadata = getup_contract_metadata()
             metadata["microban_getup_contract"] = version
             metadata["action_clip_lower"] = ",".join(lower)
@@ -144,7 +180,9 @@ class GetupHomeTest(unittest.TestCase):
             # The deployed +-1.57 policies (contract v4) and any v4 stamp.
             "old_v4_clip157": with_clip(["-1.570"] * 18, ["1.570"] * 18, "v4"),
             "v4_with_servo_clip": with_clip(servo_lo, servo_hi, "v4"),
-            "v5_with_clip157": with_clip(["-1.570"] * 18, ["1.570"] * 18),
+            # The centered-HOME v5 contract string (the HOME stamp aside).
+            "v5_with_servo_clip": with_clip(servo_lo, servo_hi, "v5"),
+            "v6_with_clip157": with_clip(["-1.570"] * 18, ["1.570"] * 18),
             "narrow_upper": with_clip(servo_lo, ["3.0"] * ACTION_COUNT),
             "narrow_one_joint": with_clip(servo_lo, servo_hi[:17] + ["3.141"]),
             # mjlab's 3-decimal formatter would publish 3.142 > pi.
@@ -168,6 +206,25 @@ class GetupHomeTest(unittest.TestCase):
     def test_model_trained_at_another_home_is_rejected(self):
         move, _ = fake_getup(getup_contract_metadata(OLD_HOME))
         self.assertFalse(move.model_ready)
+        # The centered upright HOME (v5 get-up), with its own root pose.
+        centered = getup_contract_metadata(CENTERED_HOME)
+        centered["microban_getup_home_pose"] = home_pose_json(
+            CENTERED_HOME,
+            root_pos_m=CENTERED_ROOT_POS_M,
+            root_quat_wxyz=CENTERED_ROOT_QUAT_WXYZ,
+        )
+        move, _ = fake_getup(centered)
+        self.assertFalse(move.model_ready)
+
+    def test_checkpoint_stamp_must_be_v6(self):
+        for stamp in (None, "v5", "v4", ""):
+            metadata = getup_contract_metadata()
+            if stamp is None:
+                del metadata["microban_getup_checkpoint_contract_stamp"]
+            else:
+                metadata["microban_getup_checkpoint_contract_stamp"] = stamp
+            with self.subTest(stamp=stamp):
+                self.assertFalse(fake_getup(metadata)[0].model_ready)
 
     def test_home_stamp_is_required_and_must_match(self):
         missing = getup_contract_metadata()
@@ -184,11 +241,22 @@ class GetupHomeTest(unittest.TestCase):
         root["root_pos_m"][2] = 0.175
         wrong_root = getup_contract_metadata()
         wrong_root["microban_getup_home_pose"] = json.dumps(root)
+        # Joints right but the upright (identity) root of the centered HOME.
+        upright_root = getup_contract_metadata()
+        upright_root["microban_getup_home_pose"] = home_pose_json(
+            root_quat_wxyz=CENTERED_ROOT_QUAT_WXYZ
+        )
+        shifted_root = getup_contract_metadata()
+        shifted_root["microban_getup_home_pose"] = home_pose_json(
+            root_pos_m=[0.01, 0.0, HOME_ROOT_POS_Z_M]
+        )
         for case, metadata in (
             ("missing", missing),
             ("stale_stamp", stale_stamp),
             ("stale_defaults", stale_defaults),
             ("wrong_root", wrong_root),
+            ("upright_root", upright_root),
+            ("shifted_root", shifted_root),
         ):
             with self.subTest(case=case):
                 move, _ = fake_getup(metadata)

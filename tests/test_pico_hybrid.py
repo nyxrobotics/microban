@@ -8,6 +8,7 @@ from unittest.mock import patch
 import numpy as np
 
 from constants import (
+    HOME_PROJECTED_GRAVITY,
     IMU_MOUNT_QUAT,
     MOTOR_TO_ID,
     NEUTRAL_POSE,
@@ -88,12 +89,15 @@ from moves.pico_hybrid import (
     EXPECTED_V12_RAW_ACTION_GUARD_FORMULA,
     EXPECTED_V12_RAW_ACTION_GUARD_MULTIPLIER,
     EXPECTED_V12_RAW_ACTION_GUARD_SEMANTICS,
+    EXPECTED_V12_HOME_POSE_REVISION,
+    EXPECTED_V12_PACKAGER_REVISION,
     EXPECTED_V12_RECIPE_REVISION,
     EXPECTED_V12_RUNTIME_ACTION_SEMANTICS,
     EXPECTED_V12_SOURCE_TO_TARGET_COLUMNS,
     EXPECTED_V12_TRAINING_CONTRACT_VERSION,
     PHYSICAL_MOTOR_TARGET_GUARD_SEMANTICS,
     PICO_TELEOP_HOME_POSE,
+    PICO_V12_TARGET_FRAME,
     PicoHybridMove,
     PicoHybridPolicyContractError,
     PicoHybridPolicyRuntimeError,
@@ -102,6 +106,7 @@ from moves.pico_hybrid import (
     sensor_gyro_to_body,
     validate_onnxruntime_compatibility,
     validate_v12_onnxruntime_compatibility,
+    expected_v12_home_pose_marker,
 )
 from observer import Observation, RobotState
 
@@ -330,6 +335,25 @@ def clipped_target(index, raw_value):
     )
 
 
+# mjlab_microban's teleop_v12_home_pose_marker() at the forward-lean HOME,
+# exactly as export_teleop_v12_deployment.py (packager v7) serializes it.
+TRAINING_V12_HOME_POSE_JSON = (
+    '{"schema_version":2,"revision":"forward_lean10_hip_minus14p166561199931_'
+    'ankle_plus4p127976841869_shoulder_zero_v6","root_pos_xyz_m":[0.0,0.0,'
+    '0.170430569776402],"root_quat_wxyz":[0.9961946980917455,0.0,'
+    '0.08715574274765817,0.0],"joint_names":["head","neck_roll","neck_pitch",'
+    '"right_shoulder_pitch","right_shoulder_roll","right_elbow","right_hip_yaw",'
+    '"right_hip_roll","right_hip_pitch","right_knee","right_ankle_pitch",'
+    '"right_ankle_roll","left_shoulder_pitch","left_shoulder_roll","left_elbow",'
+    '"left_hip_yaw","left_hip_roll","left_hip_pitch","left_knee",'
+    '"left_ankle_pitch","left_ankle_roll"],"joint_pos_rad":[0.0,0.0,0.0,0.0,'
+    '-0.17453292519943295,-0.3490658503988659,0.0,-0.08726646259971647,'
+    '-0.24725313662407672,0.0,0.07204678733669492,0.08726646259971647,0.0,'
+    '0.17453292519943295,-0.3490658503988659,0.0,0.08726646259971647,'
+    '-0.24725313662407672,0.0,0.07204678733669492,-0.08726646259971647]}'
+)
+
+
 def valid_v12_metadata():
     """Metadata fixture shared by every contract-v12 runtime test."""
 
@@ -358,6 +382,11 @@ def valid_v12_metadata():
                 EXPECTED_V12_TRAINING_CONTRACT_VERSION
             ),
             "microban_teleop_recipe_revision": EXPECTED_V12_RECIPE_REVISION,
+            "v12_home_pose_revision": EXPECTED_V12_HOME_POSE_REVISION,
+            "v12_training_home_pose_json": TRAINING_V12_HOME_POSE_JSON,
+            "v12_deployment_packager_revision": EXPECTED_V12_PACKAGER_REVISION,
+            "foot_target_frame": PICO_V12_TARGET_FRAME,
+            "hand_target_frame": PICO_V12_TARGET_FRAME,
             "base_ang_vel_frame": "imu_sensor_xyz",
             "physical_motor_target_guard_semantics": (
                 PHYSICAL_MOTOR_TARGET_GUARD_SEMANTICS
@@ -540,7 +569,7 @@ def observation(time_s=0.0):
         robot_state=RobotState(
             time_s=time_s,
             gyro=[0.1, 0.2, 0.3],
-            projected_gravity=[0.0, 0.0, -1.0],
+            projected_gravity=list(HOME_PROJECTED_GRAVITY),
             motor_positions=positions,
             motor_velocities=velocities,
         ),
@@ -630,6 +659,70 @@ class PicoHybridMoveTest(unittest.TestCase):
         self.assertEqual(move._contract.training_contract_version, "12")
         self.assertEqual(move._compatibility_smoke_sample_count, 16)
         self.assertEqual(session.run_count, 16)
+
+    def test_v12_contract_is_bound_to_the_forward_lean_home(self):
+        self.assertEqual(
+            json.loads(TRAINING_V12_HOME_POSE_JSON), expected_v12_home_pose_marker()
+        )
+        centered_home = json.loads(TRAINING_V12_HOME_POSE_JSON)
+        centered_home["revision"] = (
+            "centered_hip_plus1p198384259489_ankle_minus1p198384259489_shoulder_zero_v5"
+        )
+        upright_root = json.loads(TRAINING_V12_HOME_POSE_JSON)
+        upright_root["root_quat_wxyz"] = [1.0, 0.0, 0.0, 0.0]
+        other_joint = json.loads(TRAINING_V12_HOME_POSE_JSON)
+        other_joint["joint_pos_rad"][8] = math.radians(1.198384259489)
+        integer_schema = json.loads(TRAINING_V12_HOME_POSE_JSON)
+        integer_schema["schema_version"] = 2.0
+        cases = {
+            "missing_home_revision": ("v12_home_pose_revision", None),
+            "centered_home_revision": (
+                "v12_home_pose_revision",
+                centered_home["revision"],
+            ),
+            "missing_home_pose": ("v12_training_home_pose_json", None),
+            "home_pose_with_upright_root": (
+                "v12_training_home_pose_json",
+                json.dumps(upright_root),
+            ),
+            "home_pose_with_other_hip": (
+                "v12_training_home_pose_json",
+                json.dumps(other_joint),
+            ),
+            "home_pose_float_schema": (
+                "v12_training_home_pose_json",
+                json.dumps(integer_schema),
+            ),
+            "home_pose_not_json": ("v12_training_home_pose_json", "{"),
+            "missing_packager": ("v12_deployment_packager_revision", None),
+            "centered_packager": (
+                "v12_deployment_packager_revision",
+                "microban_teleop_v12_final_deployment_packager_v6_centered_home_servo_range",
+            ),
+            "legacy_recipe": (
+                "microban_teleop_recipe_revision",
+                "legacy_velocity_model14999_staged_mask_reachable_fk_elbow_minus10_"
+                "raw_actions_v5",
+            ),
+            # Targets in the leaning trunk frame are 10 deg off what the bridge sends.
+            "leaning_trunk_foot_frame": (
+                "foot_target_frame",
+                "robot_trunk_xyz_forward_left_up",
+            ),
+            "leaning_trunk_hand_frame": (
+                "hand_target_frame",
+                "robot_trunk_xyz_forward_left_up",
+            ),
+        }
+        for case, (key, value) in cases.items():
+            metadata = valid_v12_metadata()
+            if value is None:
+                metadata.pop(key)
+            else:
+                metadata[key] = value
+            with self.subTest(case=case):
+                with self.assertRaises(PicoHybridPolicyContractError):
+                    PicoHybridMove(session=FakeSession(metadata=metadata))
 
     def test_v12_soft_limits_match_metadata_or_compiled_fallback(self):
         metadata = valid_v12_metadata()
@@ -1797,7 +1890,7 @@ class PicoHybridMoveTest(unittest.TestCase):
         )
         values = move.build_observation(observation())
         self.assertEqual(len(values), 83)
-        self.assertEqual(values[:6], [0.1, 0.2, 0.3, 0.0, 0.0, -1.0])
+        self.assertEqual(values[:6], [0.1, 0.2, 0.3, *HOME_PROJECTED_GRAVITY])
         self.assertEqual(values[6:27], [0.0] * 21)
         self.assertEqual(values[27:48], [0.0] * 21)
         self.assertEqual(values[48:66], [0.0] * 18)
@@ -1918,15 +2011,15 @@ class PicoHybridMoveTest(unittest.TestCase):
             self.assertEqual(final.target_angles[name], NEUTRAL_POSE[name])
         next_inactive_tick = MotorCommand()
         self.assertEqual(final.target_angles, next_inactive_tick.target_angles)
-        # The one shared centered HOME: shoulder pitch 0, hip/ankle pitch
-        # +-1.198 deg.
+        # The one shared forward-lean HOME: shoulder pitch 0, hip pitch
+        # -14.167 deg, ankle pitch +4.128 deg.
         self.assertEqual(final.target_angles["left_shoulder_pitch"], 0.0)
         self.assertEqual(final.target_angles["right_shoulder_pitch"], 0.0)
         self.assertAlmostEqual(
-            final.target_angles["left_hip_pitch"], math.radians(1.198384259489)
+            final.target_angles["left_hip_pitch"], math.radians(-14.166561199931119)
         )
         self.assertAlmostEqual(
-            final.target_angles["right_ankle_pitch"], -math.radians(1.198384259489)
+            final.target_angles["right_ankle_pitch"], math.radians(4.127976841869204)
         )
 
     def test_getup_cancels_release_interpolation(self):

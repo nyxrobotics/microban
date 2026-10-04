@@ -30,14 +30,28 @@ MOTOR_TO_ID = {
 ID_TO_MOTOR = {v: k for k, v in MOTOR_TO_ID.items()}
 
 # The one reference pose shared by every policy (walking, PICO full-body
-# tracking, get-up) and by every neutral return on the robot: the centered HOME
-# of the training repository (mjlab_microban HOME_FRAME, commit cb55431). Trunk
-# vertical, knees straight, and opposite hip/ankle pitches that keep the soles
-# flat with the COM over the centre of the sole contact patches. Every policy
-# commands target = NEUTRAL_POSE + raw_action * 1.0 on its 18 body joints and
-# observes its own raw previous output. There is no per-input (GC300) ankle
-# bias any more.
-HOME_PITCH_RAD = float(np.deg2rad(1.198384259489))
+# tracking, get-up) and by every neutral return on the robot: the forward-lean
+# HOME of the training repository (mjlab_microban HOME_FRAME, branch
+# forward-lean-centered-home, commit 8d42377). The trunk leans
+# HOME_TRUNK_PITCH_RAD (10 deg) forward, nose down, knees are straight, and the
+# hip/ankle pitches keep both soles flat with the mass-weighted COM over the
+# fore-aft centre of the sole contact patches (MuJoCo FK on robot.xml). Every
+# policy commands target = NEUTRAL_POSE + raw_action * 1.0 on its 18 body
+# joints and observes its own raw previous output. There is no per-input
+# (GC300) ankle bias. The previous HOME (centered upright: hip +1.198 deg,
+# ankle -1.198 deg, trunk vertical) is not accepted by any policy check.
+HOME_TRUNK_PITCH_RAD = float(np.deg2rad(10.0))
+HOME_HIP_PITCH_RAD = float(np.deg2rad(-14.166561199931119))
+HOME_ANKLE_PITCH_RAD = float(np.deg2rad(4.127976841869204))
+# Gravity in the trunk frame at HOME, (sin 10deg, 0, -cos 10deg): what the
+# IMU's projected gravity reads while standing still at HOME. Posture checks
+# that mean "standing as trained" (get-up hand-back settle, stand detection)
+# measure tilt from this direction rather than from vertical.
+HOME_PROJECTED_GRAVITY = (
+    float(np.sin(HOME_TRUNK_PITCH_RAD)),
+    0.0,
+    -float(np.cos(HOME_TRUNK_PITCH_RAD)),
+)
 # No software clip: the only bound on a policy target is the servo's own goal
 # range. XC330 in Position Control mode accepts raw goals 0..4095 (one turn),
 # which rustypot maps to [-pi, pi - 2*pi/4096] rad. Training models this as an
@@ -50,21 +64,29 @@ POLICY_ACTION_SCALE = 1.0
 # action clip arrives as +-3.142; accept that rounding and nothing more.
 SERIALIZED_CLIP_TOLERANCE_RAD = 0.0005 + 1.0e-9
 # Trunk pose of HOME in the training scene: the lowest sole collision corner
-# touches the ground at this z, upright (identity quaternion).
-HOME_ROOT_POS_Z_M = 0.170554885633559
-HOME_ROOT_QUAT_WXYZ = (1.0, 0.0, 0.0, 0.0)
+# touches the ground at this z, and the root is pitched HOME_TRUNK_PITCH_RAD
+# about its y axis (positive pitch tips the trunk x axis toward -z, i.e.
+# forward), w-x-y-z. Same float expressions as mjlab_microban, so the get-up
+# and walking HOME stamps match to the last bit.
+HOME_ROOT_POS_Z_M = 0.170430569776402
+HOME_ROOT_QUAT_WXYZ = (
+    float(np.cos(HOME_TRUNK_PITCH_RAD / 2.0)),
+    0.0,
+    float(np.sin(HOME_TRUNK_PITCH_RAD / 2.0)),
+    0.0,
+)
 NEUTRAL_POSE = {
     "left_hip_yaw": float(np.deg2rad(0.0)),
     "left_hip_roll": float(np.deg2rad(5.0)),
-    "left_hip_pitch": HOME_PITCH_RAD,
+    "left_hip_pitch": HOME_HIP_PITCH_RAD,
     "left_knee": float(np.deg2rad(0.0)),
-    "left_ankle_pitch": -HOME_PITCH_RAD,
+    "left_ankle_pitch": HOME_ANKLE_PITCH_RAD,
     "left_ankle_roll": float(np.deg2rad(-5.0)),
     "right_hip_yaw": float(np.deg2rad(0.0)),
     "right_hip_roll": float(np.deg2rad(-5.0)),
-    "right_hip_pitch": HOME_PITCH_RAD,
+    "right_hip_pitch": HOME_HIP_PITCH_RAD,
     "right_knee": float(np.deg2rad(0.0)),
-    "right_ankle_pitch": -HOME_PITCH_RAD,
+    "right_ankle_pitch": HOME_ANKLE_PITCH_RAD,
     "right_ankle_roll": float(np.deg2rad(5.0)),
     "left_shoulder_pitch": float(np.deg2rad(0.0)),
     "left_shoulder_roll": float(np.deg2rad(10.0)),

@@ -1,7 +1,55 @@
 # Contract-v12 PICO policy runtime
 
+> **2026-10-04 forward-lean HOME.** The shared HOME (`NEUTRAL_POSE`) now leans
+> the trunk 10 deg forward with the COM over the sole centre: hip pitch
+> -14.1666 deg, ankle pitch +4.1280 deg, knees 0, root z 0.170430569776402 and
+> root quaternion (cos 5deg, 0, sin 5deg, 0), so the IMU's projected gravity
+> at HOME is `HOME_PROJECTED_GRAVITY = (sin 10deg, 0, -cos 10deg)`
+> (mjlab_microban `forward-lean-centered-home`). What the robot accepts:
+>
+> - Walking: `walk_contract_version=v4_forward_lean_home_servo_range`, and the
+>   exporter's `home_pose` JSON (joints, root position and quaternion) must be
+>   the robot's HOME. The centered-HOME v3 `walk.onnx` still installed is
+>   refused, so the runtime does not start until a v4 actor is installed.
+> - Get-up: `microban_getup_contract=v6` with
+>   `microban_getup_checkpoint_contract_stamp=v6` and a matching
+>   `microban_getup_home_pose`. The installed v5 `getup.onnx` is disabled (falls
+>   return slowly toward neutral) until a v6 actor is installed.
+> - PICO v12: `microban_teleop_recipe_revision` is the v13 forward-lean recipe,
+>   `v12_home_pose_revision` is
+>   `forward_lean10_hip_minus14p166561199931_ankle_plus4p127976841869_shoulder_zero_v6`,
+>   `v12_training_home_pose_json` must equal the robot's HOME exactly, and
+>   `v12_deployment_packager_revision` is
+>   `microban_teleop_v12_final_deployment_packager_v7_forward_lean_home_servo_range`.
+>   `foot_target_frame` and `hand_target_frame` must be
+>   `robot_home_levelled_trunk_xyz_forward_left_up`: the trunk frame with
+>   HOME's 10 deg lean rotated out, `R_trunk * R_y(-10deg)`, which is
+>   gravity-levelled at HOME. That is the frame the PICO bridge sends (offsets
+>   from the operator's upright zero) and the frame the support-foot floor band
+>   (Z <= 2.5 mm) assumes; the twist is already scored in it in training. The
+>   runtime does not rotate the targets. A package labelled
+>   `robot_trunk_xyz_forward_left_up` (targets in the leaning trunk frame) is
+>   refused: there a 40 mm vertical foot lift would land 7 mm forward. The
+>   training exporter must change accordingly before a forward-lean v12
+>   package can be deployed. The other v12 pins (legacy source checkpoint and
+>   probe SHA-256, action/target semantics strings, tracking profiles) still
+>   describe the archived legacy chain and must be updated with the first
+>   forward-lean v12 release.
+> - Postures: the get-up hand-back settle gate (12 deg for 10 ticks) and the
+>   stand debounce (25.8 deg, i.e. the old `gz < -0.9` radius) measure the angle
+>   between the measured projected gravity and HOME's. Fall detection stays
+>   `gz > -0.5` (60 deg from vertical) in the scheduler, `WalkMove` and
+>   `PicoHybridMove`: it is a physical attitude, and HOME's lean still leaves
+>   50 deg before it trips.
+> - Neck: without a VR head command, `WalkMove`'s stabiliser holds the neck at
+>   its trained HOME angle 0 at HOME and cancels only the sway around HOME's
+>   lean. With VR (`hmd_head`), the HMD attitude is a world attitude, so a level
+>   HMD at HOME gives neck pitch about -10 deg.
+>
+> The 2026-10-03 note below describes the centered HOME it replaced.
+
 > **2026-10-03 unification.** Every policy (walking, PICO full-body tracking,
-> get-up) now shares one reference pose, the centered HOME (`NEUTRAL_POSE` in
+> get-up) now shares one reference pose, then the centered HOME (`NEUTRAL_POSE` in
 > `src/constants.py`: shoulder pitch 0, hip pitch +1.198 deg, ankle pitch
 > -1.198 deg, ...), and one target rule,
 > `target = clip(HOME + raw * 1.0, -pi, +pi)` on all 18 body joints, with

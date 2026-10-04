@@ -1,6 +1,6 @@
 import unittest
 
-from constants import KP_DEFAULT, KP_HARDWARE_NEUTRAL, KP_RL, MOTOR_TO_ID, NEUTRAL_POSE, OBSERVATION_DOF_ORDER
+from constants import HOME_PROJECTED_GRAVITY, KP_DEFAULT, KP_HARDWARE_NEUTRAL, KP_RL, MOTOR_TO_ID, NEUTRAL_POSE, OBSERVATION_DOF_ORDER
 from input.input_source import UserInput
 from moves.getup import GetupMove
 from moves.move import MotorCommand, Move, MoveState
@@ -53,7 +53,7 @@ def observation(active_moves=(), *, torque_enabled=True, getup_armed=True, time_
             motor_positions=measured,
             motor_velocities=velocities,
             gyro=[0.0, 0.0, 0.0],
-            projected_gravity=[0.0, 0.0, -1.0],
+            projected_gravity=list(HOME_PROJECTED_GRAVITY),
         ),
         user_input=UserInput(
             active_moves=set(active_moves),
@@ -178,7 +178,7 @@ class GetupTransitionTest(unittest.TestCase):
                 motor_positions=far,
                 motor_velocities={name: 0.0 for name in NEUTRAL_POSE},
                 gyro=[0.0, 0.0, 0.0],
-                projected_gravity=[0.0, 0.0, -1.0],
+                projected_gravity=list(HOME_PROJECTED_GRAVITY),
             ),
             user_input=UserInput(
                 active_moves={"getup"}, torque_enabled=True, getup_armed=False

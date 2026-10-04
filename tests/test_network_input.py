@@ -8,7 +8,7 @@ from contextlib import redirect_stdout
 from pathlib import Path
 from unittest.mock import patch
 
-from constants import MOTOR_TO_ID, NEUTRAL_POSE
+from constants import HOME_PROJECTED_GRAVITY, MOTOR_TO_ID, NEUTRAL_POSE
 from input.network_input import NetworkInputSource
 from observer import RobotState
 from pico_arm_contract import PICO_ARM_HOME_RAD
@@ -1149,7 +1149,7 @@ class NetworkDisconnectSchedulerTest(unittest.TestCase):
                         gyro=[0.0, 0.0, 0.0],
                         quat=[1.0, 0.0, 0.0, 0.0],
                         body_quat=[1.0, 0.0, 0.0, 0.0],
-                        projected_gravity=[0.0, 0.0, -1.0],
+                        projected_gravity=list(HOME_PROJECTED_GRAVITY),
                         motor_positions={
                             name: neutral + 0.4
                             for name, neutral in NEUTRAL_POSE.items()

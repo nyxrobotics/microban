@@ -24,6 +24,8 @@ import numpy as np
 import onnxruntime as ort
 
 from constants import (
+    HOME_ROOT_POS_Z_M,
+    HOME_ROOT_QUAT_WXYZ,
     IMU_MOUNT_QUAT,
     KP_DEFAULT,
     KP_RL,
@@ -200,9 +202,32 @@ EXPECTED_V12_BOOTSTRAP_PROVENANCE_SCHEMA_VERSION = 1
 EXPECTED_V12_BOOTSTRAP_MAPPING_VERSION = (
     "normalized_legacy_velocity_63_to_teleop83_reachable_fk_elbow_minus10_v4"
 )
+# mjlab_microban forward-lean-centered-home (8d42377): the v12 chain trained
+# at the forward-lean HOME. Earlier recipes (v5 legacy, centered-HOME) were
+# trained at another HOME.
 EXPECTED_V12_RECIPE_REVISION = (
-    "legacy_velocity_model14999_staged_mask_reachable_fk_elbow_minus10_raw_actions_v5"
+    "forward_lean_home_velocity_source_staged_mask_reachable_fk_elbow_minus10_"
+    "raw_prev_action_servo_range_pi_v13"
 )
+# The training HOME the v12 checkpoint is bound to (microban_teleop_v12_home_pose
+# marker, written as v12_home_pose_revision and v12_training_home_pose_json),
+# and the deployment packager that wrote the artifact.
+EXPECTED_V12_HOME_POSE_REVISION = (
+    "forward_lean10_hip_minus14p166561199931_ankle_plus4p127976841869_shoulder_zero_v6"
+)
+EXPECTED_V12_HOME_POSE_SCHEMA_VERSION = 2
+EXPECTED_V12_PACKAGER_REVISION = (
+    "microban_teleop_v12_final_deployment_packager_v7_forward_lean_home_servo_range"
+)
+# Frame of the PICO hand/foot target columns (and of the twist): the trunk frame
+# with HOME's forward lean rotated out, R_trunk * R_y(-HOME_TRUNK_PITCH_RAD).
+# At HOME it is gravity-levelled (x forward, y left, z up), which is what the
+# PICO bridge sends (offsets from the operator's frozen, upright zero) and what
+# the support-foot floor band (Z <= 2.5 mm) assumes. Training at the forward-lean
+# HOME must define the targets in this frame and label them so; the earlier
+# label "robot_trunk_xyz_forward_left_up" (offsets in the leaning trunk frame)
+# would be 10 deg off: a 40 mm vertical foot lift would land 7 mm forward.
+PICO_V12_TARGET_FRAME = "robot_home_levelled_trunk_xyz_forward_left_up"
 EXPECTED_V12_ADAPTER_GRADIENT_SCHEDULE_REVISION = (
     "freeze_extra_to7000_then_hmd_hand_to10000_then_all_v1"
 )
@@ -387,8 +412,9 @@ _CHECKPOINT_SHA256_RE = re.compile(r"[0-9a-f]{64}\Z")
 # form when checking the ONNX metadata.  Inference always uses these values,
 # never model-provided limits, so altered metadata cannot widen motor targets.
 # Every policy (walking, PICO full-body tracking, get-up) shares the one
-# centered HOME, NEUTRAL_POSE.  The name is kept for the contract code below;
-# a PICO model trained at any other HOME is rejected by default_joint_pos.
+# forward-lean HOME, NEUTRAL_POSE.  The name is kept for the contract code below;
+# a PICO model trained at any other HOME is rejected by default_joint_pos and,
+# for contract v12, by its v12_training_home_pose_json.
 PICO_TELEOP_HOME_POSE = dict(NEUTRAL_POSE)
 EXPECTED_ACTION_DEFAULT_JOINT_POS = tuple(
     float(PICO_TELEOP_HOME_POSE[name]) for name in OBSERVATION_DOF_ORDER
@@ -2131,6 +2157,12 @@ def _parse_v12_contract(session: Any) -> _PolicyContract:
         "microban_teleop_recipe_revision",
         EXPECTED_V12_RECIPE_REVISION,
     )
+    _require_v12_home_pose(metadata)
+    _require_exact_metadata(
+        metadata,
+        "v12_deployment_packager_revision",
+        EXPECTED_V12_PACKAGER_REVISION,
+    )
     _require_v12_runtime_source_identity(metadata)
 
     filename = metadata.get("checkpoint_filename", "")
@@ -2553,12 +2585,8 @@ def _parse_v12_contract(session: Any) -> _PolicyContract:
         raise PicoHybridPolicyContractError(
             "hand_target_fk does not match the contract-v12 deployment contract"
         )
-    _require_exact_metadata(
-        metadata, "foot_target_frame", "robot_trunk_xyz_forward_left_up"
-    )
-    _require_exact_metadata(
-        metadata, "hand_target_frame", "robot_trunk_xyz_forward_left_up"
-    )
+    _require_exact_metadata(metadata, "foot_target_frame", PICO_V12_TARGET_FRAME)
+    _require_exact_metadata(metadata, "hand_target_frame", PICO_V12_TARGET_FRAME)
     _require_exact_metadata(metadata, "foot_target_units", "metres")
     _require_exact_metadata(metadata, "hand_target_units", "metres")
     _require_exact_metadata(
@@ -2668,6 +2696,36 @@ def _parse_v12_contract(session: Any) -> _PolicyContract:
         v12_target_clip_lower=target_clip_lower,
         v12_target_clip_upper=target_clip_upper,
     )
+
+
+def expected_v12_home_pose_marker() -> dict[str, Any]:
+    """The robot's HOME in the v12 training marker's JSON shape."""
+
+    return {
+        "schema_version": EXPECTED_V12_HOME_POSE_SCHEMA_VERSION,
+        "revision": EXPECTED_V12_HOME_POSE_REVISION,
+        "root_pos_xyz_m": [0.0, 0.0, float(HOME_ROOT_POS_Z_M)],
+        "root_quat_wxyz": [float(value) for value in HOME_ROOT_QUAT_WXYZ],
+        "joint_names": list(EXPECTED_V12_OBSERVATION_JOINT_NAMES),
+        "joint_pos_rad": [
+            float(PICO_TELEOP_HOME_POSE[name])
+            for name in EXPECTED_V12_OBSERVATION_JOINT_NAMES
+        ],
+    }
+
+
+def _require_v12_home_pose(metadata: Mapping[str, str]) -> None:
+    """Bind the artifact to the robot's HOME: revision label and full pose."""
+
+    _require_exact_metadata(
+        metadata, "v12_home_pose_revision", EXPECTED_V12_HOME_POSE_REVISION
+    )
+    home_pose = _strict_json_metadata(metadata, "v12_training_home_pose_json")
+    if not _exact_json_value(home_pose, expected_v12_home_pose_marker()):
+        raise PicoHybridPolicyContractError(
+            "v12_training_home_pose_json is not the robot's HOME "
+            "(NEUTRAL_POSE, HOME_ROOT_POS_Z_M, HOME_ROOT_QUAT_WXYZ)"
+        )
 
 
 def _parse_v12_target_clip(

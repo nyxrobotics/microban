@@ -112,6 +112,8 @@ class MuJoCoController:
             for mid in MOTOR_TO_ID.values()
         }
         self._delay_gyro = _DelayBuffer((0.0, 0.0, 0.0), delay_gyro_ticks)
+        # Re-seeded with the HOME spawn's IMU orientation once the sensor ids
+        # are known (below).
         self._delay_quat = _DelayBuffer((1.0, 0.0, 0.0, 0.0), delay_quat_ticks)
         self._delay_act = {
             mid: _DelayBuffer(
@@ -137,7 +139,7 @@ class MuJoCoController:
         )
         self._bam.last_ts = self._data.time
         # BamController.__init__ calls mj_setConst, which overwrites data.qpos
-        # with qpos0 (z=0, every joint 0): re-apply the upright neutral spawn.
+        # with qpos0 (z=0, every joint 0): re-apply the HOME spawn.
         self._set_home_qpos()
         mujoco.mj_forward(self._model, self._data)
         # Per-servo P gain, in the BAM controller's actuator order, so that
@@ -154,6 +156,10 @@ class MuJoCoController:
         # Sensor indices for IMU readout
         self._sensor_orientation = mujoco.mj_name2id(self._model, mujoco.mjtObj.mjOBJ_SENSOR, "orientation")
         self._sensor_gyro = mujoco.mj_name2id(self._model, mujoco.mjtObj.mjOBJ_SENSOR, "angular-velocity")
+        # Seed the IMU delay with the orientation at the HOME spawn (trunk 10 deg
+        # forward), not identity, so the first delayed ticks already report HOME's
+        # projected gravity instead of a different attitude.
+        self._delay_quat.fill(self._sensor_quat())
 
         # Foot/floor contact, for the get-up policy's foot_contact observation (order
         # matches its training-time ContactSensorCfg: right foot first, then left —
@@ -279,14 +285,15 @@ class MuJoCoController:
             current = (float(gx), float(gy), float(gz))
         return self._delay_gyro.push_and_read(current)
 
-    def read_quat(self, dt: float) -> tuple[float, float, float, float]:
+    def _sensor_quat(self) -> tuple[float, float, float, float]:
         if self._sensor_orientation < 0:
-            current = (1.0, 0.0, 0.0, 0.0)
-        else:
-            adr = self._model.sensor_adr[self._sensor_orientation]
-            w, x, y, z = self._data.sensordata[adr:adr + 4]
-            current = (float(w), float(x), float(y), float(z))
-        return self._delay_quat.push_and_read(current)
+            return (1.0, 0.0, 0.0, 0.0)
+        adr = self._model.sensor_adr[self._sensor_orientation]
+        w, x, y, z = self._data.sensordata[adr:adr + 4]
+        return (float(w), float(x), float(y), float(z))
+
+    def read_quat(self, dt: float) -> tuple[float, float, float, float]:
+        return self._delay_quat.push_and_read(self._sensor_quat())
 
     def read_foot_contact(self) -> tuple[float, float]:
         """Return (right_foot, left_foot) ground-contact as 1.0/0.0.
@@ -314,7 +321,8 @@ class MuJoCoController:
 
     def _set_home_qpos(self) -> None:
         """Spawn at the training HOME: root at HOME_ROOT_POS_Z_M (soles on the
-        ground), upright, every joint at NEUTRAL_POSE."""
+        ground), pitched HOME_ROOT_QUAT_WXYZ (trunk 10 deg forward), every
+        joint at NEUTRAL_POSE."""
         self._data.qpos[:] = 0.0
         self._data.qpos[2] = HOME_ROOT_POS_Z_M
         self._data.qpos[3:7] = HOME_ROOT_QUAT_WXYZ
@@ -332,4 +340,5 @@ class MuJoCoController:
         for mid in MOTOR_TO_ID.values():
             neutral = self._data.qpos[self._name_to_qpos_idx[ID_TO_MOTOR[mid]]]
             self._delay_act[mid].fill(neutral)
+        self._delay_quat.fill(self._sensor_quat())
         self._viewer.sync()

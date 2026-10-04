@@ -10,7 +10,7 @@ from pathlib import Path
 from unittest import mock
 
 import scheduler as scheduler_module
-from constants import MOTOR_TO_ID, NEUTRAL_POSE
+from constants import HOME_PROJECTED_GRAVITY, MOTOR_TO_ID, NEUTRAL_POSE
 from input.input_source import UserInput
 from moves.move import Move, MoveState
 from moves.policy_selector import PolicySelectableWalkMove, _HoldPositionMove
@@ -18,7 +18,8 @@ from observer import RobotState
 from scheduler import GETUP_AUTO_TIMEOUT_S, Scheduler
 
 HZ = 50.0
-UPRIGHT = [0.0, 0.0, -1.0]
+# Standing at HOME: the trunk leans 10 deg forward.
+UPRIGHT = list(HOME_PROJECTED_GRAVITY)
 FALLEN = [1.0, 0.0, 0.0]
 
 
@@ -601,15 +602,20 @@ class HandBackOvercurrentTest(unittest.TestCase):
         self.assertLess(len(rows), STAND_TICK + sec(2.0))
 
 
+HOME_LEAN_DEG = 10.0
+
+
 def tilted(degrees):
-    rad = math.radians(degrees)
+    """Projected gravity with the trunk pitched ``degrees`` beyond HOME's lean
+    (negative: back toward vertical and past it)."""
+    rad = math.radians(HOME_LEAN_DEG + degrees)
     return [math.sin(rad), 0.0, -math.cos(rad)]
 
 
 SETTLE_TICKS = scheduler_module.GETUP_HANDBACK_SETTLE_TICKS
 GETUP_A = scheduler_module.OVERCURRENT_CUTOFF_A_GETUP
 NORMAL_A = scheduler_module.OVERCURRENT_CUTOFF_A
-LEANING = tilted(18.0)  # standing (< ~25.8 deg) but not settled (>= 12 deg)
+LEANING = tilted(18.0)  # standing (< ~25.8 deg from HOME) but not settled (>= 12 deg)
 SETTLED = tilted(5.0)
 STAND_START = sec(0.2) + sec(1.0)  # first upright tick after the fall
 
@@ -639,8 +645,50 @@ class SettledHandBackTest(unittest.TestCase):
     def test_settle_constants(self):
         self.assertEqual(scheduler_module.GETUP_HANDBACK_SETTLE_TILT_DEG, 12.0)
         self.assertEqual(SETTLE_TICKS, 10)
-        self.assertLess(LEANING[2], -0.9)  # stand debounce counts
-        self.assertGreater(LEANING[2], -math.cos(math.radians(12.0)))
+        self.assertAlmostEqual(
+            scheduler_module.GETUP_STAND_TILT_DEG, math.degrees(math.acos(0.9))
+        )
+
+    def test_tilt_is_measured_from_the_home_attitude(self):
+        tilt = scheduler_module.tilt_from_home_rad
+        self.assertAlmostEqual(tilt(UPRIGHT), 0.0, places=6)
+        # Trunk vertical is 10 deg from HOME, inside the 12 deg settle angle.
+        self.assertAlmostEqual(math.degrees(tilt([0.0, 0.0, -1.0])), 10.0, places=9)
+        self.assertAlmostEqual(math.degrees(tilt(LEANING)), 18.0, places=9)
+        self.assertAlmostEqual(math.degrees(tilt(tilted(-18.0))), 18.0, places=9)
+        # Sideways: the angle between the two directions, not a pitch difference.
+        side = [
+            math.sin(math.radians(10.0)) * math.cos(math.radians(11.0)),
+            math.sin(math.radians(11.0)),
+            -math.cos(math.radians(10.0)) * math.cos(math.radians(11.0)),
+        ]
+        self.assertAlmostEqual(math.degrees(tilt(side)), 11.0, delta=0.05)
+        # Not normalized: only the direction counts.
+        self.assertAlmostEqual(tilt([2.0 * v for v in LEANING]), tilt(LEANING), places=12)
+        self.assertIsNone(tilt([0.0, 0.0, 0.0]))
+        self.assertIsNone(tilt([math.nan, 0.0, -1.0]))
+
+    def test_standing_at_home_or_vertical_settles(self):
+        for name, gravity in (("home", UPRIGHT), ("vertical", [0.0, 0.0, -1.0])):
+            with self.subTest(name=name):
+                h = Harness(FakeWalk(balances=True))
+                rows = h.run(fall_then_lean(lambda t, g=gravity: g), STAND_START + sec(2.0))
+                self.assertFalse(any(row["balancing"] for row in rows))
+                self.assertEqual(rows[-1]["walk"], MoveState.ACTIVE)
+
+    def test_stand_cone_is_centred_on_home(self):
+        # 22 deg beyond HOME, 32 deg from vertical: standing (inside the
+        # 25.8 deg cone around HOME) though outside the old vertical cone.
+        h = Harness(FakeWalk(balances=True))
+        rows = h.run(fall_then_lean(lambda t: tilted(22.0)), STAND_START + sec(2.0))
+        self.assertTrue(rows[-1]["balancing"])
+        # 28 deg behind HOME (18 deg back from vertical): inside the old
+        # vertical cone, but not standing as trained; still a get-up attempt.
+        h = Harness(FakeWalk(balances=True))
+        rows = h.run(fall_then_lean(lambda t: tilted(-28.0)), STAND_START + sec(2.0))
+        self.assertFalse(rows[-1]["balancing"])
+        self.assertTrue(rows[-1]["override"])
+        self.assertIsNotNone(rows[-1]["started"])
 
     def test_hand_back_after_settle_window(self):
         h = Harness(FakeWalk(balances=True))

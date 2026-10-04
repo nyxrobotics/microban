@@ -1,4 +1,4 @@
-"""Synthetic policies carrying the deployed (centered HOME, +-pi servo range) contracts.
+"""Synthetic policies carrying the deployed (forward-lean HOME, +-pi servo range) contracts.
 
 ``WALK_POLICY_FIXTURE`` is a tiny real ONNX walk actor (see
 fixtures/make_walk_policy_fixture.py); ``FakeSession`` lets a test vary one
@@ -8,6 +8,7 @@ metadata field or the output without writing a new ONNX file.
 from __future__ import annotations
 
 import json
+import math
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -19,7 +20,7 @@ from constants import (
     SERVO_TARGET_RANGE_RAD,
 )
 
-WALK_POLICY_FIXTURE = Path(__file__).resolve().parent / "fixtures" / "walk_policy_v3.onnx"
+WALK_POLICY_FIXTURE = Path(__file__).resolve().parent / "fixtures" / "walk_policy_v4.onnx"
 # mjlab's natural joint order (robot.joint_names) as in exported Microban ONNX.
 JOINT_NAMES = ["head", "neck_roll", "neck_pitch", *OBSERVATION_DOF_ORDER]
 ACTION_COUNT = len(OBSERVATION_DOF_ORDER)
@@ -38,16 +39,51 @@ OLD_HOME = {
     "left_ankle_pitch": 0.0,
     "right_ankle_pitch": 0.0,
 }
+# The centered upright HOME (hip +1.198 deg, ankle -1.198 deg, trunk vertical,
+# identity root at z 0.170554885633559) the v3 walk / v5 get-up policies used.
+CENTERED_HOME = {
+    **NEUTRAL_POSE,
+    "left_hip_pitch": math.radians(1.198384259489),
+    "right_hip_pitch": math.radians(1.198384259489),
+    "left_ankle_pitch": -math.radians(1.198384259489),
+    "right_ankle_pitch": -math.radians(1.198384259489),
+}
+CENTERED_ROOT_POS_M = [0.0, 0.0, 0.170554885633559]
+CENTERED_ROOT_QUAT_WXYZ = [1.0, 0.0, 0.0, 0.0]
 
 
 def csv(values) -> str:
     return ",".join(repr(float(value)) for value in values)
 
 
+def home_pose_json(
+    home: dict[str, float] | None = None,
+    *,
+    root_pos_m: list[float] | None = None,
+    root_quat_wxyz: list[float] | None = None,
+) -> str:
+    """mjlab_microban getup_home_pose() as its exporters serialize it."""
+    home = NEUTRAL_POSE if home is None else home
+    return json.dumps(
+        {
+            "root_pos_m": (
+                [0.0, 0.0, HOME_ROOT_POS_Z_M] if root_pos_m is None else root_pos_m
+            ),
+            "root_quat_wxyz": (
+                list(HOME_ROOT_QUAT_WXYZ) if root_quat_wxyz is None else root_quat_wxyz
+            ),
+            "joint_pos_rad": {name: float(home[name]) for name in sorted(home)},
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+
+
 def walk_contract_metadata(home: dict[str, float] | None = None) -> dict[str, str]:
+    """What mjlab_microban's export_walk_onnx.py writes for contract v4."""
     home = NEUTRAL_POSE if home is None else home
     return {
-        "walk_contract_version": "v3_centered_home_servo_range",
+        "walk_contract_version": "v4_forward_lean_home_servo_range",
         "previous_action_semantics": "raw_policy_output",
         "joint_names": ",".join(JOINT_NAMES),
         "default_joint_pos": csv(home[name] for name in JOINT_NAMES),
@@ -58,18 +94,19 @@ def walk_contract_metadata(home: dict[str, float] | None = None) -> dict[str, st
         "observation_names": "base_ang_vel,projected_gravity,joint_pos,joint_vel,actions,command",
         "command_names": "twist",
         "run_path": "synthetic_test_fixture",
+        "home_pose": home_pose_json(home),
     }
 
 
 def getup_contract_metadata(home: dict[str, float] | None = None) -> dict[str, str]:
-    """What mjlab_microban's export_getup_onnx.py writes for contract v5.
+    """What mjlab_microban's export_getup_onnx.py writes for contract v6.
 
     default_joint_pos goes through mjlab's 3-decimal CSV formatter; the +-pi
     servo-range clip is written at full precision (mjlab_microban 1290a1e).
     """
     home = NEUTRAL_POSE if home is None else home
     return {
-        "microban_getup_contract": "v5",
+        "microban_getup_contract": "v6",
         "microban_getup_angular_velocity_frame": "imu_sensor_xyz",
         "microban_getup_previous_action_semantics": "raw_policy_output",
         "joint_names": ",".join(JOINT_NAMES),
@@ -79,17 +116,9 @@ def getup_contract_metadata(home: dict[str, float] | None = None) -> dict[str, s
         "action_clip_lower": csv([-SERVO_TARGET_RANGE_RAD] * ACTION_COUNT),
         "action_clip_upper": csv([SERVO_TARGET_RANGE_RAD] * ACTION_COUNT),
         "action_scale": "1.0",
-        "microban_getup_checkpoint_contract_stamp": "v5",
+        "microban_getup_checkpoint_contract_stamp": "v6",
         "checkpoint_sha256": "0" * 64,
-        "microban_getup_home_pose": json.dumps(
-            {
-                "root_pos_m": [0.0, 0.0, HOME_ROOT_POS_Z_M],
-                "root_quat_wxyz": list(HOME_ROOT_QUAT_WXYZ),
-                "joint_pos_rad": {name: float(home[name]) for name in sorted(home)},
-            },
-            sort_keys=True,
-            separators=(",", ":"),
-        ),
+        "microban_getup_home_pose": home_pose_json(home),
     }
 
 

@@ -2,6 +2,8 @@ import math
 import unittest
 
 from constants import (
+    HOME_PROJECTED_GRAVITY,
+    HOME_ROOT_QUAT_WXYZ,
     MOTOR_TO_ID,
     NEUTRAL_POSE,
     OBSERVATION_DOF_ORDER,
@@ -13,6 +15,9 @@ from moves.walk import WalkMove, WalkPolicyContractError
 from observer import Observation, RobotState
 from policy_fixtures import (
     ACTION_COUNT,
+    CENTERED_HOME,
+    CENTERED_ROOT_POS_M,
+    CENTERED_ROOT_QUAT_WXYZ,
     OLD_HOME,
     WALK_BIAS,
     WALK_OBS_WIDTH,
@@ -20,22 +25,31 @@ from policy_fixtures import (
     WALK_POSITION_GAIN,
     FakeSession,
     csv,
+    home_pose_json,
     walk_contract_metadata,
 )
 
 
-def observation(positions=None, time_s=0.0):
+def pitched_quat(degrees):
+    half = math.radians(degrees) / 2.0
+    return [math.cos(half), 0.0, math.sin(half), 0.0]
+
+
+def observation(positions=None, time_s=0.0, body_quat=None, head_orientation=None):
+    """Standing still at HOME (trunk 10 deg forward) unless told otherwise."""
     positions = dict(NEUTRAL_POSE) if positions is None else positions
     return Observation(
         robot_state=RobotState(
             time_s=time_s,
             gyro=[0.0, 0.0, 0.0],
-            projected_gravity=[0.0, 0.0, -1.0],
-            body_quat=[1.0, 0.0, 0.0, 0.0],
+            projected_gravity=list(HOME_PROJECTED_GRAVITY),
+            body_quat=list(HOME_ROOT_QUAT_WXYZ) if body_quat is None else body_quat,
             motor_positions=positions,
             motor_velocities={name: 0.0 for name in MOTOR_TO_ID},
         ),
-        user_input=UserInput(active_moves={"walk"}),
+        user_input=UserInput(
+            active_moves={"walk"}, head_orientation=head_orientation
+        ),
     )
 
 
@@ -68,6 +82,7 @@ class WalkContractTest(unittest.TestCase):
             "action_scale",
             "action_clip_lower",
             "action_clip_upper",
+            "home_pose",
         ):
             metadata = walk_contract_metadata()
             del metadata[key]
@@ -89,13 +104,41 @@ class WalkContractTest(unittest.TestCase):
                 "previous_action_semantics": "clipped_target",
             },
             "scale": {**walk_contract_metadata(), "action_scale": "0.5"},
+            # The centered upright HOME v3 actors: their version string, their
+            # HOME stamp (joints and identity root), or both.
+            "centered_v3_contract": {
+                **walk_contract_metadata(CENTERED_HOME),
+                "walk_contract_version": "v3_centered_home_servo_range",
+                "home_pose": home_pose_json(
+                    CENTERED_HOME,
+                    root_pos_m=CENTERED_ROOT_POS_M,
+                    root_quat_wxyz=CENTERED_ROOT_QUAT_WXYZ,
+                ),
+            },
+            "v3_version_at_this_home": {
+                **walk_contract_metadata(),
+                "walk_contract_version": "v3_centered_home_servo_range",
+            },
+            "centered_home_stamp": {
+                **walk_contract_metadata(),
+                "home_pose": home_pose_json(CENTERED_HOME),
+            },
+            "upright_root_stamp": {
+                **walk_contract_metadata(),
+                "home_pose": home_pose_json(root_quat_wxyz=CENTERED_ROOT_QUAT_WXYZ),
+            },
+            "centered_root_height_stamp": {
+                **walk_contract_metadata(),
+                "home_pose": home_pose_json(root_pos_m=CENTERED_ROOT_POS_M),
+            },
+            "home_stamp_not_json": {**walk_contract_metadata(), "home_pose": "{"},
             "old_v2_clip157_contract": {
                 **walk_contract_metadata(),
                 "walk_contract_version": "v2_centered_home_clip157",
                 "action_clip_lower": csv([-1.57] * ACTION_COUNT),
                 "action_clip_upper": csv([1.57] * ACTION_COUNT),
             },
-            "v3_with_old_clip157": {
+            "v4_with_old_clip157": {
                 **walk_contract_metadata(),
                 "action_clip_lower": csv([-1.57] * ACTION_COUNT),
                 "action_clip_upper": csv([1.57] * ACTION_COUNT),
@@ -269,6 +312,32 @@ class WalkTargetRuleTest(unittest.TestCase):
         self.assertEqual(move.state, MoveState.INACTIVE)
         for name in OBSERVATION_DOF_ORDER:
             self.assertAlmostEqual(final.target_angles[name], NEUTRAL_POSE[name], places=12)
+
+    def test_neck_holds_home_and_cancels_sway_around_it(self):
+        move, _ = fake_walk()
+        cases = (
+            # (trunk pitch from vertical, VR head pitch, expected neck pitch), deg
+            (10.0, None, 0.0),  # standing at HOME: the trained neck angle
+            (0.0, None, 10.0),  # trunk vertical: keep the HOME head attitude
+            (15.0, None, -5.0),  # sway forward of HOME
+            (10.0, 0.0, -10.0),  # VR: the commanded world attitude (level)
+            (10.0, 5.0, -5.0),
+        )
+        for trunk_deg, vr_pitch_deg, neck_deg in cases:
+            head = (
+                None
+                if vr_pitch_deg is None
+                else {"roll": 0.0, "pitch": math.radians(vr_pitch_deg)}
+            )
+            obs = observation(body_quat=pitched_quat(trunk_deg), head_orientation=head)
+            command = MotorCommand()
+            move.on_start(obs, command)
+            move.step(obs, command)
+            with self.subTest(trunk=trunk_deg, vr=vr_pitch_deg):
+                self.assertAlmostEqual(
+                    command.target_angles["neck_pitch"], math.radians(neck_deg), places=9
+                )
+                self.assertAlmostEqual(command.target_angles["neck_roll"], 0.0, places=9)
 
     def test_ankle_bias_interface_is_gone(self):
         with self.assertRaises(TypeError):

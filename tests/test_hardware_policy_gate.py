@@ -1,6 +1,6 @@
 import unittest
 
-from constants import KP_HARDWARE_NEUTRAL, MOTOR_TO_ID, NEUTRAL_POSE
+from constants import HOME_PROJECTED_GRAVITY, KP_HARDWARE_NEUTRAL, MOTOR_TO_ID, NEUTRAL_POSE
 from input.gamepad_input import GamepadInputSource, XBOX_BUTTONS
 from input.input_source import UserInput
 from moves.move import Move, MoveState
@@ -45,7 +45,7 @@ def observation(*, torque, policy, time_s=0.0, offset=0.4):
             gyro=[0.0, 0.0, 0.0],
             quat=[1.0, 0.0, 0.0, 0.0],
             body_quat=[1.0, 0.0, 0.0, 0.0],
-            projected_gravity=[0.0, 0.0, -1.0],
+            projected_gravity=list(HOME_PROJECTED_GRAVITY),
         ),
         user_input=UserInput(
             active_moves={"walk", "hmd_head", "pico_arms"},

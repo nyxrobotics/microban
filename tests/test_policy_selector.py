@@ -3,7 +3,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from constants import KP_HARDWARE_NEUTRAL, MOTOR_TO_ID, NEUTRAL_POSE, OBSERVATION_DOF_ORDER
+from constants import HOME_PROJECTED_GRAVITY, KP_HARDWARE_NEUTRAL, MOTOR_TO_ID, NEUTRAL_POSE, OBSERVATION_DOF_ORDER
 from input.input_source import UserInput
 from input.network_input import NetworkInputSource
 from moves.move import MotorCommand, Move, MoveState
@@ -260,7 +260,7 @@ class PolicySelectorTest(unittest.TestCase):
             robot_state = RobotState(
                 time_s=0.0,
                 gyro=[0.0, 0.0, 0.0],
-                projected_gravity=[0.0, 0.0, -1.0],
+                projected_gravity=list(HOME_PROJECTED_GRAVITY),
                 motor_positions={
                     name: float(value) for name, value in NEUTRAL_POSE.items()
                 },

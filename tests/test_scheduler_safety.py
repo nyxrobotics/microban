@@ -2,7 +2,7 @@ import math
 import tempfile
 import unittest
 
-from constants import MOTOR_TO_ID, NEUTRAL_POSE
+from constants import HOME_PROJECTED_GRAVITY, MOTOR_TO_ID, NEUTRAL_POSE
 from input.input_source import UserInput
 from moves.move import Move, MoveState
 from observer import RobotState
@@ -14,7 +14,7 @@ def valid_state():
         gyro=[0.0, 0.0, 0.0],
         quat=[1.0, 0.0, 0.0, 0.0],
         body_quat=[1.0, 0.0, 0.0, 0.0],
-        projected_gravity=[0.0, 0.0, -1.0],
+        projected_gravity=list(HOME_PROJECTED_GRAVITY),
         motor_positions={name: angle + 0.03 for name, angle in NEUTRAL_POSE.items()},
         motor_velocities={name: 0.0 for name in MOTOR_TO_ID},
     )

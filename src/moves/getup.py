@@ -1,7 +1,6 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright 2026 Marc Duclusaud
 
-import json
 import math
 from pathlib import Path
 from typing import Any
@@ -9,8 +8,6 @@ from typing import Any
 import onnxruntime as ort
 
 from constants import (
-    HOME_ROOT_POS_Z_M,
-    HOME_ROOT_QUAT_WXYZ,
     KP_DEFAULT,
     KP_HARDWARE_NEUTRAL,
     KP_RL,
@@ -20,26 +17,27 @@ from constants import (
     SERVO_TARGET_RANGE_RAD,
 )
 from controller import ControllerProtocol
+from home_pose import home_pose_stamp_matches
 from observer import Observation
 from moves.move import MotorCommand, Move, MoveState
 
 
 # Policy name
 AGENT_NAME = "getup.onnx"
-# v5: absolute target = default + raw action with no software clip -- only
-# the servo's one-turn goal range, +-pi (constants.SERVO_TARGET_RANGE_RAD),
-# which training models as the action clip and the exporter writes as
-# action_clip_lower/upper -- and the policy observes its own previous RAW
-# output. v4 was the same rule with a flat +-1.57 rad clip (it capped XC330
-# torque); v4 models are rejected rather than run at another clip. v3 fed
-# back the applied target instead.
-GETUP_CONTRACT_VERSION = "v5"
+# v6 (mjlab_microban forward-lean-centered-home): absolute target = default
+# + raw action with no software clip -- only the servo's one-turn goal range,
+# +-pi (constants.SERVO_TARGET_RANGE_RAD), which training models as the
+# action clip and the exporter writes as action_clip_lower/upper -- and the
+# policy observes its own previous RAW output, all at the forward-lean HOME
+# (trunk 10 deg forward). v5 was the same rule at the centered upright HOME,
+# v4 a flat +-1.57 rad clip, v3 fed back the applied target; none of them is
+# accepted, since each was trained at another HOME or action rule.
+GETUP_CONTRACT_VERSION = "v6"
 GETUP_PREVIOUS_ACTION_SEMANTICS = "raw_policy_output"
-# The model's HOME must be the robot's NEUTRAL_POSE (the one centered HOME
-# every policy shares). microban_getup_home_pose carries it at full precision;
-# default_joint_pos is serialized with 3 decimals by mjlab's exporter.
-_HOME_POSE_TOLERANCE_RAD = 1.0e-6
-_HOME_ROOT_TOLERANCE = 1.0e-6
+# The model's HOME must be the robot's NEUTRAL_POSE and root pose (the one
+# forward-lean HOME every policy shares). microban_getup_home_pose carries it
+# at full precision (home_pose.home_pose_stamp_matches); default_joint_pos is
+# serialized with 3 decimals by mjlab's exporter.
 _SERIALIZED_DEFAULT_TOLERANCE_RAD = 0.0005 + 1.0e-9
 # The exporter writes action_clip_lower/upper at full precision (repr), so the
 # servo-range clip must match +-pi to float noise, as WalkMove requires.
@@ -67,34 +65,6 @@ def _metadata_floats(value: str | None) -> list[float]:
     except (TypeError, ValueError, OverflowError):
         return []
     return values if all(math.isfinite(item) for item in values) else []
-
-
-def _home_pose_matches_neutral(value: str | None) -> bool:
-    """True when the model's full-precision training HOME is NEUTRAL_POSE."""
-    if not value:
-        return False
-    try:
-        home = json.loads(value)
-        joints = {str(name): float(angle) for name, angle in home["joint_pos_rad"].items()}
-        root_pos = [float(item) for item in home["root_pos_m"]]
-        root_quat = [float(item) for item in home["root_quat_wxyz"]]
-    except (TypeError, ValueError, KeyError, AttributeError, OverflowError):
-        return False
-    return (
-        set(joints) == set(NEUTRAL_POSE)
-        and all(
-            math.isfinite(angle)
-            and abs(angle - NEUTRAL_POSE[name]) <= _HOME_POSE_TOLERANCE_RAD
-            for name, angle in joints.items()
-        )
-        and len(root_pos) == 3
-        and abs(root_pos[2] - HOME_ROOT_POS_Z_M) <= _HOME_ROOT_TOLERANCE
-        and len(root_quat) == 4
-        and all(
-            abs(actual - expected) <= _HOME_ROOT_TOLERANCE
-            for actual, expected in zip(root_quat, HOME_ROOT_QUAT_WXYZ)
-        )
-    )
 
 
 class GetupMove(Move):
@@ -144,7 +114,7 @@ class GetupMove(Move):
         # rejected (model_ready False) rather than offset-corrected.
         home_valid = (
             joints_valid
-            and _home_pose_matches_neutral(meta.get("microban_getup_home_pose"))
+            and home_pose_stamp_matches(meta.get("microban_getup_home_pose"))
             and all(
                 abs(value - NEUTRAL_POSE[name]) <= _SERIALIZED_DEFAULT_TOLERANCE_RAD
                 for name, value in zip(joint_names, default_positions)
@@ -184,6 +154,10 @@ class GetupMove(Move):
         outputs = self._ort_session.get_outputs()
         self.model_ready = (
             meta.get("microban_getup_contract") == GETUP_CONTRACT_VERSION
+            # The stamp the training runner wrote into the checkpoint; the v6
+            # exporter refuses any other, so anything else is not its output.
+            and meta.get("microban_getup_checkpoint_contract_stamp")
+            == GETUP_CONTRACT_VERSION
             and meta.get("microban_getup_angular_velocity_frame") == "imu_sensor_xyz"
             and meta.get("microban_getup_previous_action_semantics")
             == GETUP_PREVIOUS_ACTION_SEMANTICS
@@ -203,8 +177,8 @@ class GetupMove(Move):
         )
         if not self.model_ready:
             print(
-                "Get-up actor disabled: deployed model lacks the v5 servo-range action, "
-                "IMU-frame or centered-HOME contract; falls return toward neutral",
+                "Get-up actor disabled: deployed model lacks the v6 servo-range action, "
+                "IMU-frame or forward-lean-HOME contract; falls return toward neutral",
                 end="\r\n", flush=True,
             )
         self._neck_joint_names = [
