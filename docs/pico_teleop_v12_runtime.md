@@ -84,6 +84,21 @@ scenarios (near-fall states for this and the previous canonical model) and
 by 2 mm in `max_keypoints_left` foot RMS, while all safety checks passed.
 The robot accepts the allowance only together with the pose-release recipe.
 
+### Installed package (2026-10-05)
+
+`src/agents/pico_teleop.onnx` sha256
+`ce343503937154b02f27e88c2889f6fc379b924c840bfb0af46ffa0e0e371488`, packaged
+from `mjlab_microban` run
+`2026-10-05_03-31-01_c20k_v12_pr_10100_to15000/model_14999.pt` (checkpoint
+sha256 `795dbd43b12f4a2d8e3facad954c6f7e1094301243f2ed17ea7995f17e7306ec`,
+pose-release recipe, gate
+`full_body_reachable_performance_perturbation_v2_completion_allowance_v1`,
+gate sha256 `b6c24d04d8452a058f656fbf010ee9c1c3c1e10e787ae4d54759d2947e3e5363`).
+Receipt:
+`artifacts/teleop_v12_releases/2026-10-05_03-31-01_c20k_v12_pr_10100_to15000_model_14999_deployment_receipt.json`
+in the training repository. `tools/validate_pico_policy.py` passes (CPU smoke,
+walk fallback `c9cdd852...`).
+
 ## Live checkpoint: 2026-09-27
 
 The operator reported that walking improved on the physical robot after the
