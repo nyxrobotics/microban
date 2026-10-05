@@ -48,8 +48,12 @@ run-specific pins (`EXPECTED_V12_LEGACY_SOURCE_*`, `EXPECTED_WALK_FALLBACK_SHA25
 then package PICO against this tree. Because `src/constants.py`,
 `src/moves/pico_hybrid.py` and `src/moves/walk.py` are runtime-identity files,
 the installed `pico_teleop.onnx` was re-packaged from the same checkpoint for
-this change (only its three source hashes differ; sha256
-`d4aaff04dbf78e45096e2abf89149f51535cd393f56463513e149b164c232c25`).
+this change (only its three source hashes and the packager source hash
+differ; sha256
+`20ae0e5857698eb6ec87019b3a2fb51b7c74307b401dc0b0a96114eab07c8cd1`).
+Any later edit of those three files needs another re-package, so the
+deploy branch's package (`ce343503...`) does not validate on this branch by
+design: the package binds the exact runtime sources it was validated with.
 
 ## Centered-HOME package contract (2026-10-04)
 
@@ -130,10 +134,14 @@ walk fallback `c9cdd852...`).
 Re-packaged the same day from the same checkpoint and gate after the HOME
 moved to `config/home_pose.yaml` (identical graph and metadata except the
 runtime source hashes of `src/constants.py`, `src/moves/pico_hybrid.py` and
-`src/moves/walk.py`): sha256
-`d4aaff04dbf78e45096e2abf89149f51535cd393f56463513e149b164c232c25`; receipt
+`src/moves/walk.py`), with the packager committed on the training branch
+`home-config` (`export_teleop_v12_deployment.py` sha256 `c3a84b83...`, recorded
+as `v12_deployment_packager_source_sha256`): sha256
+`20ae0e5857698eb6ec87019b3a2fb51b7c74307b401dc0b0a96114eab07c8cd1`; receipt
 `artifacts/teleop_v12_releases/2026-10-05_03-31-01_c20k_v12_pr_10100_to15000_model_14999_homecfg_repack_receipt.json`
-(local, in the training repository's `home-config` worktree).
+(in the training repository's `home-config` branch). The first re-package
+(`d4aaff04...`) had been built by the older packager (`333e5704...`) and was
+replaced for provenance; graph and weights are identical.
 
 ## Live checkpoint: 2026-09-27
 
