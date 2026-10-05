@@ -36,11 +36,13 @@ __all__ = [
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 WALK_FALLBACK_POLICY = REPOSITORY_ROOT / "src" / "agents" / "walk.onnx"
-# forward-lean-home: no walk.onnx is installed yet (src/agents/README.md).
-# Pin the lean walk.onnx's SHA-256 here when it is installed; until then this
-# unmatchable placeholder (and the missing file) keeps validation failing
-# closed.  c9cdd852... was the centered upright-HOME walk.onnx.
-EXPECTED_WALK_FALLBACK_SHA256 = "0" * 64
+# forward-lean-home: the installed lean walk.onnx (walk contract
+# v4_forward_lean_home_servo_range; mjlab_microban forward-lean-v2
+# artifacts/walk_v4_forward_lean_home_servo_cont2_29000.onnx).
+# c9cdd852... was the centered upright-HOME walk.onnx.
+EXPECTED_WALK_FALLBACK_SHA256 = (
+    "b33cd9ea7dbebbfe4543c0bb616a54d9ba713ded1ffdda0891b79dad09e2c1d2"
+)
 WALK_FALLBACK_SMOKE_SAMPLE_COUNT = 16
 
 

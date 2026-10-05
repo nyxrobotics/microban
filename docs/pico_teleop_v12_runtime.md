@@ -9,9 +9,10 @@
 >
 > - Walking: `walk_contract_version=v4_forward_lean_home_servo_range`, and the
 >   exporter's `home_pose` JSON (joints, root position and quaternion) must be
->   the robot's HOME. No `walk.onnx` is installed on this branch (the
->   centered-HOME v3 actor was removed, see `src/agents/README.md`), so walking,
->   GC300 and the PICO walk fallback fail closed until a v4 actor is installed.
+>   the robot's HOME. The installed `walk.onnx` is the forward-lean v4 actor
+>   (sha256 `b33cd9ea...`, mjlab_microban `forward-lean-v2`
+>   `artifacts/walk_v4_forward_lean_home_servo_cont2_29000.onnx`); the
+>   centered-HOME v3 actor was removed (see `src/agents/README.md`).
 > - Get-up: `microban_getup_contract=v6` with
 >   `microban_getup_checkpoint_contract_stamp=v6` and a matching
 >   `microban_getup_home_pose`. The installed `getup.onnx` is the forward-lean
@@ -88,13 +89,16 @@ forward-lean ones:
 | `v12_legacy_source_checkpoint_sha256`, `..._iteration`, `v12_legacy_probe_sha256` | **pending**: unmatchable placeholders (`"0" * 64`, `0`) until the forward-lean walking source is chosen; every v12 package fails closed here until then |
 
 Action/target semantics, clip, raw-action guard and the corpus self-test are
-the same as in the centered table below. `src/agents/walk.onnx` and
-`src/agents/pico_teleop.onnx` are not installed on this branch, and the walk
-fallback pin in `tools/validate_pico_policy.py`
-(`EXPECTED_WALK_FALLBACK_SHA256`) is an unmatchable placeholder: install the
-lean `walk.onnx`, pin its SHA-256 there and pin its source checkpoint/probe in
-`pico_hybrid.py` before packaging the lean PICO policy against this repository
-(the package's runtime identity hashes the installed `walk.onnx`).
+the same as in the centered table below. The lean `src/agents/walk.onnx` is
+installed (sha256
+`b33cd9ea7dbebbfe4543c0bb616a54d9ba713ded1ffdda0891b79dad09e2c1d2`, exported
+from run `2026-10-05_06-14-02_lean_walk_cont2` `model_29000`, checkpoint sha256
+`a7c28c8abaf038d85c9c773bdaa2cc6bbe3c9bb2af6135622a4949c38a0401ff`) and pinned
+as `EXPECTED_WALK_FALLBACK_SHA256` in `tools/validate_pico_policy.py`.
+`src/agents/pico_teleop.onnx` is not installed on this branch: pin the lean
+source checkpoint/probe in `pico_hybrid.py` before packaging the lean PICO
+policy against this repository (the package's runtime identity hashes the
+installed `walk.onnx`).
 
 ## Centered-HOME package contract (2026-10-04, centered line reference)
 
