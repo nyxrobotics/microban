@@ -193,21 +193,22 @@ def require_unchanged_runtime_source_identity(
 # into the raw-action execution path by adding a version string.
 #
 # Forward-lean HOME chain (mjlab_microban forward-lean-v2): the frozen source
-# will be the forward-lean walking checkpoint whose export is installed as
-# src/agents/walk.onnx (bootstrap provenance schema 2 records its SHA-256 and
-# its saved "iter"), probed by its 9x300 raw teleop probe receipt.  Neither the
-# lean walking policy nor the lean PICO policy is selected yet, so these pins
-# are deliberately unmatchable placeholders (no file hashes to all zeros):
-# every contract-v12 package fails closed on
-# v12_legacy_source_checkpoint_sha256 until the lean source checkpoint SHA-256,
-# its iteration and its probe receipt SHA-256 are pinned here, together with
-# installing the lean walk.onnx (the walk fallback identity).  The centered
-# chain (f395d04c..., iteration 20000, probe ac47d437...) and the old-HOME
-# legacy chain (b0bcdada..., 14999) were trained at other HOMEs.
-V12_SOURCE_PIN_PENDING_SHA256 = "0" * 64
-EXPECTED_V12_LEGACY_SOURCE_CHECKPOINT_SHA256 = V12_SOURCE_PIN_PENDING_SHA256
-EXPECTED_V12_LEGACY_SOURCE_CHECKPOINT_ITERATION = 0
-EXPECTED_V12_LEGACY_PROBE_SHA256 = V12_SOURCE_PIN_PENDING_SHA256
+# is the forward-lean walking checkpoint whose export is installed as
+# src/agents/walk.onnx (run 2026-10-05_06-14-02_lean_walk_cont2 model_29000,
+# copied to checkpoints/forward_lean_velocity/model_29000.pt; bootstrap
+# provenance schema 2 records its SHA-256 and its saved "iter"), probed by its
+# 9x300 raw teleop probe receipt
+# artifacts/legacy_teleop_probe/velocity_a7c28c8abaf038d8_teleop83_raw_9x300.json
+# written by the fresh pose-release chain's start (lean_v12_pr_0_to3000).
+# The centered chain (f395d04c..., iteration 20000, probe ac47d437...) and the
+# old-HOME legacy chain (b0bcdada..., 14999) were trained at other HOMEs.
+EXPECTED_V12_LEGACY_SOURCE_CHECKPOINT_SHA256 = (
+    "a7c28c8abaf038d85c9c773bdaa2cc6bbe3c9bb2af6135622a4949c38a0401ff"
+)
+EXPECTED_V12_LEGACY_SOURCE_CHECKPOINT_ITERATION = 29000
+EXPECTED_V12_LEGACY_PROBE_SHA256 = (
+    "ebcf45549fb68b65b5e5c568a6e8217a7f9fce5dd08c96902e66a337e3064af9"
+)
 EXPECTED_V12_BOOTSTRAP_PROVENANCE_SCHEMA_VERSION = 2
 EXPECTED_V12_BOOTSTRAP_MAPPING_VERSION = (
     "normalized_legacy_velocity_63_to_teleop83_reachable_fk_elbow_minus10_v4"

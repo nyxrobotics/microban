@@ -421,11 +421,15 @@ PACKAGER_V12_SEMANTICS = {
         "full_body_reachable_performance_perturbation_v2_deployed_accuracy_v1"
     ),
     "v12_bootstrap_provenance_schema_version": "2",
-    # Forward-lean source pins are pending (unmatchable placeholders until the
-    # lean walking source and its probe are pinned with the lean walk.onnx).
-    "v12_legacy_source_checkpoint_sha256": "0" * 64,
-    "v12_legacy_source_checkpoint_iteration": "0",
-    "v12_legacy_probe_sha256": "0" * 64,
+    # Forward-lean walking source (cont2 model_29000, the installed walk.onnx)
+    # and its fresh-chain 9x300 probe receipt.
+    "v12_legacy_source_checkpoint_sha256": (
+        "a7c28c8abaf038d85c9c773bdaa2cc6bbe3c9bb2af6135622a4949c38a0401ff"
+    ),
+    "v12_legacy_source_checkpoint_iteration": "29000",
+    "v12_legacy_probe_sha256": (
+        "ebcf45549fb68b65b5e5c568a6e8217a7f9fce5dd08c96902e66a337e3064af9"
+    ),
     "v12_lr_order_migration_revision": "none_corrected_site_order_from_bootstrap_v1",
 }
 

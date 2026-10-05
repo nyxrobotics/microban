@@ -86,7 +86,9 @@ forward-lean ones:
 | `foot_target_frame` / `hand_target_frame` | `robot_home_levelled_trunk_xyz_forward_left_up` |
 | `hand_target_fk` | hand FK v4 (`..._home_levelled_lean10_receiver_box64mm_v4`, normalizer 64.0 / 38.8 / 45.8 mm) |
 | `v12_bootstrap_provenance_schema_version` | `2` |
-| `v12_legacy_source_checkpoint_sha256`, `..._iteration`, `v12_legacy_probe_sha256` | **pending**: unmatchable placeholders (`"0" * 64`, `0`) until the forward-lean walking source is chosen; every v12 package fails closed here until then |
+| `v12_legacy_source_checkpoint_sha256` | `a7c28c8abaf038d85c9c773bdaa2cc6bbe3c9bb2af6135622a4949c38a0401ff` (`checkpoints/forward_lean_velocity/model_29000.pt` = run `2026-10-05_06-14-02_lean_walk_cont2` `model_29000`, the source of the installed lean `walk.onnx`) |
+| `v12_legacy_source_checkpoint_iteration` | `29000` (the checkpoint's saved `iter`) |
+| `v12_legacy_probe_sha256` | `ebcf45549fb68b65b5e5c568a6e8217a7f9fce5dd08c96902e66a337e3064af9` (`artifacts/legacy_teleop_probe/velocity_a7c28c8abaf038d8_teleop83_raw_9x300.json`, written by the fresh pose-release chain's start; 9 x 300 steps, settle 50, seed 42) |
 
 Action/target semantics, clip, raw-action guard and the corpus self-test are
 the same as in the centered table below. The lean `src/agents/walk.onnx` is
@@ -95,10 +97,11 @@ installed (sha256
 from run `2026-10-05_06-14-02_lean_walk_cont2` `model_29000`, checkpoint sha256
 `a7c28c8abaf038d85c9c773bdaa2cc6bbe3c9bb2af6135622a4949c38a0401ff`) and pinned
 as `EXPECTED_WALK_FALLBACK_SHA256` in `tools/validate_pico_policy.py`.
-`src/agents/pico_teleop.onnx` is not installed on this branch: pin the lean
-source checkpoint/probe in `pico_hybrid.py` before packaging the lean PICO
-policy against this repository (the package's runtime identity hashes the
-installed `walk.onnx`).
+The lean source checkpoint and probe are pinned in `pico_hybrid.py` (table
+above). `src/agents/pico_teleop.onnx` is not installed yet: the lean PICO
+policy (fresh pose-release chain `lean_v12_pr_*` in mjlab_microban
+`forward-lean-v2`) is packaged against this repository (the package's runtime
+identity hashes the installed `walk.onnx`).
 
 ## Centered-HOME package contract (2026-10-04, centered line reference)
 
