@@ -54,7 +54,13 @@ the training repository) the runtime has exactly the constants of branch
 `forward-lean-home` and accepts its walk.onnx (b33cd9ea) and getup.onnx
 (ce6cdc04); forward-lean-home's own test suite passes on this code with that
 file, its agents and its run pins (`tests/test_home_pose_any_trunk.py` covers
-the constants, the posture rules and both HOMEs' agents).
+the constants, the posture rules and both HOMEs' agents). No forward-lean
+`pico_teleop.onnx` exists yet (2026-10-06, forward-lean-home 3a91585): the lean
+pose-release chain passed its 10000 and 10100 gates, but ten tries at the
+unchanged 14999 final gate (four 10100 -> 15000 retrains, seeds 42/42/43/44,
+and six final rescues) all failed on mixed_forward_left, so a forward-lean
+branch of this code runs walk and get-up and PICO teleop fails closed on the
+missing file until a changed 10100 -> 15000 recipe passes.
 
 Changing HOME: edit the training repository's `config/home_pose.yaml`,
 retrain walking, get-up and PICO v12, run `write-robot`, install the three
