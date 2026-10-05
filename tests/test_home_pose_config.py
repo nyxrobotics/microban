@@ -2,6 +2,7 @@
 
 import json
 import math
+import re
 import tempfile
 import unittest
 from pathlib import Path
@@ -39,6 +40,18 @@ CENTERED_CONTRACTS = {
 }
 
 
+def _edit(pattern, replace, text=None):
+    """CONFIG_TEXT with the first match of ``pattern`` rewritten by ``replace(match)``."""
+
+    text = CONFIG_TEXT if text is None else text
+    return re.sub(pattern, replace, text, count=1, flags=re.MULTILINE)
+
+
+def _trunk_pitched_by_10_deg(match):
+    degrees = float(match.group(1)) + 10.0
+    return f"trunk_pitch_deg: {degrees!r}\ntrunk_pitch_rad: {math.radians(degrees)!r}"
+
+
 def load_variant(text):
     with tempfile.TemporaryDirectory() as directory:
         path = Path(directory) / "home_pose.yaml"
@@ -58,6 +71,7 @@ class HomePoseConfigTest(unittest.TestCase):
         self.assertEqual(constants.HOME_PROJECTED_GRAVITY, loaded["projected_gravity"])
         self.assertEqual(constants.HOME_PITCH_RAD, loaded["joint_pos_rad"]["left_hip_pitch"])
 
+    @unittest.skipUnless(home_pose.HOME_TAG == "centered_home", "this branch's HOME is not the centered one")
     def test_centered_home_values_are_unchanged(self):
         self.assertEqual(home_pose.HOME_TAG, "centered_home")
         self.assertEqual(home_pose.HOME_ROOT_POS_M, (0.0, 0.0, 0.170554885633559))
@@ -100,20 +114,19 @@ class HomePoseConfigTest(unittest.TestCase):
             "tab": CONFIG_TEXT.replace("\n  head: 0.0", "\n\thead: 0.0", 1),
             "indent": CONFIG_TEXT.replace("\n  head: 0.0", "\n   head: 0.0", 1),
             "duplicate": CONFIG_TEXT.replace("\n  head: 0.0", "\n  head: 0.0\n  head: 0.0", 1),
-            "bad_value": CONFIG_TEXT.replace('tag: "centered_home"', "tag: centered_home", 1),
-            "rad_not_deg": CONFIG_TEXT.replace(
-                "  left_knee: 0.0\n  right_knee: 0.0\n  left_ankle_roll: -0.0872",
-                "  left_knee: 0.001\n  right_knee: 0.0\n  left_ankle_roll: -0.0872",
-                1,
+            "bad_value": CONFIG_TEXT.replace(
+                f'tag: "{home_pose.HOME_TAG}"', f"tag: {home_pose.HOME_TAG}", 1
             ),
-            "pitched_trunk": CONFIG_TEXT.replace(
-                "trunk_pitch_deg: 0.0\ntrunk_pitch_rad: 0.0",
-                "trunk_pitch_deg: 10.0\ntrunk_pitch_rad: 0.17453292519943295",
-                1,
+            # The radian table's left knee 0.001 rad off its degree value.
+            "rad_not_deg": _edit(
+                r"^(joint_pos_rad:\n(?:  .*\n)*?  left_knee: )(\S+)$",
+                lambda m: f"{m.group(1)}{float(m.group(2)) + 0.001!r}",
             ),
-            "gravity": CONFIG_TEXT.replace(
-                "projected_gravity: [0.0, 0.0, -1.0]", "projected_gravity: [0.0, 0.0, 1.0]", 1
+            # A consistent trunk pitch the root quaternion / gravity do not have.
+            "pitched_trunk": _edit(
+                r"^trunk_pitch_deg: (\S+)\ntrunk_pitch_rad: \S+$", _trunk_pitched_by_10_deg
             ),
+            "gravity": _edit(r"^projected_gravity: .*$", lambda m: "projected_gravity: [0.0, 0.0, 1.0]"),
             "missing_contract": CONFIG_TEXT.replace("  walk_contract_version:", "  walk_contract:", 1),
             "schema": CONFIG_TEXT.replace("schema_version: 1", "schema_version: 2", 1),
         }

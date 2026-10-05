@@ -10,7 +10,7 @@ from pathlib import Path
 from unittest import mock
 
 import scheduler as scheduler_module
-from constants import MOTOR_TO_ID, NEUTRAL_POSE
+from constants import HOME_PROJECTED_GRAVITY, HOME_TRUNK_PITCH_RAD, MOTOR_TO_ID, NEUTRAL_POSE
 from input.input_source import UserInput
 from moves.move import Move, MoveState
 from moves.policy_selector import PolicySelectableWalkMove, _HoldPositionMove
@@ -18,7 +18,8 @@ from observer import RobotState
 from scheduler import GETUP_AUTO_TIMEOUT_S, Scheduler
 
 HZ = 50.0
-UPRIGHT = [0.0, 0.0, -1.0]
+# Standing at HOME: trunk vertical at the centered HOME, pitched at a lean HOME.
+UPRIGHT = list(HOME_PROJECTED_GRAVITY)
 FALLEN = [1.0, 0.0, 0.0]
 
 
@@ -602,8 +603,14 @@ class HandBackOvercurrentTest(unittest.TestCase):
 
 
 def tilted(degrees):
-    rad = math.radians(degrees)
+    """Projected gravity with the trunk pitched ``degrees`` beyond the HOME pitch."""
+    rad = HOME_TRUNK_PITCH_RAD + math.radians(degrees)
     return [math.sin(rad), 0.0, -math.cos(rad)]
+
+
+def tilt_from_home_deg(gravity):
+    dot = sum(a * b for a, b in zip(gravity, UPRIGHT))
+    return math.degrees(math.acos(max(-1.0, min(1.0, dot))))
 
 
 SETTLE_TICKS = scheduler_module.GETUP_HANDBACK_SETTLE_TICKS
@@ -639,8 +646,10 @@ class SettledHandBackTest(unittest.TestCase):
     def test_settle_constants(self):
         self.assertEqual(scheduler_module.GETUP_HANDBACK_SETTLE_TILT_DEG, 12.0)
         self.assertEqual(SETTLE_TICKS, 10)
-        self.assertLess(LEANING[2], -0.9)  # stand debounce counts
-        self.assertGreater(LEANING[2], -math.cos(math.radians(12.0)))
+        # Stand debounce counts (within acos 0.9 = 25.8 deg of HOME), not settled.
+        self.assertLess(tilt_from_home_deg(LEANING), math.degrees(math.acos(0.9)))
+        self.assertGreater(tilt_from_home_deg(LEANING), 12.0)
+        self.assertLess(tilt_from_home_deg(SETTLED), 12.0)
 
     def test_hand_back_after_settle_window(self):
         h = Harness(FakeWalk(balances=True))

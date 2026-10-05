@@ -78,14 +78,17 @@ def walk_contract_metadata(home: dict[str, float] | None = None) -> dict[str, st
 
 
 def getup_contract_metadata(home: dict[str, float] | None = None) -> dict[str, str]:
-    """What mjlab_microban's export_getup_onnx.py writes for contract v5.
+    """What mjlab_microban's export_getup_onnx.py writes at this HOME.
+
+    The contract and checkpoint stamp are the HOME's (config/home_pose.yaml):
+    "v5" / "v5" at the centered HOME, "v6" / "v6" at the forward-lean one.
 
     default_joint_pos goes through mjlab's 3-decimal CSV formatter; the +-pi
     servo-range clip is written at full precision (mjlab_microban 1290a1e).
     """
     home = NEUTRAL_POSE if home is None else home
     return {
-        "microban_getup_contract": "v5",
+        "microban_getup_contract": HOME_CONTRACTS["getup_contract_version"],
         "microban_getup_angular_velocity_frame": "imu_sensor_xyz",
         "microban_getup_previous_action_semantics": "raw_policy_output",
         "joint_names": ",".join(JOINT_NAMES),
@@ -95,7 +98,9 @@ def getup_contract_metadata(home: dict[str, float] | None = None) -> dict[str, s
         "action_clip_lower": csv([-SERVO_TARGET_RANGE_RAD] * ACTION_COUNT),
         "action_clip_upper": csv([SERVO_TARGET_RANGE_RAD] * ACTION_COUNT),
         "action_scale": "1.0",
-        "microban_getup_checkpoint_contract_stamp": "v5",
+        "microban_getup_checkpoint_contract_stamp": (
+            HOME_CONTRACTS["getup_checkpoint_stamp"] or HOME_CONTRACTS["getup_contract_version"]
+        ),
         "checkpoint_sha256": "0" * 64,
         "microban_getup_home_pose": home_pose_stamp(home),
     }

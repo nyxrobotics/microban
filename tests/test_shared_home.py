@@ -1,4 +1,4 @@
-"""One reference pose (the centered HOME) and one target rule for every policy."""
+"""One reference pose (the HOME of config/home_pose.yaml) and one target rule for every policy."""
 
 import inspect
 import json
@@ -14,7 +14,7 @@ from constants import (
     OBSERVATION_DOF_ORDER,
     SERVO_TARGET_RANGE_RAD,
 )
-from home_pose import HOME_POSE
+from home_pose import HOME_CONTRACTS, HOME_POSE
 from input.input_source import UserInput
 from moves import walk as walk_module
 from moves.getup import GetupMove
@@ -31,9 +31,10 @@ from policy_fixtures import (
 )
 from scheduler import Scheduler
 
-# The centered HOME of mjlab_microban (HOME_FRAME at commit cb55431, now its
-# config/home_pose.yaml), in degrees: pinned here so a changed
-# config/home_pose.yaml is a deliberate, reviewed edit of this test too.
+# This branch's HOME (mjlab_microban config/home_pose.yaml; the centered HOME is
+# HOME_FRAME at commit cb55431), in degrees: pinned here so a changed
+# config/home_pose.yaml is a deliberate, reviewed edit of this test too
+# (mjlab_microban scripts/retrain_all_for_home.py rewrites it with the HOME).
 TRAINING_HOME_DEG = {
     "head": 0.0,
     "neck_roll": 0.0,
@@ -65,8 +66,10 @@ class SharedHomeTest(unittest.TestCase):
         for name, degrees in TRAINING_HOME_DEG.items():
             self.assertEqual(NEUTRAL_POSE[name], math.radians(degrees), name)
         self.assertEqual(dict(HOME_POSE["joint_pos_deg"]), TRAINING_HOME_DEG)
-        self.assertEqual(HOME_PITCH_RAD, math.radians(1.198384259489))
-        self.assertEqual(HOME_ROOT_POS_Z_M, 0.170554885633559)
+        self.assertEqual(HOME_PITCH_RAD, math.radians(TRAINING_HOME_DEG["left_hip_pitch"]))
+        self.assertEqual(HOME_ROOT_POS_Z_M, HOME_POSE["root_pos_m"][2])
+        if HOME_POSE["tag"] == "centered_home":
+            self.assertEqual(HOME_ROOT_POS_Z_M, 0.170554885633559)
         self.assertEqual(SERVO_TARGET_RANGE_RAD, math.pi)
 
     def test_every_runtime_copy_derives_from_neutral_pose(self):
@@ -135,7 +138,10 @@ class GetupHomeTest(unittest.TestCase):
         self.assertEqual(move._last_action, raw)
 
     def test_only_the_v5_servo_range_clip_is_accepted(self):
-        def with_clip(lower, upper, version="v5"):
+        # The servo-range clip contract of this HOME ("v5" centered, "v6" forward-lean).
+        current = HOME_CONTRACTS["getup_contract_version"]
+
+        def with_clip(lower, upper, version=current):
             metadata = getup_contract_metadata()
             metadata["microban_getup_contract"] = version
             metadata["action_clip_lower"] = ",".join(lower)

@@ -5,8 +5,9 @@ write-robot generates for the forward-lean HOME (trunk +10 deg).  With it the
 runtime has exactly the constants of robot branch forward-lean-home, accepts
 that branch's walk.onnx / getup.onnx (the forward-lean walk cont2 model_29000
 and get-up stage 5 model_21495, read from its git objects) and refuses the
-centered ones; with the centered config/home_pose.yaml it is the other way
-round.  The posture rules follow the HOME gravity: settle / stand are measured
+centered ones; with tests/fixtures/home_pose_centered.yaml (the centered
+config/home_pose.yaml, frozen so this test holds on a branch of any HOME) it
+is the other way round, with the centered policies read from commit 5f859e6.  The posture rules follow the HOME gravity: settle / stand are measured
 from HOME_PROJECTED_GRAVITY, falls stay physical (from vertical), and the
 neck stabilisation reference is the HOME trunk pitch.
 
@@ -28,7 +29,13 @@ import numpy as np
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 LEAN_YAML = REPO_ROOT / "tests" / "fixtures" / "home_pose_forward_lean.yaml"
-CENTERED_YAML = REPO_ROOT / "config" / "home_pose.yaml"
+CENTERED_YAML = REPO_ROOT / "tests" / "fixtures" / "home_pose_centered.yaml"
+# The centered walk v3 / get-up v5 policies (installed in 5f859e6).
+CENTERED_AGENTS_COMMIT = "5f859e6"
+CENTERED_AGENTS = {
+    "walk.onnx": "c9cdd8527704046d5c8058fc63fc3ef148716d659509666d0dc844b64c18fa40",
+    "getup.onnx": "80cd7ddb13066f6563b07927e85e6fb7916149d4275218b9ad80ee58f5b08cfa",
+}
 # forward-lean-home: walk.onnx b33cd9ea (b46feb8), getup.onnx ce6cdc04 (47f3455).
 LEAN_AGENTS_COMMIT = "3c11e91"
 LEAN_AGENTS = {
@@ -119,21 +126,24 @@ class AnyTrunkHomeTest(unittest.TestCase):
     def setUpClass(cls) -> None:
         cls._directory = tempfile.TemporaryDirectory()
         root = Path(cls._directory.name)
-        cls.agents = {
-            "centered_walk": str(REPO_ROOT / "src" / "agents" / "walk.onnx"),
-            "centered_getup": str(REPO_ROOT / "src" / "agents" / "getup.onnx"),
-        }
-        cls.have_lean_agents = True
-        for name in LEAN_AGENTS:
-            destination = root / f"lean_{name}"
-            if not _git_show(LEAN_AGENTS_COMMIT, f"src/agents/{name}", destination):
-                cls.have_lean_agents = False
-                continue
-            import hashlib
+        import hashlib
 
-            if hashlib.sha256(destination.read_bytes()).hexdigest() != LEAN_AGENTS[name]:
-                raise AssertionError(f"forward-lean-home {name} is not the expected artifact")
-            cls.agents[f"lean_{name.split('.')[0]}"] = str(destination)
+        cls.agents = {}
+        cls.have_lean_agents = True
+        for prefix, commit, pinned in (
+            ("centered", CENTERED_AGENTS_COMMIT, CENTERED_AGENTS),
+            ("lean", LEAN_AGENTS_COMMIT, LEAN_AGENTS),
+        ):
+            for name in pinned:
+                destination = root / f"{prefix}_{name}"
+                if not _git_show(commit, f"src/agents/{name}", destination):
+                    if prefix == "lean":
+                        cls.have_lean_agents = False
+                        continue
+                    raise AssertionError(f"{commit}:src/agents/{name} is not in this clone")
+                if hashlib.sha256(destination.read_bytes()).hexdigest() != pinned[name]:
+                    raise AssertionError(f"{commit} {name} is not the expected artifact")
+                cls.agents[f"{prefix}_{name.split('.')[0]}"] = str(destination)
         cls.lean = _probe(LEAN_YAML, cls.agents)
         cls.centered = _probe(CENTERED_YAML, cls.agents)
 

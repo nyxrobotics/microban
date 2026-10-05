@@ -9,6 +9,7 @@ from unittest.mock import patch
 import numpy as np
 
 from constants import (
+    HOME_PROJECTED_GRAVITY,
     HOME_ROOT_POS_Z_M,
     HOME_ROOT_QUAT_WXYZ,
     IMU_MOUNT_QUAT,
@@ -17,6 +18,7 @@ from constants import (
     OBSERVATION_DOF_ORDER,
     SERVO_TARGET_RANGE_RAD,
 )
+from home_pose import HOME_TAG
 from imu_reader import imu_quat_to_body
 from input.input_source import UserInput
 from moves.move import MotorCommand, MoveState
@@ -106,6 +108,7 @@ from moves.pico_hybrid import (
     EXPECTED_V12_TRAINING_CONTRACT_VERSION,
     PHYSICAL_MOTOR_TARGET_GUARD_SEMANTICS,
     PICO_TELEOP_HOME_POSE,
+    PICO_V12_TARGET_FRAME,
     PicoHybridMove,
     PicoHybridPolicyContractError,
     PicoHybridPolicyRuntimeError,
@@ -343,11 +346,14 @@ def clipped_target(index, raw_value):
     )
 
 
-# Exact values the centered-HOME packager writes
-# (mjlab_microban track-centered-home-clip,
-# scripts/export_teleop_v12_deployment.py and the checkpoint's
+# Exact values the packager writes at this branch's HOME
+# (mjlab_microban scripts/export_teleop_v12_deployment.py and the checkpoint's
 # microban_teleop_v12_home_pose marker), copied verbatim so a drift on
-# either side fails here rather than on the robot.
+# either side fails here rather than on the robot.  The HOME JSON and the run
+# pins below are rewritten by mjlab_microban scripts/retrain_all_for_home.py
+# from the installed package; the HOME-bound contract strings come from
+# config/home_pose.yaml, and their centered-HOME literals are pinned in
+# CENTERED_HOME_PACKAGER_STRINGS (checked at the centered HOME).
 PACKAGER_V12_HOME_POSE_JSON = (
     '{"schema_version":2,"revision":"centered_home_hip_plus1p198384259489_'
     'ankle_minus1p198384259489_shoulder_zero_v5","root_pos_xyz_m":[0.0,0.0,'
@@ -380,10 +386,7 @@ PACKAGER_V12_SEMANTICS = {
     "physical_motor_target_guard_semantics": (
         "finite_target_then_servo_goal_range_saturation_pi_v3"
     ),
-    "microban_teleop_recipe_revision": (
-        "centered_home_velocity_source_staged_mask_reachable_fk_elbow_minus10_"
-        "raw_prev_action_servo_range_pi_v11"
-    ),
+    "microban_teleop_recipe_revision": EXPECTED_V12_RECIPE_REVISION,
     "v12_tracking_profile": (
         "full_body_reachable_performance_perturbation_v2_deployed_accuracy_v1"
     ),
@@ -397,6 +400,37 @@ PACKAGER_V12_SEMANTICS = {
     ),
     "v12_lr_order_migration_revision": "none_corrected_site_order_from_bootstrap_v1",
 }
+
+
+CENTERED_HOME_PACKAGER_STRINGS = {
+    "microban_teleop_recipe_revision": (
+        "centered_home_velocity_source_staged_mask_reachable_fk_elbow_minus10_"
+        "raw_prev_action_servo_range_pi_v11"
+    ),
+    "pose_release_recipe_revision": (
+        "centered_home_velocity_source_staged_mask_reachable_fk_elbow_"
+        "minus10_raw_prev_action_servo_range_pi_active_hand_arm_pose_"
+        "release_v12"
+    ),
+    "v12_deployment_packager_revision": (
+        "microban_teleop_v12_final_deployment_packager_v6_centered_home_servo_range"
+    ),
+    "v12_home_pose_revision": (
+        "centered_home_hip_plus1p198384259489_ankle_minus1p198384259489_shoulder_zero_v5"
+    ),
+    "target_frame": "robot_trunk_xyz_forward_left_up",
+}
+CENTERED_HOME = HOME_TAG == "centered_home"
+
+
+def _bumped_revision(revision: str) -> str:
+    """The same revision string with its trailing _v<N> raised by one."""
+
+    import re
+
+    match = re.search(r"_v(\d+)$", revision)
+    assert match, revision
+    return f"{revision[: match.start()]}_v{int(match.group(1)) + 1}"
 
 
 def v12_smoke_rows(count: int = 16) -> list[list[float]]:
@@ -444,6 +478,10 @@ def valid_v12_metadata():
     guard_absolute_maximum[0] = 30.0
     metadata.update(
         {
+            # HOME-bound (config/home_pose.yaml): robot_trunk_xyz_forward_left_up
+            # at the centered HOME, the HOME-levelled frame at a pitched trunk.
+            "foot_target_frame": PICO_V12_TARGET_FRAME,
+            "hand_target_frame": PICO_V12_TARGET_FRAME,
             "microban_teleop_training_contract_version": (
                 EXPECTED_V12_TRAINING_CONTRACT_VERSION
             ),
@@ -725,8 +763,28 @@ class PicoHybridMoveTest(unittest.TestCase):
             move._contract.v12_target_clip_upper, (SERVO_TARGET_RANGE_RAD,) * 18
         )
 
+    @unittest.skipUnless(CENTERED_HOME, "centered-HOME literals (this branch's HOME is another one)")
+    def test_centered_home_contract_strings_are_the_packager_literals(self):
+        self.assertEqual(
+            EXPECTED_V12_RECIPE_REVISION,
+            CENTERED_HOME_PACKAGER_STRINGS["microban_teleop_recipe_revision"],
+        )
+        self.assertEqual(
+            EXPECTED_V12_POSE_RELEASE_RECIPE_REVISION,
+            CENTERED_HOME_PACKAGER_STRINGS["pose_release_recipe_revision"],
+        )
+        self.assertEqual(
+            EXPECTED_V12_PACKAGER_REVISION,
+            CENTERED_HOME_PACKAGER_STRINGS["v12_deployment_packager_revision"],
+        )
+        self.assertEqual(
+            EXPECTED_V12_HOME_POSE_REVISION,
+            CENTERED_HOME_PACKAGER_STRINGS["v12_home_pose_revision"],
+        )
+        self.assertEqual(PICO_V12_TARGET_FRAME, CENTERED_HOME_PACKAGER_STRINGS["target_frame"])
+
     def test_v12_fixture_carries_the_centered_home_packager_values(self):
-        # The fixture must be what the centered-HOME packager actually writes,
+        # The fixture must be what the packager actually writes at this HOME,
         # so the parser's pins are checked against literal exporter strings.
         metadata = valid_v12_metadata()
         for name, value in PACKAGER_V12_SEMANTICS.items():
@@ -734,8 +792,7 @@ class PicoHybridMoveTest(unittest.TestCase):
                 self.assertEqual(metadata[name], value)
         self.assertEqual(metadata["v12_training_home_pose_json"], PACKAGER_V12_HOME_POSE_JSON)
         self.assertEqual(
-            metadata["v12_deployment_packager_revision"],
-            "microban_teleop_v12_final_deployment_packager_v6_centered_home_servo_range",
+            metadata["v12_deployment_packager_revision"], EXPECTED_V12_PACKAGER_REVISION
         )
         home = json.loads(PACKAGER_V12_HOME_POSE_JSON)
         self.assertEqual(home["revision"], EXPECTED_V12_HOME_POSE_REVISION)
@@ -765,12 +822,11 @@ class PicoHybridMoveTest(unittest.TestCase):
         # The pose-release lineage's final gate runs under the completion
         # allowance; a gate under the deployed-accuracy or strict profile is
         # also accepted, as the packager does.
-        self.assertEqual(
-            EXPECTED_V12_POSE_RELEASE_RECIPE_REVISION,
-            "centered_home_velocity_source_staged_mask_reachable_fk_elbow_"
-            "minus10_raw_prev_action_servo_range_pi_active_hand_arm_pose_"
-            "release_v12",
-        )
+        self.assertTrue(EXPECTED_V12_POSE_RELEASE_RECIPE_REVISION.endswith(
+            "_active_hand_arm_pose_release_v12"
+        ) or EXPECTED_V12_POSE_RELEASE_RECIPE_REVISION.endswith(
+            "_active_hand_arm_pose_release_v18"
+        ))
         self.assertEqual(
             EXPECTED_V12_COMPLETION_ALLOWANCE_TRACKING_PROFILE,
             "full_body_reachable_performance_perturbation_v2_"
@@ -999,11 +1055,7 @@ class PicoHybridMoveTest(unittest.TestCase):
             ),
             "unknown_pose_release_recipe": (
                 "microban_teleop_recipe_revision",
-                (
-                    "centered_home_velocity_source_staged_mask_reachable_fk_"
-                    "elbow_minus10_raw_prev_action_servo_range_pi_active_hand_"
-                    "arm_pose_release_v13"
-                ),
+                _bumped_revision(EXPECTED_V12_POSE_RELEASE_RECIPE_REVISION),
             ),
             # The completion allowance is bound to the pose-release lineage.
             "v11_completion_allowance_profile": (
@@ -1042,12 +1094,15 @@ class PicoHybridMoveTest(unittest.TestCase):
             "home_json_root": (
                 "v12_training_home_pose_json",
                 PACKAGER_V12_HOME_POSE_JSON.replace(
-                    "0.170554885633559", "0.1705549"
+                    f"{HOME_ROOT_POS_Z_M!r}]", f"{round(HOME_ROOT_POS_Z_M, 7)!r}]"
                 ),
             ),
             "home_json_revision": (
                 "v12_training_home_pose_json",
-                PACKAGER_V12_HOME_POSE_JSON.replace("shoulder_zero_v5", "shoulder_zero_v4"),
+                PACKAGER_V12_HOME_POSE_JSON.replace(
+                    EXPECTED_V12_HOME_POSE_REVISION,
+                    _bumped_revision(EXPECTED_V12_HOME_POSE_REVISION),
+                ),
             ),
             "raw_envelope_joint_order": (
                 "v12_raw_action_joint_names_json",
@@ -1398,8 +1453,10 @@ class PicoHybridMoveTest(unittest.TestCase):
         corpus = onnxruntime_compatibility_smoke_inputs()
         self.assertEqual(corpus.shape, (16, 1, 83))
         self.assertTrue(np.isfinite(corpus).all())
-        self.assertEqual(corpus[0, 0, 5], -1.0)
-        self.assertEqual(np.count_nonzero(corpus[0]), 1)
+        # The first row is the HOME attitude at rest (unit gravity at the centered HOME).
+        gravity = np.asarray(HOME_PROJECTED_GRAVITY, dtype=np.float32)
+        self.assertEqual(corpus[0, 0, 3:6].tolist(), gravity.tolist())
+        self.assertEqual(np.count_nonzero(corpus[0]), np.count_nonzero(gravity))
         self.assertTrue(np.all(corpus[1] <= corpus[2]))
 
         session = FakeSession()
@@ -2290,16 +2347,17 @@ class PicoHybridMoveTest(unittest.TestCase):
             self.assertEqual(final.target_angles[name], NEUTRAL_POSE[name])
         next_inactive_tick = MotorCommand()
         self.assertEqual(final.target_angles, next_inactive_tick.target_angles)
-        # The one shared centered HOME: shoulder pitch 0, hip/ankle pitch
-        # +-1.198 deg.
+        # The one shared HOME: shoulder pitch 0 (centered: hip/ankle pitch
+        # +-1.198 deg).
         self.assertEqual(final.target_angles["left_shoulder_pitch"], 0.0)
         self.assertEqual(final.target_angles["right_shoulder_pitch"], 0.0)
-        self.assertAlmostEqual(
-            final.target_angles["left_hip_pitch"], math.radians(1.198384259489)
-        )
-        self.assertAlmostEqual(
-            final.target_angles["right_ankle_pitch"], -math.radians(1.198384259489)
-        )
+        if CENTERED_HOME:
+            self.assertAlmostEqual(
+                final.target_angles["left_hip_pitch"], math.radians(1.198384259489)
+            )
+            self.assertAlmostEqual(
+                final.target_angles["right_ankle_pitch"], -math.radians(1.198384259489)
+            )
 
     def test_getup_cancels_release_interpolation(self):
         move = PicoHybridMove(session=FakeSession(), gyro_transform=lambda value: value)
