@@ -1,5 +1,6 @@
 import math
 import unittest
+from pathlib import Path
 
 from constants import (
     HOME_PROJECTED_GRAVITY,
@@ -11,7 +12,7 @@ from constants import (
 )
 from input.input_source import UserInput
 from moves.move import MotorCommand, MoveState
-from moves.walk import WalkMove, WalkPolicyContractError
+from moves.walk import AGENT_NAME, WalkMove, WalkPolicyContractError
 from observer import Observation, RobotState
 from policy_fixtures import (
     ACTION_COUNT,
@@ -188,7 +189,12 @@ class WalkContractTest(unittest.TestCase):
 
     def test_installed_walk_onnx_is_accepted_only_on_contract(self):
         # Whatever is installed must carry the contract or be refused;
-        # never silently accepted.
+        # never silently accepted.  forward-lean-home installs no walk.onnx
+        # until the lean walking policy exists: construction must then fail.
+        if not (Path("src/agents") / AGENT_NAME).is_file():
+            with self.assertRaises(Exception):
+                WalkMove(controller=None)
+            return
         try:
             move = WalkMove(controller=None)
         except WalkPolicyContractError:

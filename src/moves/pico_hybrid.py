@@ -33,7 +33,6 @@ from constants import (
     MOTOR_TO_ID,
     NEUTRAL_POSE,
     OBSERVATION_DOF_ORDER,
-    SERIALIZED_CLIP_TOLERANCE_RAD,
     SERVO_TARGET_RANGE_RAD,
 )
 from controller import ControllerProtocol
@@ -192,14 +191,24 @@ def require_unchanged_runtime_source_identity(
 # actor instead of the bounded v10 action transform.  These identities are
 # pinned on the robot so arbitrary 83-input ONNX files cannot opt themselves
 # into the raw-action execution path by adding a version string.
-EXPECTED_V12_LEGACY_SOURCE_CHECKPOINT_SHA256 = (
-    "b0bcdadac39716be784207dd6b2b93157162a3e80650e23c05f490c400b9e141"
-)
-EXPECTED_V12_LEGACY_SOURCE_CHECKPOINT_ITERATION = 14_999
-EXPECTED_V12_LEGACY_PROBE_SHA256 = (
-    "f51378d59ff4d68fb1185a91eb2a863749e5c7be6ec4cd0ab4a0b08f1565e69d"
-)
-EXPECTED_V12_BOOTSTRAP_PROVENANCE_SCHEMA_VERSION = 1
+#
+# Forward-lean HOME chain (mjlab_microban forward-lean-v2): the frozen source
+# will be the forward-lean walking checkpoint whose export is installed as
+# src/agents/walk.onnx (bootstrap provenance schema 2 records its SHA-256 and
+# its saved "iter"), probed by its 9x300 raw teleop probe receipt.  Neither the
+# lean walking policy nor the lean PICO policy is selected yet, so these pins
+# are deliberately unmatchable placeholders (no file hashes to all zeros):
+# every contract-v12 package fails closed on
+# v12_legacy_source_checkpoint_sha256 until the lean source checkpoint SHA-256,
+# its iteration and its probe receipt SHA-256 are pinned here, together with
+# installing the lean walk.onnx (the walk fallback identity).  The centered
+# chain (f395d04c..., iteration 20000, probe ac47d437...) and the old-HOME
+# legacy chain (b0bcdada..., 14999) were trained at other HOMEs.
+V12_SOURCE_PIN_PENDING_SHA256 = "0" * 64
+EXPECTED_V12_LEGACY_SOURCE_CHECKPOINT_SHA256 = V12_SOURCE_PIN_PENDING_SHA256
+EXPECTED_V12_LEGACY_SOURCE_CHECKPOINT_ITERATION = 0
+EXPECTED_V12_LEGACY_PROBE_SHA256 = V12_SOURCE_PIN_PENDING_SHA256
+EXPECTED_V12_BOOTSTRAP_PROVENANCE_SCHEMA_VERSION = 2
 EXPECTED_V12_BOOTSTRAP_MAPPING_VERSION = (
     "normalized_legacy_velocity_63_to_teleop83_reachable_fk_elbow_minus10_v4"
 )
@@ -214,6 +223,21 @@ EXPECTED_V12_RECIPE_REVISION = (
     "forward_lean_home_velocity_source_staged_mask_reachable_fk_elbow_minus10_"
     "raw_prev_action_servo_range_pi_home_levelled_targets_level_hmd_"
     "receiver_box_hands_v17"
+)
+# The forward-lean active-hand arm pose-release recipe (v18 = v17 plus a reward
+# that releases an active hand's arm from the HOME pose term; trained as a
+# fresh chain from the forward-lean walking source).  Observation/action
+# contract, HOME, target frames, hand box, source, probe and runtime semantics
+# are identical to v17; only the training reward differs.  The centered line's
+# strings (..._servo_range_pi_v11 / ..._active_hand_arm_pose_release_v12) were
+# trained at another HOME and are refused.
+EXPECTED_V12_POSE_RELEASE_RECIPE_REVISION = (
+    "forward_lean_home_velocity_source_staged_mask_reachable_fk_elbow_minus10_"
+    "raw_prev_action_servo_range_pi_home_levelled_targets_level_hmd_"
+    "receiver_box_hands_active_hand_arm_pose_release_v18"
+)
+EXPECTED_V12_RECIPE_REVISIONS = frozenset(
+    (EXPECTED_V12_RECIPE_REVISION, EXPECTED_V12_POSE_RELEASE_RECIPE_REVISION)
 )
 # The training HOME the v12 checkpoint is bound to (microban_teleop_v12_home_pose
 # marker, written as v12_home_pose_revision and v12_training_home_pose_json),
@@ -243,31 +267,75 @@ EXPECTED_V12_NORMALIZER_SEMANTICS = (
     "frozen_source63_identity_hmd_flags_reachable_fk_target_scaling_v3"
 )
 EXPECTED_V12_PREVIOUS_ACTION_SEMANTICS = "raw_actor_output"
-EXPECTED_V12_ACTION_CLIP_SEMANTICS = "none"
+# Shared target rule of every policy: target = HOME + raw_action * scale with
+# no software clip, saturated only at the servo's one-turn goal range (+-pi).
+# Training models that as action_clip_lower/upper = -/+pi, which the packager
+# writes at full precision (repr) and step() applies as v12_target_clip.
+EXPECTED_V12_ACTION_TARGET_SEMANTICS = (
+    "default_joint_pos_plus_raw_action_times_scale_saturated_at_action_clip"
+)
+EXPECTED_V12_ACTION_CLIP_SEMANTICS = (
+    "absolute_target_saturated_at_servo_goal_range_pi_no_software_clip_"
+    "all_body_joints_radians"
+)
+# action_clip_lower/upper must be -/+SERVO_TARGET_RANGE_RAD to float noise,
+# the same rule WalkMove and GetupMove apply.  The 3-decimal +-3.142 (wider
+# than the servo range) and any narrower clip (another action rule) are refused.
+V12_ACTION_CLIP_TOLERANCE_RAD = 1.0e-6
 EXPECTED_V12_ACTION_DISTRIBUTION_SEMANTICS = "unbounded_gaussian_deterministic_mean_raw"
 EXPECTED_V12_RUNTIME_ACTION_SEMANTICS = (
-    "raw_unbounded_default_plus_scale_no_target_clip_v1"
+    "raw_default_plus_scale_then_servo_goal_range_saturation_v3"
 )
-# V12 uses the same unbounded finite target as its training action.  The
+# The finite target is saturated at the servo goal range, as in training.  The
 # authenticated raw-action amplitude guard and non-finite check remain active.
 PHYSICAL_MOTOR_TARGET_GUARD_SEMANTICS = (
-    "finite_target_no_software_clip_v1"
+    "finite_target_then_servo_goal_range_saturation_pi_v3"
 )
 EXPECTED_V12_FINAL_CHECKPOINT_ITERATION = 14_999
 EXPECTED_V12_FINAL_COMPLETED_UPDATES = 15_000
 EXPECTED_V12_STAGE_GATE = "microban_teleop_v12_stage"
 EXPECTED_V12_LOCOMOTION_GATE = "microban_teleop_v12_neutral_locomotion_9x300"
 EXPECTED_V12_ONNX_GATE = "microban_teleop_v12_checkpoint_onnx"
-EXPECTED_V12_TRACKING_PROFILE = "full_body_reachable_performance_perturbation_v2"
+# The canonical final profile judges the deployed model's hand/foot accuracy
+# (user-approved 2026-10-04); a gate made under the stricter original profile
+# is also accepted, as the packager does.
+EXPECTED_V12_STRICT_TRACKING_PROFILE = (
+    "full_body_reachable_performance_perturbation_v2"
+)
+EXPECTED_V12_TRACKING_PROFILE = (
+    f"{EXPECTED_V12_STRICT_TRACKING_PROFILE}_deployed_accuracy_v1"
+)
 EXPECTED_V12_DEADLINE_FINAL_TRACKING_PROFILE = (
     "deadline_full_body_hand_rms35mm_p95_70mm_foot_rms50mm_p95_80mm_"
     "perturbation_v2"
 )
-EXPECTED_V12_TRACKING_PROFILES = frozenset(
-    (
-        EXPECTED_V12_TRACKING_PROFILE,
-        EXPECTED_V12_DEADLINE_FINAL_TRACKING_PROFILE,
-    )
+# Final-gate completion allowance (user-approved 2026-10-05), bound to the
+# pose-release lineage only: hand RMS/P95 <= 0.045/0.08 m, foot RMS/P95 <=
+# 0.055/0.11 m; every non-accuracy check (falls, soft limits, finiteness,
+# recurrence, coverage, ablation, HMD, twist) is unchanged.  Its two mixed
+# scenarios are near-fall states in which the deployed-accuracy limits were
+# missed by a few millimetres while every safety check passed.
+EXPECTED_V12_COMPLETION_ALLOWANCE_TRACKING_PROFILE = (
+    f"{EXPECTED_V12_STRICT_TRACKING_PROFILE}_completion_allowance_v1"
+)
+EXPECTED_V12_TRACKING_PROFILES_BY_RECIPE = {
+    EXPECTED_V12_RECIPE_REVISION: frozenset(
+        (
+            EXPECTED_V12_TRACKING_PROFILE,
+            EXPECTED_V12_STRICT_TRACKING_PROFILE,
+            EXPECTED_V12_DEADLINE_FINAL_TRACKING_PROFILE,
+        )
+    ),
+    EXPECTED_V12_POSE_RELEASE_RECIPE_REVISION: frozenset(
+        (
+            EXPECTED_V12_COMPLETION_ALLOWANCE_TRACKING_PROFILE,
+            EXPECTED_V12_TRACKING_PROFILE,
+            EXPECTED_V12_STRICT_TRACKING_PROFILE,
+        )
+    ),
+}
+EXPECTED_V12_TRACKING_PROFILES = frozenset().union(
+    *EXPECTED_V12_TRACKING_PROFILES_BY_RECIPE.values()
 )
 EXPECTED_V12_ACTUAL_DYNAMIC_SOFT_LIMIT_OVERSHOOT_MAX_DEG = 5.0
 EXPECTED_V12_ACTUAL_DYNAMIC_SOFT_LIMIT_OVERSHOOT_MAX_RAD = math.radians(
@@ -286,6 +354,15 @@ EXPECTED_V12_PARITY_SEED = 20260925
 EXPECTED_V12_PARITY_SAMPLE_COUNT = 64
 EXPECTED_V12_PARITY_ATOL = 2.0e-5
 EXPECTED_V12_DEADLINE_FINAL_PARITY_ATOL = 2.5e-5
+# Norm-wise full-83 parity rule of the training ONNX gate: per sample,
+# max|onnx - torch| <= atol + rtol * max|torch| with rtol = 1e-6 (~8 float32
+# ulps).  The output magnitude is capped so the rule cannot hide a real export
+# defect (O(1e-3) and above) behind an absurd scale.
+EXPECTED_V12_ONNX_PARITY_RULE = (
+    "max_abs_error_le_atol_plus_rtol_times_max_abs_expected_per_sample_v1"
+)
+EXPECTED_V12_ONNX_PARITY_RELATIVE_TOLERANCE = 1.0e-6
+V12_ONNX_PARITY_MAX_EXPECTED_OUTPUT = 200.0
 EXPECTED_V12_OBSERVATION_JOINT_NAMES = (
     "head",
     "neck_roll",
@@ -1352,18 +1429,111 @@ def validate_onnxruntime_compatibility(
     return len(observations)
 
 
+# The v12 package carries real actor observations from the final tracking
+# rollouts (the same rollouts its raw-action guard comes from) as the startup
+# self-test corpus.  Synthetic observations with every joint at random angles
+# past its limits and non-unit gravity are not states the guard describes.
+EXPECTED_V12_RUNTIME_SMOKE_CORPUS_SEMANTICS = (
+    "final_tracking_rollout_actor_observations_first_scored_and_last_step_v1"
+)
+V12_RUNTIME_SMOKE_CORPUS_MIN_ROWS = 8
+V12_RUNTIME_SMOKE_CORPUS_MAX_ROWS = 64
+# Physical plausibility of each recorded observation: unit gravity, joint speeds
+# within the XC330 no-load speed at a full 3S pack (12.6 V / kt 1.0425 V*s/rad
+# = 12.09 rad/s), joint angles within the MJCF range (reconstructed from the
+# 0.9 soft limits) plus the overshoot the tracking gate allows.
+V12_RUNTIME_SMOKE_GRAVITY_NORM_TOLERANCE = 0.05
+V12_RUNTIME_SMOKE_MAX_JOINT_SPEED_RAD_S = 12.1
+V12_RUNTIME_SMOKE_JOINT_RANGE_MARGIN_RAD = math.radians(5.0)
+
+
+def _parse_v12_runtime_smoke_corpus(metadata: Mapping[str, str]) -> np.ndarray:
+    """Return the package's recorded self-test corpus as (N, 1, 83) float32."""
+
+    if (
+        metadata.get("v12_runtime_smoke_corpus_semantics")
+        != EXPECTED_V12_RUNTIME_SMOKE_CORPUS_SEMANTICS
+    ):
+        raise PicoHybridPolicyContractError(
+            "contract-v12 runtime self-test corpus semantics are missing or unsupported"
+        )
+    text = metadata.get("v12_runtime_smoke_observations_json")
+    digest = metadata.get("v12_runtime_smoke_observations_sha256")
+    if (
+        not isinstance(text, str)
+        or not isinstance(digest, str)
+        or not _CHECKPOINT_SHA256_RE.fullmatch(digest)
+        or hashlib.sha256(text.encode("utf-8")).hexdigest() != digest
+    ):
+        raise PicoHybridPolicyContractError(
+            "contract-v12 runtime self-test corpus does not match its SHA-256"
+        )
+    try:
+        rows = json.loads(text)
+    except json.JSONDecodeError as exc:
+        raise PicoHybridPolicyContractError(
+            "contract-v12 runtime self-test corpus is not JSON"
+        ) from exc
+    if (
+        not isinstance(rows, list)
+        or not V12_RUNTIME_SMOKE_CORPUS_MIN_ROWS
+        <= len(rows)
+        <= V12_RUNTIME_SMOKE_CORPUS_MAX_ROWS
+        or any(
+            not isinstance(row, list)
+            or len(row) != EXPECTED_OBSERVATION_WIDTH
+            or any(isinstance(value, bool) or not isinstance(value, (int, float)) for value in row)
+            for row in rows
+        )
+    ):
+        raise PicoHybridPolicyContractError(
+            "contract-v12 runtime self-test corpus is malformed"
+        )
+    corpus = np.asarray(rows, dtype=np.float64)
+    if not np.isfinite(corpus).all():
+        raise PicoHybridPolicyContractError(
+            "contract-v12 runtime self-test corpus is non-finite"
+        )
+    gravity_norm = np.linalg.norm(corpus[:, 3:6], axis=1)
+    joint_pos = corpus[:, 6:27]
+    joint_vel = corpus[:, 27:48]
+    soft_lower = np.asarray(EXPECTED_SOFT_JOINT_POS_LOWER)
+    soft_upper = np.asarray(EXPECTED_SOFT_JOINT_POS_UPPER)
+    middle = 0.5 * (soft_lower + soft_upper)
+    half_range = 0.5 * (soft_upper - soft_lower) / 0.9
+    body_angles = joint_pos[:, 3:] + np.asarray(EXPECTED_ACTION_DEFAULT_JOINT_POS)
+    if (
+        bool(np.any(np.abs(gravity_norm - 1.0) > V12_RUNTIME_SMOKE_GRAVITY_NORM_TOLERANCE))
+        or bool(np.any(np.abs(joint_vel) > V12_RUNTIME_SMOKE_MAX_JOINT_SPEED_RAD_S))
+        or bool(
+            np.any(
+                np.abs(body_angles - middle)
+                > half_range + V12_RUNTIME_SMOKE_JOINT_RANGE_MARGIN_RAD
+            )
+        )
+    ):
+        raise PicoHybridPolicyContractError(
+            "contract-v12 runtime self-test corpus contains a physically "
+            "impossible observation"
+        )
+    return corpus.astype(np.float32).reshape(-1, 1, EXPECTED_OBSERVATION_WIDTH)
+
+
 def validate_v12_onnxruntime_compatibility(
     session: Any,
     input_name: str,
     raw_action_absolute_maximum: Sequence[float],
+    observations: np.ndarray,
 ) -> int:
     """Exercise a raw/unbounded v12 graph under its evidence-derived guard.
 
     The legacy actor was trained with an unbounded Gaussian mean and its proven
     closed-loop contract sends that raw value directly to the joint-position
     action term.  This gate does not reuse v10's bounded transform or modify an
-    output.  It checks numeric type, fixed shape, float32 finiteness and the
-    final tracking evidence's gross finite-amplitude envelope.
+    output.  It runs the package's recorded tracking observations
+    (``_parse_v12_runtime_smoke_corpus``) and checks numeric type, fixed shape,
+    float32 finiteness and the final tracking evidence's gross
+    finite-amplitude envelope.
     """
 
     guard = np.asarray(raw_action_absolute_maximum, dtype=np.float64)
@@ -1375,7 +1545,18 @@ def validate_v12_onnxruntime_compatibility(
         raise PicoHybridPolicyContractError(
             "contract-v12 runtime raw-action guard is malformed"
         )
-    observations = onnxruntime_compatibility_smoke_inputs()
+    observations = np.asarray(observations, dtype=np.float32)
+    if (
+        observations.ndim != 3
+        or observations.shape[1:] != (1, EXPECTED_OBSERVATION_WIDTH)
+        or not V12_RUNTIME_SMOKE_CORPUS_MIN_ROWS
+        <= observations.shape[0]
+        <= V12_RUNTIME_SMOKE_CORPUS_MAX_ROWS
+        or not np.isfinite(observations).all()
+    ):
+        raise PicoHybridPolicyContractError(
+            "contract-v12 runtime self-test corpus is malformed"
+        )
     for sample_index, observation in enumerate(observations):
         try:
             outputs = session.run(None, {input_name: observation})
@@ -1576,10 +1757,12 @@ class _PolicyContract:
     v12_learned_source_delta_maximum: tuple[float, ...] = ()
     v12_learned_source_delta_absolute_maximum: tuple[float, ...] = ()
     v12_runtime_raw_action_guard_absolute_maximum: tuple[float, ...] = ()
+    # Recorded final-tracking observations for the startup self-test.
+    v12_runtime_smoke_observations: tuple[tuple[float, ...], ...] = ()
     # Absolute target bound: target = clip(default + raw * scale, lower,
-    # upper).  No software clip by default -- only the servo's one-turn goal
-    # range +-SERVO_TARGET_RANGE_RAD (+-pi).  action_clip_lower/upper metadata,
-    # when present, may narrow it but never widen it past +-pi.
+    # upper).  No software clip -- only the servo's one-turn goal range
+    # +-SERVO_TARGET_RANGE_RAD (+-pi), which action_clip_lower/upper metadata
+    # must state at full precision.
     v12_target_clip_lower: tuple[float, ...] = ()
     v12_target_clip_upper: tuple[float, ...] = ()
 
@@ -2012,6 +2195,40 @@ def _require_exact_metadata(
     return actual
 
 
+def _v12_full83_parity_cap(metadata: Mapping[str, str], parity_atol: float) -> float:
+    """Absolute cap on the 64-sample full-83 ONNX parity errors.
+
+    A package without ``v12_onnx_parity_rule`` keeps the plain ``atol`` cap.
+    The norm-wise rule bounds each sample by ``atol + rtol * max|expected|``
+    (the random corpus drives raw actions to tens of radians, so float32
+    accumulation differences scale with the output); the cap is then the one
+    the training stage validator applies, and both gate bound ratios must be
+    at most 1.
+    """
+
+    rule = metadata.get("v12_onnx_parity_rule")
+    if rule is None:
+        return parity_atol
+    if rule != EXPECTED_V12_ONNX_PARITY_RULE:
+        raise PicoHybridPolicyContractError("unsupported v12 ONNX parity rule")
+    relative_tolerance = _require_exact_finite_scalar(
+        metadata,
+        "v12_onnx_parity_relative_tolerance",
+        EXPECTED_V12_ONNX_PARITY_RELATIVE_TOLERANCE,
+    )
+    magnitude = _require_v12_bounded_metric(
+        metadata,
+        "v12_onnx_parity_max_abs_expected_output",
+        upper=V12_ONNX_PARITY_MAX_EXPECTED_OUTPUT,
+    )
+    for name in (
+        "v12_onnx_reference_max_bound_ratio",
+        "v12_onnxruntime_cpu_max_bound_ratio",
+    ):
+        _require_v12_bounded_metric(metadata, name, upper=1.0)
+    return parity_atol + relative_tolerance * magnitude
+
+
 def _require_v12_bounded_metric(
     metadata: Mapping[str, str], name: str, *, lower: float = 0.0, upper: float
 ) -> float:
@@ -2185,11 +2402,12 @@ def _parse_v12_contract(session: Any) -> _PolicyContract:
         "microban_teleop_training_contract_version",
         EXPECTED_V12_TRAINING_CONTRACT_VERSION,
     )
-    _require_exact_metadata(
-        metadata,
-        "microban_teleop_recipe_revision",
-        EXPECTED_V12_RECIPE_REVISION,
-    )
+    recipe_revision = metadata.get("microban_teleop_recipe_revision")
+    if recipe_revision not in EXPECTED_V12_RECIPE_REVISIONS:
+        raise PicoHybridPolicyContractError(
+            "microban_teleop_recipe_revision does not match the contract-v12 "
+            "deployment contract"
+        )
     _require_v12_home_pose(metadata)
     _require_exact_metadata(
         metadata,
@@ -2257,7 +2475,8 @@ def _parse_v12_contract(session: Any) -> _PolicyContract:
     tracking_profile = metadata.get("v12_tracking_profile")
     if (
         not isinstance(tracking_profile, str)
-        or tracking_profile not in EXPECTED_V12_TRACKING_PROFILES
+        or tracking_profile
+        not in EXPECTED_V12_TRACKING_PROFILES_BY_RECIPE[recipe_revision]
     ):
         raise PicoHybridPolicyContractError(
             "v12_tracking_profile is not an accepted final profile"
@@ -2432,12 +2651,16 @@ def _parse_v12_contract(session: Any) -> _PolicyContract:
         else EXPECTED_V12_PARITY_ATOL
     )
     _require_exact_finite_scalar(metadata, "v12_onnx_parity_atol", parity_atol)
+    full83_parity_cap = _v12_full83_parity_cap(metadata, parity_atol)
     for name in (
         "v12_onnx_reference_max_abs_error",
         "v12_onnxruntime_cpu_max_abs_error",
-        "v12_neutral_legacy_parity_max_abs_error",
     ):
-        _require_v12_bounded_metric(metadata, name, upper=parity_atol)
+        _require_v12_bounded_metric(metadata, name, upper=full83_parity_cap)
+    # The 10,000-sample zero-extra legacy parity stays a pure absolute bound.
+    _require_v12_bounded_metric(
+        metadata, "v12_neutral_legacy_parity_max_abs_error", upper=parity_atol
+    )
     if (
         _canonical_nonnegative_int(
             metadata.get("v12_neutral_legacy_parity_sample_count"),
@@ -2487,6 +2710,10 @@ def _parse_v12_contract(session: Any) -> _PolicyContract:
         v12_learned_source_delta_absolute_maximum,
         v12_runtime_raw_action_guard_absolute_maximum,
     ) = _parse_v12_raw_action_envelope(metadata, action_joints)
+    v12_runtime_smoke_observations = tuple(
+        tuple(float(value) for value in row[0])
+        for row in _parse_v12_runtime_smoke_corpus(metadata)
+    )
 
     if metadata.get("base_ang_vel_frame") != "imu_sensor_xyz":
         raise PicoHybridPolicyContractError("base_ang_vel_frame must be imu_sensor_xyz")
@@ -2517,7 +2744,7 @@ def _parse_v12_contract(session: Any) -> _PolicyContract:
     _require_exact_metadata(
         metadata,
         "action_target_semantics",
-        "default_joint_pos_plus_raw_action_times_scale",
+        EXPECTED_V12_ACTION_TARGET_SEMANTICS,
     )
     _require_exact_metadata(
         metadata, "action_clip_semantics", EXPECTED_V12_ACTION_CLIP_SEMANTICS
@@ -2567,7 +2794,7 @@ def _parse_v12_contract(session: Any) -> _PolicyContract:
     )
 
     # The current v12 deployment exporter does not serialize soft limits because
-    # its actor semantics intentionally have no environment target clip.  Older
+    # its only target bound is the servo range above, not a soft limit.  Older
     # base graphs and future exporters may nevertheless carry both vectors.  If
     # present, authenticate them against the same compiled contract as v10;
     # otherwise the constructor validates the compiled fallback before inference.
@@ -2726,6 +2953,7 @@ def _parse_v12_contract(session: Any) -> _PolicyContract:
         v12_runtime_raw_action_guard_absolute_maximum=(
             v12_runtime_raw_action_guard_absolute_maximum
         ),
+        v12_runtime_smoke_observations=v12_runtime_smoke_observations,
         v12_target_clip_lower=target_clip_lower,
         v12_target_clip_upper=target_clip_upper,
     )
@@ -2764,33 +2992,33 @@ def _require_v12_home_pose(metadata: Mapping[str, str]) -> None:
 def _parse_v12_target_clip(
     metadata: Mapping[str, str], count: int
 ) -> tuple[tuple[float, ...], tuple[float, ...]]:
-    """Return the absolute target bound: the servo range, narrowed only by metadata."""
+    """Return the absolute target bound, which must be the servo range +-pi.
+
+    The packager writes action_clip_lower/upper at full precision.  A missing,
+    one-sided, rounded (+-3.142 is wider than pi), narrower or wider clip is a
+    different action rule from training and is refused.
+    """
 
     keys = ("action_clip_lower", "action_clip_upper")
-    present = [key in metadata for key in keys]
-    if not any(present):
-        return (
-            (-SERVO_TARGET_RANGE_RAD,) * count,
-            (SERVO_TARGET_RANGE_RAD,) * count,
-        )
-    if not all(present):
+    if not all(key in metadata for key in keys):
         raise PicoHybridPolicyContractError(
-            "action_clip_lower and action_clip_upper must be supplied together"
+            "action_clip_lower and action_clip_upper are required"
         )
     lower = _float_csv(metadata.get(keys[0]), keys[0], count)
     upper = _float_csv(metadata.get(keys[1]), keys[1], count)
-    # mjlab's exporter writes 3-decimal CSVs, so +-pi arrives as +-3.142.
-    limit = SERVO_TARGET_RANGE_RAD + SERIALIZED_CLIP_TOLERANCE_RAD
     for lo, hi in zip(lower, upper, strict=True):
-        if not -limit <= lo < hi <= limit:
+        if (
+            abs(lo + SERVO_TARGET_RANGE_RAD) > V12_ACTION_CLIP_TOLERANCE_RAD
+            or abs(hi - SERVO_TARGET_RANGE_RAD) > V12_ACTION_CLIP_TOLERANCE_RAD
+        ):
             raise PicoHybridPolicyContractError(
-                "action_clip_lower/upper must lie within the servo range "
-                f"+-{SERVO_TARGET_RANGE_RAD!r} rad"
+                "action_clip_lower/upper must be the servo range "
+                f"+-{SERVO_TARGET_RANGE_RAD!r} rad at full precision"
             )
-    # The rounded +-3.142 never widens a target past the exact servo range.
+    # Apply the robot's exact +-pi rather than the parsed copy.
     return (
-        tuple(max(-SERVO_TARGET_RANGE_RAD, lo) for lo in lower),
-        tuple(min(SERVO_TARGET_RANGE_RAD, hi) for hi in upper),
+        (-SERVO_TARGET_RANGE_RAD,) * count,
+        (SERVO_TARGET_RANGE_RAD,) * count,
     )
 
 
@@ -2823,8 +3051,7 @@ def _validate_physical_motor_target_contract(contract: _PolicyContract) -> None:
     """Validate the calibrated joint geometry before inference begins.
 
     V10 still uses the software soft limits. V12 bounds its policy target
-    only by the servo range +-SERVO_TARGET_RANGE_RAD (or a narrower metadata
-    clip) in step().
+    only by the servo range +-SERVO_TARGET_RANGE_RAD in step().
     """
 
     vectors = {
@@ -2939,6 +3166,10 @@ class PicoHybridMove(Move):
                     self._session,
                     self._contract.input_name,
                     self._contract.v12_runtime_raw_action_guard_absolute_maximum,
+                    np.asarray(
+                        self._contract.v12_runtime_smoke_observations,
+                        dtype=np.float32,
+                    ).reshape(-1, 1, EXPECTED_OBSERVATION_WIDTH),
                 )
             )
             # Rehash after ONNX Runtime execution so an rsync/atomic replacement

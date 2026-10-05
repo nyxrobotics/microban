@@ -9,13 +9,14 @@
 >
 > - Walking: `walk_contract_version=v4_forward_lean_home_servo_range`, and the
 >   exporter's `home_pose` JSON (joints, root position and quaternion) must be
->   the robot's HOME. The centered-HOME v3 `walk.onnx` still installed is
->   refused, so the runtime does not start until a v4 actor is installed.
+>   the robot's HOME. No `walk.onnx` is installed on this branch (the
+>   centered-HOME v3 actor was removed, see `src/agents/README.md`), so walking,
+>   GC300 and the PICO walk fallback fail closed until a v4 actor is installed.
 > - Get-up: `microban_getup_contract=v6` with
 >   `microban_getup_checkpoint_contract_stamp=v6` and a matching
->   `microban_getup_home_pose`. The installed v5 `getup.onnx` is disabled (falls
->   return slowly toward neutral) until a v6 actor is installed.
-> - PICO v12: `microban_teleop_recipe_revision` is the v13 forward-lean recipe,
+>   `microban_getup_home_pose`. The installed `getup.onnx` is the forward-lean
+>   v6 actor (sha256 `ce6cdc04...`).
+> - PICO v12: see [Forward-lean package contract](#forward-lean-package-contract-2026-10-05);
 >   `v12_home_pose_revision` is
 >   `forward_lean10_hip_minus14p166561199931_ankle_plus4p127976841869_shoulder_zero_v6`,
 >   `v12_training_home_pose_json` must equal the robot's HOME exactly, and
@@ -29,12 +30,7 @@
 >   (Z <= 2.5 mm) assumes; the twist is already scored in it in training. The
 >   runtime does not rotate the targets. A package labelled
 >   `robot_trunk_xyz_forward_left_up` (targets in the leaning trunk frame) is
->   refused: there a 40 mm vertical foot lift would land 7 mm forward. The
->   training exporter must change accordingly before a forward-lean v12
->   package can be deployed. The other v12 pins (legacy source checkpoint and
->   probe SHA-256, action/target semantics strings, tracking profiles) still
->   describe the archived legacy chain and must be updated with the first
->   forward-lean v12 release.
+>   refused: there a 40 mm vertical foot lift would land 7 mm forward.
 > - Postures: the get-up hand-back settle gate (12 deg for 10 ticks) and the
 >   stand debounce (25.8 deg, i.e. the old `gz < -0.9` radius) measure the angle
 >   between the measured projected gravity and HOME's. Fall detection stays
@@ -57,16 +53,126 @@
 > servo's one-turn goal range (`SERVO_TARGET_RANGE_RAD`), and `RobotController`
 > saturates every servo goal into `[-pi, pi - 2*pi/4096]` (raw 0..4095).
 > `PICO_TELEOP_HOME_POSE` is now `NEUTRAL_POSE`, and the v12 step bounds its
-> target by `action_clip_lower/upper` metadata when present (it may narrow the
-> range, never widen it past +-pi; the 3-decimal +-3.142 counts as +-pi), else
-> +-pi. The earlier +-1.57 rad clip of the same day is gone. The
-> currently installed `pico_teleop.onnx` (trained at the older HOME) is rejected
-> until it is retrained and re-exported with a new contract. Statements below
-> that v12 targets are unclipped, or that the PICO HOME differs from
-> `NEUTRAL_POSE`, describe the pre-unification runtime. Per-robot calibration
+> target by the exact +-pi. The package must state that bound as
+> `action_clip_lower/upper` = 18 x `-3.141592653589793` / `3.141592653589793`
+> (full precision, within 1e-6, the same rule as `walk.onnx` and `getup.onnx`);
+> a missing, narrower, wider or 3-decimal (+-3.142) clip is refused. The
+> earlier +-1.57 rad clip of the same day is gone. The currently installed
+> `pico_teleop.onnx` (trained at the older HOME) is rejected until the
+> centered-HOME chain's package replaces it; see
+> [Centered-HOME package contract](#centered-home-package-contract-2026-10-04).
+> Statements below that v12 targets are unclipped, or that the PICO HOME
+> differs from `NEUTRAL_POSE`, describe the pre-unification runtime. Per-robot calibration
 > trims (`HARDWARE_JOINT_OFFSET_DEG`, all 0 by default) are added only at the
 > real servo boundary and never change these logical targets or observations;
 > see [Real-robot joint offsets](usage.md#real-robot-joint-offsets).
+
+## Forward-lean package contract (2026-10-05)
+
+This branch (`forward-lean-home`) merged the centered line's runtime
+(`feature/neck-roll-pitch-camera` up to `a62a793`): the recorded-corpus startup
+self-test, the recipe-specific final profiles with the pose-release completion
+allowance, and the training gate's norm-wise ONNX parity rule all apply
+unchanged. The values pinned in `src/moves/pico_hybrid.py` are the
+forward-lean ones:
+
+| Metadata key | Required value |
+| --- | --- |
+| `microban_teleop_recipe_revision` | `forward_lean_home_velocity_source_staged_mask_reachable_fk_elbow_minus10_raw_prev_action_servo_range_pi_home_levelled_targets_level_hmd_receiver_box_hands_v17`, or the forward-lean pose-release recipe `forward_lean_home_velocity_source_staged_mask_reachable_fk_elbow_minus10_raw_prev_action_servo_range_pi_home_levelled_targets_level_hmd_receiver_box_hands_active_hand_arm_pose_release_v18` (a fresh pose-release chain in mjlab_microban `forward-lean-v2`; only the training reward differs) |
+| `v12_tracking_profile` | v17: `..._deployed_accuracy_v1`, the strict `full_body_reachable_performance_perturbation_v2`, or the lineage-bound deadline-final profile. v18 pose-release: `full_body_reachable_performance_perturbation_v2_completion_allowance_v1`, or the deployed-accuracy or strict profile |
+| `v12_home_pose_revision` | `forward_lean10_hip_minus14p166561199931_ankle_plus4p127976841869_shoulder_zero_v6`; `v12_training_home_pose_json` must equal the robot's HOME marker exactly |
+| `v12_deployment_packager_revision` | `microban_teleop_v12_final_deployment_packager_v7_forward_lean_home_servo_range` |
+| `foot_target_frame` / `hand_target_frame` | `robot_home_levelled_trunk_xyz_forward_left_up` |
+| `hand_target_fk` | hand FK v4 (`..._home_levelled_lean10_receiver_box64mm_v4`, normalizer 64.0 / 38.8 / 45.8 mm) |
+| `v12_bootstrap_provenance_schema_version` | `2` |
+| `v12_legacy_source_checkpoint_sha256`, `..._iteration`, `v12_legacy_probe_sha256` | **pending**: unmatchable placeholders (`"0" * 64`, `0`) until the forward-lean walking source is chosen; every v12 package fails closed here until then |
+
+Action/target semantics, clip, raw-action guard and the corpus self-test are
+the same as in the centered table below. `src/agents/walk.onnx` and
+`src/agents/pico_teleop.onnx` are not installed on this branch, and the walk
+fallback pin in `tools/validate_pico_policy.py`
+(`EXPECTED_WALK_FALLBACK_SHA256`) is an unmatchable placeholder: install the
+lean `walk.onnx`, pin its SHA-256 there and pin its source checkpoint/probe in
+`pico_hybrid.py` before packaging the lean PICO policy against this repository
+(the package's runtime identity hashes the installed `walk.onnx`).
+
+## Centered-HOME package contract (2026-10-04, centered line reference)
+
+The values in this section and in "Installed package (2026-10-05)" below
+describe the centered line (`feature/neck-roll-pitch-camera`); this branch
+refuses them. The centered robot accepts only a v12 package from the centered-HOME chain in
+`mjlab_microban` (branch `track-centered-home-clip`, packager
+`microban_teleop_v12_final_deployment_packager_v6_centered_home_servo_range`).
+`src/moves/pico_hybrid.py` pins these metadata values exactly:
+
+| Metadata key | Required value |
+| --- | --- |
+| `microban_teleop_recipe_revision` | `centered_home_velocity_source_staged_mask_reachable_fk_elbow_minus10_raw_prev_action_servo_range_pi_v11`, or the pose-release recipe `centered_home_velocity_source_staged_mask_reachable_fk_elbow_minus10_raw_prev_action_servo_range_pi_active_hand_arm_pose_release_v12` (same observation/action contract, HOME, source, probe and runtime semantics; only the training reward differs) |
+| `v12_bootstrap_provenance_schema_version` | `2` |
+| `v12_legacy_source_checkpoint_sha256` | `f395d04c324b6eca339e40a20c64b21b5a22e944c99f7b590235e355b429b565` (`checkpoints/centered_home_velocity_cont/model_20000.pt`, the source of the installed `walk.onnx`) |
+| `v12_legacy_source_checkpoint_iteration` | `20000` (the checkpoint's saved `iter`) |
+| `v12_legacy_probe_sha256` | `ac47d437639bb43176f3dddb24ca8bc8bdad425d63e95c8176e615ef1573a25a` (`artifacts/legacy_teleop_probe/velocity_f395d04c324b6eca_teleop83_raw_9x300.json`; 9 x 300 steps, settle 50, seed 42) |
+| `v12_home_pose_revision` | `centered_home_hip_plus1p198384259489_ankle_minus1p198384259489_shoulder_zero_v5` |
+| `v12_training_home_pose_json` | schema 2, that revision, the 21 observation joints at `NEUTRAL_POSE` and root z `HOME_ROOT_POS_Z_M`, upright, each within 1e-9 |
+| `v12_tracking_profile` | v11 recipe: `full_body_reachable_performance_perturbation_v2_deployed_accuracy_v1` (canonical; deployed-model accuracy limits, user-approved), or the stricter `full_body_reachable_performance_perturbation_v2`, or the lineage-bound deadline-final profile. Pose-release recipe: `full_body_reachable_performance_perturbation_v2_completion_allowance_v1` (final-gate completion allowance, see below), or the deployed-accuracy or strict profile |
+| `previous_action_semantics` | `raw_actor_output` |
+| `action_target_semantics` | `default_joint_pos_plus_raw_action_times_scale_saturated_at_action_clip` |
+| `action_clip_semantics` | `absolute_target_saturated_at_servo_goal_range_pi_no_software_clip_all_body_joints_radians` |
+| `action_clip_lower` / `action_clip_upper` | 18 x `-3.141592653589793` / `3.141592653589793` |
+| `runtime_action_semantics` | `raw_default_plus_scale_then_servo_goal_range_saturation_v3` |
+| `physical_motor_target_guard_semantics` | `finite_target_then_servo_goal_range_saturation_pi_v3` |
+
+The source's normalizer count is recorded and re-hashed by the training chain
+but is not part of the wire contract. A chain bootstrapped with the corrected
+bilateral site order writes
+`v12_lr_order_migration_revision=none_corrected_site_order_from_bootstrap_v1`,
+which the robot does not need to check. Everything else in the admission list
+below (final `model_14999.pt` at 15,000 updates, gate schema 2, 63-to-83 map,
+topology, normalizer, parity, raw-action envelope and guard, command contract,
+13 runtime source hashes) is unchanged.
+
+The step applies `target = clip(NEUTRAL_POSE + raw, -pi, +pi)` on all 18 body
+joints and feeds back the raw output; `RobotController` then saturates each
+servo goal into `[-pi, pi - 2*pi/4096]`. The archived old-HOME chain (source
+`b0bcdada...`, iteration 14999, probe `f51378d5...`, recipe
+`..._raw_actions_v5`, provenance schema 1, `action_clip_semantics=none`) is
+refused.
+
+### Pose-release recipe and final-gate completion allowance (2026-10-05)
+
+The active-hand arm pose-release lineage (trained, or switched from the v11
+chain at `model_7099`, with a reward that releases the free arm's pose while a
+hand target is active) declares its own recipe string; everything else the robot
+pins is identical to v11.  Its 15000-update gate runs under the
+user-approved completion allowance, which loosens only the accuracy limits:
+
+| | RMS | P95 |
+| --- | --- | --- |
+| hand | <= 0.045 m (deployed-accuracy 0.035) | <= 0.08 m (0.07) |
+| foot | <= 0.055 m (0.05) | <= 0.11 m (0.08) |
+
+Scenarios, perturbation, ablation targets and every non-accuracy check (no
+falls, actual soft limits, finiteness, raw-action recurrence, coverage,
+target-column ablation, forced HMD motion, twist response) are unchanged.
+Reason: the deployed-accuracy gate failed only on accuracy, in the two mixed
+scenarios (near-fall states for this and the previous canonical model) and
+by 2 mm in `max_keypoints_left` foot RMS, while all safety checks passed.
+The robot accepts the allowance only together with the pose-release recipe.
+
+### Installed package (2026-10-05, centered line only)
+
+On `feature/neck-roll-pitch-camera`, `src/agents/pico_teleop.onnx` sha256
+`ce343503937154b02f27e88c2889f6fc379b924c840bfb0af46ffa0e0e371488`, packaged
+from `mjlab_microban` run
+`2026-10-05_03-31-01_c20k_v12_pr_10100_to15000/model_14999.pt` (checkpoint
+sha256 `795dbd43b12f4a2d8e3facad954c6f7e1094301243f2ed17ea7995f17e7306ec`,
+pose-release recipe, gate
+`full_body_reachable_performance_perturbation_v2_completion_allowance_v1`,
+gate sha256 `b6c24d04d8452a058f656fbf010ee9c1c3c1e10e787ae4d54759d2947e3e5363`).
+Receipt:
+`artifacts/teleop_v12_releases/2026-10-05_03-31-01_c20k_v12_pr_10100_to15000_model_14999_deployment_receipt.json`
+in the training repository. `tools/validate_pico_policy.py` passes (CPU smoke,
+walk fallback `c9cdd852...`).
 
 ## Live checkpoint: 2026-09-27
 
@@ -135,7 +241,8 @@ Contract v12 is intentionally different from contract v10:
   reconstruction is applied to the policy state;
 - the exact float32 raw output becomes observation columns `48:66` on the next
   tick;
-- each finite derived absolute target passes to `MotorCommand` without a
+- each finite derived absolute target is saturated at the servo goal range
+  +-pi (the training action clip) and passes to `MotorCommand` without a
   software soft-limit clip, matching the training action.
 
 The runtime validates all 18 values and derived targets for finiteness before
@@ -148,7 +255,8 @@ goals; the old walk actor is not started.
 
 The v10 exporter supplies soft-limit metadata and the existing parser requires
 it to match the robot constants. The current v12 exporter does not supply those
-fields because its learned action contract is `action_clip_semantics=none`. If a
+fields because its only target bound is the servo range (`action_clip_semantics=
+absolute_target_saturated_at_servo_goal_range_pi_no_software_clip_all_body_joints_radians`). If a
 v12 artifact does contain both soft-limit vectors, the parser requires the same
 exact match; if neither is present, the robot uses its compiled vectors to
 validate the default and neutral geometry. In both cases construction fails
@@ -249,12 +357,14 @@ physical parser accepts only `model_14999.pt` at 15,000 completed updates, with
 
 The ONNX metadata must bind the final checkpoint to all of the following:
 
-- the pinned legacy velocity checkpoint SHA-256 and iteration;
-- the pinned raw-action 9-by-300 probe SHA-256;
+- the pinned centered-HOME velocity checkpoint SHA-256 and iteration
+  (`f395d04c...`, 20000) under bootstrap provenance schema 2;
+- the pinned raw-action 9-by-300 probe SHA-256 (`ac47d437...`);
+- the training HOME marker (revision and full-precision pose = `NEUTRAL_POSE`);
 - the exact 63-to-83 semantic column map, 20 teleop-only columns, actor
   topology, frozen normalizer and frozen legacy-tensor contract;
 - recipe
-  `legacy_velocity_model14999_staged_mask_reachable_fk_elbow_minus10_raw_actions_v5`
+  `centered_home_velocity_source_staged_mask_reachable_fk_elbow_minus10_raw_prev_action_servo_range_pi_v11`
   and gradient
   schedule `freeze_extra_to7000_then_hmd_hand_to10000_then_all_v1`; the retired
   pre-FK recipes are never accepted by the robot;
@@ -264,20 +374,31 @@ The ONNX metadata must bind the final checkpoint to all of the following:
   JSON contract (joint box, HOME, reachable AABB, scale, wire/runtime limits and
   named evaluator points);
 - the final nine-scenario locomotion report and schema-v2 stage-gate identities;
-  the tracking profile must be either canonical
-  `full_body_reachable_performance_perturbation_v2` or the explicitly
+  the tracking profile must be canonical
+  `full_body_reachable_performance_perturbation_v2_deployed_accuracy_v1`, the
+  stricter `full_body_reachable_performance_perturbation_v2`, or the explicitly
   lineage-bound deadline-final profile
   `deadline_full_body_hand_rms35mm_p95_70mm_foot_rms50mm_p95_80mm_perturbation_v2`;
-  every other
-  profile is rejected;
+  a pose-release package may instead carry the completion-allowance profile
+  `full_body_reachable_performance_perturbation_v2_completion_allowance_v1`
+  (or the deployed-accuracy/strict profile, never the deadline one); every
+  other profile, and the completion allowance on a v11 package, is rejected;
 - the tracking report's exact 18-joint v12, pinned-source and learned-minus-
   source raw-action extrema, plus the versioned runtime guard derived from
   those hash-bound values;
 - a 64-sample full-83-column PyTorch/ONNX parity check (the 20 new columns must
   not be zeroed), plus the independent 10,000-sample zero-extra legacy parity;
+  a package that declares `v12_onnx_parity_rule =
+  max_abs_error_le_atol_plus_rtol_times_max_abs_expected_per_sample_v1` (the
+  training ONNX gate's norm-wise rule) caps the full-83 errors at
+  `atol + 1e-6 * v12_onnx_parity_max_abs_expected_output` (magnitude at most
+  200) and requires both gate bound ratios to be at most 1, as the training
+  stage validator does; the legacy parity stays a plain `atol` bound, and a
+  package without the rule keeps the plain `atol` cap;
 - the exact observation term order, 21 observation joints, 18 action joints,
   defaults, scale, frames, units, body-target limits, raw previous-action and
-  no-clip semantics.
+  servo-range (+-pi) target saturation semantics with the full-precision
+  `action_clip_lower/upper`.
 
 `tools/validate_pico_policy.py` performs this parser check and a fixed 16-input
 ONNX Runtime CPU smoke without opening motor or network interfaces. The same
@@ -291,8 +412,15 @@ PYTHONPATH=src uv run --locked python tools/validate_pico_policy.py \
   /path/to/final-pico-teleop-v12.onnx
 ```
 
-For v12, the learned-policy load smoke checks the fixed output shape, float32
-finiteness and the authenticated finite-amplitude guard on every fixed sample.
+For v12, the learned-policy load smoke runs the package's recorded corpus
+(`v12_runtime_smoke_observations_json`: 8-64 real actor observations from the
+final tracking rollouts, the same rollouts the guard comes from, bound by
+`v12_runtime_smoke_observations_sha256`). The runtime refuses a corpus with
+non-unit gravity, a joint speed above 12.1 rad/s (XC330 no-load speed at a full
+3S pack) or a joint angle outside its MJCF range by more than 5 deg. It checks the
+fixed output shape, float32 finiteness and the authenticated finite-amplitude
+guard on every sample. (The former synthetic corpus put every joint at random
+angles up to +-pi past its limits, states the guard does not describe.)
 The validator reports that guard and an explicit `walk_fallback` record containing
 the pinned old actor's path, digest, tensor contract, providers and smoke result.
 This is an artifact-admission check; production fallback holds body goals.
@@ -351,7 +479,7 @@ runtime_raw_action_guard_formula=max(v12_absmax,source_absmax+delta_absmax)*mult
 runtime_raw_action_guard_multiplier=6.0
 runtime_raw_action_guard_absmax_json
 runtime_raw_action_guard_semantics=finite_float32_then_per_joint_absmax_else_hold_previous_targets_v1
-physical_motor_target_guard_semantics=finite_target_no_software_clip_v1
+physical_motor_target_guard_semantics=finite_target_then_servo_goal_range_saturation_pi_v3
 ```
 
 `v12_tracking_report_sha256` binds the evidence source, and
@@ -399,23 +527,32 @@ the sidecar stage gate exists. Attaching metadata changes the ONNX file digest,
 so the packager must then rerun ONNX checker, the full-83-column parity check,
 and the deployment runtime validator on the final file before atomic install.
 
-The adjacent `mjlab_microban_v8j` repository now provides that exact final-only
-path. After the run has reached 15,000 completed updates and its current stage
-gate passes, use:
+The adjacent `mjlab_microban_track` repository (branch
+`track-centered-home-clip`) provides that exact final-only path. After the run
+has reached 15,000 completed updates, `scripts/finalize_microban_teleop_v12.sh
+<run-name>` runs the final stage gate, packages a run-specific ONNX under
+`artifacts/teleop_v12_releases/` and writes a hash-bound deployment receipt.
+Its wrapper validates against the sibling `../microban` checkout; to validate
+against another checkout (for example `microban_unify`), run the packager
+module directly with `--microban-repo`:
 
 ```bash
-cd ../mjlab_microban_v8j
-scripts/evaluate_microban_teleop_v12_stage.sh <run-name> 14999
-scripts/export_microban_teleop_v12_deployment.sh \
-  <run-name> ../microban/src/agents/pico_teleop.onnx --force
+cd ../mjlab_microban_track
+CUDA_VISIBLE_DEVICES="" uv run --locked --with onnxruntime --with 'protobuf<7' \
+  python -m mjlab_microban.scripts.export_teleop_v12_deployment \
+  --checkpoint logs/rsl_rl/mjlab_microban_teleop_v12/<run-dir>/model_14999.pt \
+  --stage-gate artifacts/teleop_v12_gates/<run-dir>_model_14999_gate.json \
+  --microban-repo ../microban_unify \
+  --output artifacts/teleop_v12_releases/<run-dir>_model_14999.onnx
 ```
 
-The publisher accepts no intermediate or diagnostic mode. It runs this
-repository's `tools/validate_pico_policy.py` with `CPUExecutionProvider` against
-the complete temporary artifact and the pinned repository fallback, then
-atomically replaces `pico_teleop.onnx` only after both parser/runtime smokes
-pass. A failed export or validator keeps the previously installed policy
-unchanged.
+The packager accepts no intermediate or diagnostic mode. It runs the given
+repository's `tools/validate_pico_policy.py` with `CPUExecutionProvider`
+against the complete temporary artifact and the pinned repository fallback,
+and publishes the ONNX only after both parser/runtime smokes pass. It embeds
+the SHA-256 of 13 runtime files, so install the result as
+`src/agents/pico_teleop.onnx` in a checkout whose 13 files are byte-identical
+(that file is not one of them), and re-run the validator there.
 
 ## Workstation and Raspberry Pi preflight
 
@@ -488,8 +625,6 @@ If either validator fails, do not bypass it. Removing or withholding
 the same left-trigger control. The pinned `walk.onnx` is still an artifact
 dependency of this validator, so an absent or altered copy fails deployment
 preflight even though the production fallback does not execute it. The current
-get-up artifact is the v4 HOME-stance policy (`src/agents/getup.onnx`, +-1.57
-rad clip); the runtime now accepts only contract v5 (+-pi servo-range clip), so
-that artifact is disabled (falls return toward neutral) until a v5 get-up policy
-is installed. See `docs/pico_teleop_resilience.md` for automatic get-up and
+get-up artifact is the centered-HOME contract-v5 policy
+(`src/agents/getup.onnx`, +-pi servo-range clip). See `docs/pico_teleop_resilience.md` for automatic get-up and
 standing balance.

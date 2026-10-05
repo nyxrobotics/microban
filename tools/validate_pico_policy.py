@@ -36,9 +36,11 @@ __all__ = [
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 WALK_FALLBACK_POLICY = REPOSITORY_ROOT / "src" / "agents" / "walk.onnx"
-EXPECTED_WALK_FALLBACK_SHA256 = (
-    "c9cdd8527704046d5c8058fc63fc3ef148716d659509666d0dc844b64c18fa40"
-)
+# forward-lean-home: no walk.onnx is installed yet (src/agents/README.md).
+# Pin the lean walk.onnx's SHA-256 here when it is installed; until then this
+# unmatchable placeholder (and the missing file) keeps validation failing
+# closed.  c9cdd852... was the centered upright-HOME walk.onnx.
+EXPECTED_WALK_FALLBACK_SHA256 = "0" * 64
 WALK_FALLBACK_SMOKE_SAMPLE_COUNT = 16
 
 

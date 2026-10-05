@@ -56,6 +56,10 @@ class WalkFallbackValidatorTest(unittest.TestCase):
             with self.assertRaisesRegex(FileNotFoundError, "files are missing"):
                 runtime_source_identity(paths)
 
+    @unittest.skipUnless(
+        WALK_FALLBACK_POLICY.is_file(),
+        "forward-lean-home has no walk.onnx installed yet (src/agents/README.md)",
+    )
     def test_pinned_walk_fallback_passes_fixed_cpu_smoke(self):
         report = validate_walk_fallback()
 
@@ -76,6 +80,14 @@ class WalkFallbackValidatorTest(unittest.TestCase):
         self.assertEqual(smoke["sample_count"], WALK_FALLBACK_SMOKE_SAMPLE_COUNT)
         self.assertTrue(smoke["all_outputs_finite"])
         self.assertGreater(smoke["maximum_absolute_output"], 0.0)
+
+    def test_missing_walk_fallback_fails_closed(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            with self.assertRaises(FileNotFoundError):
+                validate_walk_fallback(Path(temp_dir) / "walk.onnx")
+        if not WALK_FALLBACK_POLICY.is_file():
+            with self.assertRaises(FileNotFoundError):
+                validate_walk_fallback()
 
     def test_changed_walk_fallback_is_rejected_before_loading(self):
         with tempfile.TemporaryDirectory() as temp_dir:
