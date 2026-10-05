@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import json
 import math
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 from types import MappingProxyType
 from typing import Any
@@ -26,6 +26,9 @@ import numpy as np
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 HOME_POSE_PATH = REPOSITORY_ROOT / "config" / "home_pose.yaml"
+# Explicit HOME YAML for this process (tests and side-by-side comparisons):
+# when set, the runtime reads this file instead of config/home_pose.yaml.
+HOME_POSE_PATH_ENV = "MICROBAN_HOME_POSE_YAML"
 HOME_POSE_SCHEMA_VERSION = 1
 
 HOME_JOINT_NAMES = (
@@ -53,11 +56,18 @@ HOME_JOINT_NAMES = (
 )
 CONTRACT_KEYS = (
     "walk_contract_version",
+    "getup_contract_version",
+    "getup_checkpoint_stamp",
     "v12_home_pose_revision",
     "v12_recipe_revision",
     "v12_hand_pose_release_recipe_revision",
     "v12_packager_revision",
+    "v12_target_frame",
 )
+# Contract keys that may be empty: an empty get-up checkpoint stamp means the
+# stamp is not checked (the centered HOME's v5 exporter also published runs
+# its runner had stamped "v4").
+OPTIONAL_CONTRACT_KEYS = frozenset({"getup_checkpoint_stamp"})
 # A deployed policy's recorded HOME must reproduce this file to these
 # tolerances (the get-up and walking checks).
 HOME_POSE_STAMP_TOLERANCE_RAD = 1.0e-6
@@ -162,14 +172,12 @@ def load_home_pose(path: Path | str = HOME_POSE_PATH) -> dict[str, Any]:
     ):
         raise HomePoseConfigError(f"{path}: trunk_pitch_deg/trunk_pitch_rad are inconsistent")
     pitch = float(pitch_rad)
-    # The runtime's neck stabilisation, stand/settle checks and policy smoke
-    # observations measure tilt from vertical: only an upright trunk at HOME
-    # is supported.
-    if pitch != 0.0:
-        raise HomePoseConfigError(
-            f"{path}: trunk_pitch_deg={pitch_deg!r}; this runtime supports only a vertical "
-            "trunk at HOME"
-        )
+    # Any trunk pitch: the neck stabilisation reference, the get-up stand and
+    # settle checks and the policy smoke observations follow the HOME attitude
+    # (HOME_PROJECTED_GRAVITY); with a vertical trunk they are the original
+    # vertical rules.
+    if not abs(pitch) < 0.5 * math.pi:
+        raise HomePoseConfigError(f"{path}: trunk_pitch_deg={pitch_deg!r} is not a standing HOME")
     root_pos = _float_list(document, "root_pos_m", 3)
     root_quat = _float_list(document, "root_quat_wxyz", 4)
     gravity = _float_list(document, "projected_gravity", 3)
@@ -181,7 +189,8 @@ def load_home_pose(path: Path | str = HOME_POSE_PATH) -> dict[str, Any]:
         raise HomePoseConfigError(f"{path}: implausible HOME root position {root_pos}")
     contracts = document.get("contracts")
     if not isinstance(contracts, Mapping) or set(contracts) != set(CONTRACT_KEYS) or not all(
-        isinstance(contracts[key], str) and contracts[key] for key in CONTRACT_KEYS
+        isinstance(contracts[key], str) and (contracts[key] or key in OPTIONAL_CONTRACT_KEYS)
+        for key in CONTRACT_KEYS
     ):
         raise HomePoseConfigError(f"{path}: contracts must name {list(CONTRACT_KEYS)}")
     hand_target_fk = document.get("hand_target_fk")
@@ -219,7 +228,14 @@ def load_home_pose(path: Path | str = HOME_POSE_PATH) -> dict[str, Any]:
     }
 
 
-HOME_POSE = load_home_pose()
+def _home_pose_path() -> Path:
+    import os
+
+    explicit = os.environ.get(HOME_POSE_PATH_ENV)
+    return Path(explicit) if explicit else HOME_POSE_PATH
+
+
+HOME_POSE = load_home_pose(_home_pose_path())
 
 HOME_JOINT_POS_RAD: Mapping[str, float] = HOME_POSE["joint_pos_rad"]
 HOME_TRUNK_PITCH_RAD: float = HOME_POSE["trunk_pitch_rad"]
@@ -228,6 +244,7 @@ HOME_ROOT_QUAT_WXYZ: tuple[float, float, float, float] = HOME_POSE["root_quat_wx
 HOME_PROJECTED_GRAVITY: tuple[float, float, float] = HOME_POSE["projected_gravity"]
 HOME_CONTRACTS: Mapping[str, str] = HOME_POSE["contracts"]
 HOME_TAG: str = HOME_POSE["tag"]
+HOME_IS_VERTICAL_TRUNK: bool = HOME_TRUNK_PITCH_RAD == 0.0
 
 
 def hand_target_fk_contract() -> dict[str, Any]:
@@ -271,3 +288,25 @@ def home_pose_stamp_matches(value: str | None) -> bool:
             for actual, expected in zip(root_quat, HOME_ROOT_QUAT_WXYZ)
         )
     )
+
+
+def tilt_from_home_rad(projected_gravity: Sequence[float]) -> float | None:
+    """Angle between the measured projected gravity and HOME's, in radians.
+
+    0 at the HOME attitude (e.g. trunk 10 deg forward at the forward-lean
+    HOME), 10 deg when such a trunk is vertical.  None for a non-finite,
+    wrong-length or near-zero vector.
+    """
+    if len(projected_gravity) != 3:
+        return None
+    try:
+        values = [float(item) for item in projected_gravity]
+    except (TypeError, ValueError, OverflowError):
+        return None
+    if not all(math.isfinite(item) for item in values):
+        return None
+    norm = math.sqrt(sum(item * item for item in values))
+    if norm < 1.0e-6:
+        return None
+    cosine = sum(a * b for a, b in zip(values, HOME_PROJECTED_GRAVITY)) / norm
+    return math.acos(max(-1.0, min(1.0, cosine)))

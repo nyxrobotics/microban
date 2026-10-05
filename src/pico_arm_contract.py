@@ -34,7 +34,7 @@ PICO_ARM_UPPER_RAD = {
     "left": tuple(math.radians(value) for value in (100.0, 120.0, 0.0)),
     "right": tuple(math.radians(value) for value in (100.0, -10.0, 0.0)),
 }
-# The arm part of the one shared centered HOME (constants.NEUTRAL_POSE).
+# The arm part of the one shared HOME (constants.NEUTRAL_POSE).
 PICO_ARM_HOME_RAD = {
     side: tuple(float(NEUTRAL_POSE[name]) for name in PICO_ARM_JOINT_NAMES[side])
     for side in PICO_ARM_SIDES

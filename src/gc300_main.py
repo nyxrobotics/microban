@@ -1,6 +1,6 @@
 """Run the robot-local GC300 with the shared walking actor.
 
-GC300 uses the same single walking model (``walk.onnx``), the same centered
+GC300 uses the same single walking model (``walk.onnx``), the same
 HOME (``NEUTRAL_POSE``) and the same target rule as every other input source;
 there is no GC300-specific model or ankle bias.  Only the input source and the
 plain ``WalkMove`` (no PICO policy selector) differ from ``main.py``.

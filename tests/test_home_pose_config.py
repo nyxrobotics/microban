@@ -18,6 +18,10 @@ CONFIG_TEXT = home_pose.HOME_POSE_PATH.read_text(encoding="utf-8")
 # The centered HOME every installed policy was trained at (2026-10-05).
 CENTERED_CONTRACTS = {
     "walk_contract_version": "v3_centered_home_servo_range",
+    "getup_contract_version": "v5",
+    # The centered v5 exporter also published runs stamped "v4": not checked.
+    "getup_checkpoint_stamp": "",
+    "v12_target_frame": "robot_trunk_xyz_forward_left_up",
     "v12_home_pose_revision": (
         "centered_home_hip_plus1p198384259489_ankle_minus1p198384259489_shoulder_zero_v5"
     ),

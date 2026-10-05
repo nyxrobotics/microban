@@ -9,6 +9,7 @@ import numpy as np
 import onnxruntime as ort
 
 from constants import (
+    HOME_TRUNK_PITCH_RAD,
     KP_DEFAULT,
     KP_RL,
     MOTOR_TO_ID,
@@ -219,7 +220,9 @@ class WalkMove(Move):
         self._phase_step = 0
         self._phase_total_steps = 20
 
-        # Safety parameters
+        # Safety parameters. A fall is a physical attitude, so this stays measured from
+        # vertical (trunk tilt > 60 deg) at every HOME, like the scheduler's fall
+        # debounce; the forward-lean HOME's 10 deg lean still leaves 50 deg before it trips.
         self._projected_gravity_z_threshold = -0.5  # Threshold for detecting a fall based on projected gravity
 
         # Logging
@@ -367,12 +370,20 @@ class WalkMove(Move):
             name: command.target_angles[name] for name in OBSERVATION_DOF_ORDER
         }
 
-        # Head stabilization: hold the neck level (or, with VR teleop active, at the
-        # commanded head_orientation) against trunk roll/pitch. Independent of the RL policy
-        # above, so it still runs even though neck_roll/neck_pitch aren't in its action space.
+        # Head stabilization: cancel trunk roll/pitch on the neck. Independent of the RL
+        # policy above, so it still runs even though neck_roll/neck_pitch aren't in its
+        # action space. Without a VR head command the reference is the HOME attitude
+        # (trunk pitched HOME_TRUNK_PITCH_RAD forward; 0 for a vertical-trunk HOME):
+        # standing at HOME the neck stays at its trained HOME angle (walk training holds
+        # it there) and only the gait's sway around HOME is cancelled. With VR teleop
+        # active the commanded head_orientation is a world (gravity-levelled) attitude,
+        # as in hmd_head.py, so the full trunk tilt is cancelled.
         if obs.robot_state.body_quat:
-            desired = obs.user_input.head_orientation or {"roll": 0.0, "pitch": 0.0}
+            head_orientation = obs.user_input.head_orientation
+            desired = head_orientation or {"roll": 0.0, "pitch": 0.0}
             roll, pitch = _body_roll_pitch(obs.robot_state.body_quat)
+            if not head_orientation:
+                pitch -= HOME_TRUNK_PITCH_RAD
             neck_roll = self._default_pose.get("neck_roll", 0.0) + self._neck_stabilize_gain * (desired["roll"] - roll)
             neck_pitch = self._default_pose.get("neck_pitch", 0.0) + self._neck_stabilize_gain * (desired["pitch"] - pitch)
             command.target_angles["neck_roll"] = max(NECK_ROLL_RANGE[0], min(NECK_ROLL_RANGE[1], neck_roll))

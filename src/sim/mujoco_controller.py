@@ -28,7 +28,7 @@ from xc330_actuator import XC330Actuator  # noqa: E402
 
 bam.actuators.actuators["xc330"] = lambda: XC330Actuator(Pendulum)
 
-from constants import MOTOR_TO_ID, ID_TO_MOTOR, NEUTRAL_POSE, HOME_ROOT_POS_Z_M, HOME_ROOT_QUAT_WXYZ, KP_DEFAULT, BAM_VIN, BAM_VOLTAGE_DROP_GAIN, BAM_VIN_MIN, BAM_MAX_CURRENT
+from constants import MOTOR_TO_ID, ID_TO_MOTOR, NEUTRAL_POSE, HOME_ROOT_POS_Z_M, HOME_ROOT_QUAT_WXYZ, HOME_TRUNK_PITCH_RAD, KP_DEFAULT, BAM_VIN, BAM_VOLTAGE_DROP_GAIN, BAM_VIN_MIN, BAM_MAX_CURRENT
 
 
 class _DelayBuffer:
@@ -112,6 +112,8 @@ class MuJoCoController:
             for mid in MOTOR_TO_ID.values()
         }
         self._delay_gyro = _DelayBuffer((0.0, 0.0, 0.0), delay_gyro_ticks)
+        # A HOME with a pitched trunk re-seeds this with the HOME spawn's IMU
+        # orientation once the sensor ids are known (below).
         self._delay_quat = _DelayBuffer((1.0, 0.0, 0.0, 0.0), delay_quat_ticks)
         self._delay_act = {
             mid: _DelayBuffer(
@@ -154,6 +156,12 @@ class MuJoCoController:
         # Sensor indices for IMU readout
         self._sensor_orientation = mujoco.mj_name2id(self._model, mujoco.mjtObj.mjOBJ_SENSOR, "orientation")
         self._sensor_gyro = mujoco.mj_name2id(self._model, mujoco.mjtObj.mjOBJ_SENSOR, "angular-velocity")
+        # With a pitched HOME trunk (e.g. 10 deg forward) seed the IMU delay with
+        # the orientation at the HOME spawn, not identity, so the first delayed
+        # ticks already report HOME's projected gravity instead of a different
+        # attitude. (A vertical-trunk HOME keeps the identity seed.)
+        if HOME_TRUNK_PITCH_RAD != 0.0:
+            self._delay_quat.fill(self._sensor_quat())
 
         # Foot/floor contact, for the get-up policy's foot_contact observation (order
         # matches its training-time ContactSensorCfg: right foot first, then left —
@@ -279,14 +287,15 @@ class MuJoCoController:
             current = (float(gx), float(gy), float(gz))
         return self._delay_gyro.push_and_read(current)
 
-    def read_quat(self, dt: float) -> tuple[float, float, float, float]:
+    def _sensor_quat(self) -> tuple[float, float, float, float]:
         if self._sensor_orientation < 0:
-            current = (1.0, 0.0, 0.0, 0.0)
-        else:
-            adr = self._model.sensor_adr[self._sensor_orientation]
-            w, x, y, z = self._data.sensordata[adr:adr + 4]
-            current = (float(w), float(x), float(y), float(z))
-        return self._delay_quat.push_and_read(current)
+            return (1.0, 0.0, 0.0, 0.0)
+        adr = self._model.sensor_adr[self._sensor_orientation]
+        w, x, y, z = self._data.sensordata[adr:adr + 4]
+        return (float(w), float(x), float(y), float(z))
+
+    def read_quat(self, dt: float) -> tuple[float, float, float, float]:
+        return self._delay_quat.push_and_read(self._sensor_quat())
 
     def read_foot_contact(self) -> tuple[float, float]:
         """Return (right_foot, left_foot) ground-contact as 1.0/0.0.
@@ -314,7 +323,8 @@ class MuJoCoController:
 
     def _set_home_qpos(self) -> None:
         """Spawn at the training HOME: root at HOME_ROOT_POS_Z_M (soles on the
-        ground), upright, every joint at NEUTRAL_POSE."""
+        ground), oriented HOME_ROOT_QUAT_WXYZ (the HOME trunk pitch), every
+        joint at NEUTRAL_POSE."""
         self._data.qpos[:] = 0.0
         self._data.qpos[2] = HOME_ROOT_POS_Z_M
         self._data.qpos[3:7] = HOME_ROOT_QUAT_WXYZ
@@ -332,4 +342,6 @@ class MuJoCoController:
         for mid in MOTOR_TO_ID.values():
             neutral = self._data.qpos[self._name_to_qpos_idx[ID_TO_MOTOR[mid]]]
             self._delay_act[mid].fill(neutral)
+        if HOME_TRUNK_PITCH_RAD != 0.0:
+            self._delay_quat.fill(self._sensor_quat())
         self._viewer.sync()

@@ -229,8 +229,20 @@ EXPECTED_V12_RECIPE_REVISIONS = frozenset(
 # joint_pos_rad must equal PICO_TELEOP_HOME_POSE (NEUTRAL_POSE) at full
 # precision; default_joint_pos is only the 3-decimal mjlab serialization.
 EXPECTED_V12_HOME_POSE_REVISION = HOME_CONTRACTS["v12_home_pose_revision"]
+# The deployment packager that wrote the artifact (HOME-bound: v6 at the
+# centered HOME, v7 at the forward-lean HOME).
+EXPECTED_V12_PACKAGER_REVISION = HOME_CONTRACTS["v12_packager_revision"]
+# Frame of the PICO hand/foot target columns (and of the twist): the trunk frame
+# with HOME's forward lean rotated out, R_trunk * R_y(-HOME_TRUNK_PITCH_RAD).
+# At HOME it is gravity-levelled (x forward, y left, z up), which is what the
+# PICO bridge sends (offsets from the operator's frozen, upright zero) and what
+# the support-foot floor band (Z <= 2.5 mm) assumes. A HOME whose trunk leans
+# forward trains the targets in this frame and labels it
+# "robot_home_levelled_trunk_xyz_forward_left_up" (the leaning trunk frame would
+# be 10 deg off at the forward-lean HOME: a 40 mm vertical foot lift would land
+# 7 mm forward); with a vertical trunk it is "robot_trunk_xyz_forward_left_up".
+PICO_V12_TARGET_FRAME = HOME_CONTRACTS["v12_target_frame"]
 EXPECTED_V12_HOME_POSE_SCHEMA_VERSION = 2
-V12_HOME_POSE_TOLERANCE = 1.0e-9
 EXPECTED_V12_ADAPTER_GRADIENT_SCHEDULE_REVISION = (
     "freeze_extra_to7000_then_hmd_hand_to10000_then_all_v1"
 )
@@ -413,8 +425,9 @@ _CHECKPOINT_SHA256_RE = re.compile(r"[0-9a-f]{64}\Z")
 # form when checking the ONNX metadata.  Inference always uses these values,
 # never model-provided limits, so altered metadata cannot widen motor targets.
 # Every policy (walking, PICO full-body tracking, get-up) shares the one
-# centered HOME, NEUTRAL_POSE.  The name is kept for the contract code below;
-# a PICO model trained at any other HOME is rejected by default_joint_pos.
+# HOME, NEUTRAL_POSE (config/home_pose.yaml).  The name is kept for the
+# contract code below; a PICO model trained at any other HOME is rejected by
+# default_joint_pos and, for contract v12, by its v12_training_home_pose_json.
 PICO_TELEOP_HOME_POSE = dict(NEUTRAL_POSE)
 EXPECTED_ACTION_DEFAULT_JOINT_POS = tuple(
     float(PICO_TELEOP_HOME_POSE[name]) for name in OBSERVATION_DOF_ORDER
@@ -2300,6 +2313,11 @@ def _parse_v12_contract(session: Any) -> _PolicyContract:
             "deployment contract"
         )
     _require_v12_home_pose(metadata)
+    _require_exact_metadata(
+        metadata,
+        "v12_deployment_packager_revision",
+        EXPECTED_V12_PACKAGER_REVISION,
+    )
     _require_v12_runtime_source_identity(metadata)
 
     filename = metadata.get("checkpoint_filename", "")
@@ -2731,12 +2749,8 @@ def _parse_v12_contract(session: Any) -> _PolicyContract:
         raise PicoHybridPolicyContractError(
             "hand_target_fk does not match the contract-v12 deployment contract"
         )
-    _require_exact_metadata(
-        metadata, "foot_target_frame", "robot_trunk_xyz_forward_left_up"
-    )
-    _require_exact_metadata(
-        metadata, "hand_target_frame", "robot_trunk_xyz_forward_left_up"
-    )
+    _require_exact_metadata(metadata, "foot_target_frame", PICO_V12_TARGET_FRAME)
+    _require_exact_metadata(metadata, "hand_target_frame", PICO_V12_TARGET_FRAME)
     _require_exact_metadata(metadata, "foot_target_units", "metres")
     _require_exact_metadata(metadata, "hand_target_units", "metres")
     _require_exact_metadata(
@@ -2882,62 +2896,39 @@ def _parse_v12_target_clip(
     )
 
 
+def expected_v12_home_pose_marker() -> dict[str, Any]:
+    """The robot's HOME in the v12 training marker's JSON shape."""
+
+    return {
+        "schema_version": EXPECTED_V12_HOME_POSE_SCHEMA_VERSION,
+        "revision": EXPECTED_V12_HOME_POSE_REVISION,
+        "root_pos_xyz_m": [0.0, 0.0, float(HOME_ROOT_POS_Z_M)],
+        "root_quat_wxyz": [float(value) for value in HOME_ROOT_QUAT_WXYZ],
+        "joint_names": list(EXPECTED_V12_OBSERVATION_JOINT_NAMES),
+        "joint_pos_rad": [
+            float(PICO_TELEOP_HOME_POSE[name])
+            for name in EXPECTED_V12_OBSERVATION_JOINT_NAMES
+        ],
+    }
+
+
 def _require_v12_home_pose(metadata: Mapping[str, str]) -> None:
-    """Require the checkpoint's full-precision training HOME to be NEUTRAL_POSE."""
+    """Bind the artifact to the robot's HOME: revision label and full pose.
+
+    The packager copies the checkpoint's microban_teleop_v12_home_pose marker,
+    whose values are the training HOME written bit for bit into
+    config/home_pose.yaml, so the JSON must be exactly the robot's HOME
+    (NEUTRAL_POSE, HOME_ROOT_POS_Z_M, HOME_ROOT_QUAT_WXYZ), float for float.
+    """
 
     _require_exact_metadata(
         metadata, "v12_home_pose_revision", EXPECTED_V12_HOME_POSE_REVISION
     )
-    home = _strict_json_metadata(metadata, "v12_training_home_pose_json")
-    if not isinstance(home, dict) or set(home) != {
-        "schema_version",
-        "revision",
-        "root_pos_xyz_m",
-        "root_quat_wxyz",
-        "joint_names",
-        "joint_pos_rad",
-    }:
+    home_pose = _strict_json_metadata(metadata, "v12_training_home_pose_json")
+    if not _exact_json_value(home_pose, expected_v12_home_pose_marker()):
         raise PicoHybridPolicyContractError(
-            "v12_training_home_pose_json has an unexpected shape"
-        )
-
-    def numbers(value: Any, count: int) -> tuple[float, ...] | None:
-        if (
-            not isinstance(value, list)
-            or len(value) != count
-            or any(
-                isinstance(item, bool) or not isinstance(item, (int, float))
-                for item in value
-            )
-        ):
-            return None
-        result = tuple(float(item) for item in value)
-        return result if all(math.isfinite(item) for item in result) else None
-
-    joint_names = home["joint_names"]
-    joint_pos = numbers(home["joint_pos_rad"], len(EXPECTED_V12_OBSERVATION_JOINT_NAMES))
-    root_pos = numbers(home["root_pos_xyz_m"], 3)
-    root_quat = numbers(home["root_quat_wxyz"], 4)
-    if (
-        home["schema_version"] != EXPECTED_V12_HOME_POSE_SCHEMA_VERSION
-        or isinstance(home["schema_version"], bool)
-        or home["revision"] != EXPECTED_V12_HOME_POSE_REVISION
-        or joint_names != list(EXPECTED_V12_OBSERVATION_JOINT_NAMES)
-        or joint_pos is None
-        or root_pos is None
-        or root_quat is None
-        or any(
-            abs(angle - float(PICO_TELEOP_HOME_POSE[name])) > V12_HOME_POSE_TOLERANCE
-            for name, angle in zip(joint_names, joint_pos, strict=True)
-        )
-        or abs(root_pos[2] - HOME_ROOT_POS_Z_M) > V12_HOME_POSE_TOLERANCE
-        or any(
-            abs(actual - expected) > V12_HOME_POSE_TOLERANCE
-            for actual, expected in zip(root_quat, HOME_ROOT_QUAT_WXYZ, strict=True)
-        )
-    ):
-        raise PicoHybridPolicyContractError(
-            "v12 training HOME is not the robot's centered HOME (NEUTRAL_POSE)"
+            "v12_training_home_pose_json is not the robot's HOME "
+            "(NEUTRAL_POSE, HOME_ROOT_POS_Z_M, HOME_ROOT_QUAT_WXYZ)"
         )
 
 

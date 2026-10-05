@@ -34,8 +34,13 @@ the allowed sender changes, read() holds the motor goals and torque state.
 A new bridge session still requires a released-trigger snapshot (``"walk"``
 absent) before walking can arm.
 Hybrid ``pico_teleop`` walk snapshots use fixed policy-session calibration
-offsets in the robot trunk frame (+X forward, +Y left, +Z up), in metres. They
-must declare the exact contract and 0.8 safety margin above. Supplied feet
+offsets in the robot's HOME-levelled trunk frame, in metres: the trunk frame
+with HOME's forward lean rotated out, R_trunk * R_y(-HOME_TRUNK_PITCH_RAD),
+which at HOME is gravity level (+X forward, +Y left, +Z up; the plain trunk
+frame for a vertical-trunk HOME). They
+must declare the exact contract and 0.8 safety margin above. Each hand offset
+component must lie within +-0.8 * 0.08 m (64 mm); the v12 policy's hand
+targets are trained inside that box. Supplied feet
 must form a complete pair; either hand may be inactive. Missing or invalid
 optional targets become inactive independently and do not stop walking.
 After the bridge projects a support foot into its floor band, two active foot

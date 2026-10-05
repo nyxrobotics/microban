@@ -87,6 +87,7 @@ from moves.pico_hybrid import (
     EXPECTED_V12_EXTRA_OBSERVATION_COLUMNS,
     EXPECTED_V12_HAND_TARGET_FK,
     EXPECTED_V12_HOME_POSE_REVISION,
+    EXPECTED_V12_PACKAGER_REVISION,
     EXPECTED_V12_LEGACY_PROBE_SHA256,
     EXPECTED_V12_LEGACY_SOURCE_CHECKPOINT_ITERATION,
     EXPECTED_V12_LEGACY_SOURCE_CHECKPOINT_SHA256,
@@ -472,6 +473,7 @@ def valid_v12_metadata():
             "action_clip_lower": PACKAGER_V12_ACTION_CLIP_LOWER,
             "action_clip_upper": PACKAGER_V12_ACTION_CLIP_UPPER,
             "v12_home_pose_revision": EXPECTED_V12_HOME_POSE_REVISION,
+            "v12_deployment_packager_revision": EXPECTED_V12_PACKAGER_REVISION,
             "v12_training_home_pose_json": PACKAGER_V12_HOME_POSE_JSON,
             "action_distribution_semantics": (
                 EXPECTED_V12_ACTION_DISTRIBUTION_SEMANTICS
@@ -731,6 +733,10 @@ class PicoHybridMoveTest(unittest.TestCase):
             with self.subTest(name=name):
                 self.assertEqual(metadata[name], value)
         self.assertEqual(metadata["v12_training_home_pose_json"], PACKAGER_V12_HOME_POSE_JSON)
+        self.assertEqual(
+            metadata["v12_deployment_packager_revision"],
+            "microban_teleop_v12_final_deployment_packager_v6_centered_home_servo_range",
+        )
         home = json.loads(PACKAGER_V12_HOME_POSE_JSON)
         self.assertEqual(home["revision"], EXPECTED_V12_HOME_POSE_REVISION)
         self.assertEqual(home["root_pos_xyz_m"][2], HOME_ROOT_POS_Z_M)

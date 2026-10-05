@@ -63,10 +63,13 @@ joint_pos_rad:
   right_ankle_pitch: -0.020915751032157148
 contracts:
   walk_contract_version: "v3_centered_home_servo_range"
+  getup_contract_version: "v5"
+  getup_checkpoint_stamp: ""
   v12_home_pose_revision: "centered_home_hip_plus1p198384259489_ankle_minus1p198384259489_shoulder_zero_v5"
   v12_recipe_revision: "centered_home_velocity_source_staged_mask_reachable_fk_elbow_minus10_raw_prev_action_servo_range_pi_v11"
   v12_hand_pose_release_recipe_revision: "centered_home_velocity_source_staged_mask_reachable_fk_elbow_minus10_raw_prev_action_servo_range_pi_active_hand_arm_pose_release_v12"
   v12_packager_revision: "microban_teleop_v12_final_deployment_packager_v6_centered_home_servo_range"
+  v12_target_frame: "robot_trunk_xyz_forward_left_up"
 hand_target_fk:
   revision: "microban_robot_xml_arm_fk_reachable_box_elbow_upper_minus10_v2"
   side_order: ["left", "right"]

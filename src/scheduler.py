@@ -25,6 +25,7 @@ from constants import (
     PROXY_KP,
 )
 from controller import ControllerProtocol
+from home_pose import HOME_IS_VERTICAL_TRUNK, tilt_from_home_rad
 from imu_reader import imu_quat_to_body
 from observer import Observer, Observation, RobotState
 from input.input_source import InputSource, UserInput, scale_velocity
@@ -41,11 +42,24 @@ from moves.walk import WalkMove
 
 GETUP_AUTO_TIMEOUT_S = 20.0  # Match the get-up training episode length.
 # Hand-back from the get-up actor to walk requires a settled stance: trunk
-# tilt below this angle (projected_gravity z < -cos(angle)) for this many
-# consecutive ticks (0.2 s at 50 Hz). The stand debounce alone (tilt below
-# ~25.8 deg) let the walk take over while still leaning up to ~25 deg.
+# tilt from the HOME attitude below this angle for this many consecutive ticks
+# (0.2 s at 50 Hz). The stand debounce alone (tilt below ~25.8 deg) let the
+# walk take over while still leaning up to ~25 deg. The tilt is the angle
+# between the measured projected gravity and constants.HOME_PROJECTED_GRAVITY
+# (home_pose.tilt_from_home_rad), so a HOME whose trunk leans forward is zero
+# tilt: measured from vertical, the forward-lean HOME's 10 deg would leave only
+# 2 deg of margin and a robot standing at HOME would rarely be handed back.
+# With a vertical trunk at HOME it is the original vertical rule
+# (projected_gravity z < -cos(angle)).
 GETUP_HANDBACK_SETTLE_TILT_DEG = 12.0
 GETUP_HANDBACK_SETTLE_TICKS = 10
+# Stand detection (fallen -> standing debounce) uses the same HOME-relative
+# tilt: standing means within acos(0.9) = 25.84 deg of the HOME attitude, the
+# radius the vertical rule (projected_gravity z < -0.9) has at an upright HOME.
+# Measured from vertical it would be a cone around the wrong attitude at a
+# leaning HOME (15.8 deg of forward sway but 35.8 deg of backward lean at the
+# forward-lean HOME).
+GETUP_STAND_TILT_DEG = math.degrees(math.acos(0.9))
 # Standing balance before the stance first settles is still the get-up
 # transient: the get-up actor is still pulling the trunk upright (13-16 A in
 # the current proxy in the runtime sim, against ~2 A once settled). It keeps
@@ -149,10 +163,16 @@ class Scheduler:
         self._hardware_neutral_last_time_s: float | None = None
 
         # Fall / getup auto-switch (only relevant when a "getup" move is registered).
-        # Thresholds on projected_gravity[2]: -1 is perfectly upright, 0 is on its side.
-        # Fall threshold matches WalkMove's own safety-stop criterion, for consistency.
+        # Fall: projected_gravity[2] > -0.5, a trunk tilt above 60 deg from vertical
+        # (-1 is upright, 0 on its side). It matches WalkMove's and PicoHybridMove's own
+        # safety-stop criterion and stays measured from vertical at every HOME: a fall
+        # is a physical attitude (a 10 deg HOME lean still leaves 50 deg before it
+        # trips; a HOME-relative cone would let a backward fall go to 70 deg).
+        # Stand: tilt from the HOME attitude below GETUP_STAND_TILT_DEG (at a
+        # vertical-trunk HOME: projected_gravity[2] < -0.9).
         self._fall_threshold = -0.5
         self._stand_threshold = -0.9
+        self._stand_tilt_rad = math.radians(GETUP_STAND_TILT_DEG)
         self._fall_debounce_ticks = 15  # ~0.3 s at 50 Hz
         self._stand_debounce_ticks = 20  # ~0.4 s at 50 Hz
         self._fallen_tick_count = 0
@@ -160,6 +180,7 @@ class Scheduler:
         # Consecutive IMU-valid ticks with tilt below the hand-back settle
         # angle; see GETUP_HANDBACK_SETTLE_*.
         self._settle_threshold = -math.cos(math.radians(GETUP_HANDBACK_SETTLE_TILT_DEG))
+        self._settle_tilt_rad = math.radians(GETUP_HANDBACK_SETTLE_TILT_DEG)
         self._settled_tick_count = 0
         # One log line per deferred hand-back (not one per tick).
         self._handback_defer_logged = False
@@ -438,7 +459,8 @@ class Scheduler:
                             self._handback_defer_logged = True
                             print(
                                 "Get-up hand-back to walk deferred until the stance "
-                                f"settles (tilt < {GETUP_HANDBACK_SETTLE_TILT_DEG:g} deg "
+                                f"settles (tilt{'' if HOME_IS_VERTICAL_TRUNK else ' from HOME'} < "
+                                f"{GETUP_HANDBACK_SETTLE_TILT_DEG:g} deg "
                                 f"for {GETUP_HANDBACK_SETTLE_TICKS} ticks; now "
                                 f"{self._tilt_deg(obs.robot_state.projected_gravity)})",
                                 end="\r\n", flush=True,
@@ -1265,16 +1287,34 @@ class Scheduler:
         """
         if projected_gravity is None or not self._finite_vector(projected_gravity, 3):
             self._settled_tick_count = 0
-        elif float(projected_gravity[2]) < self._settle_threshold:
+        elif self._settled(projected_gravity):
             self._settled_tick_count += 1
         else:
             self._settled_tick_count = 0
 
+    def _settled(self, projected_gravity: list[float]) -> bool:
+        """Tilt from the HOME attitude below the hand-back settle angle."""
+        if HOME_IS_VERTICAL_TRUNK:
+            return float(projected_gravity[2]) < self._settle_threshold
+        tilt = tilt_from_home_rad(projected_gravity)
+        return tilt is not None and tilt < self._settle_tilt_rad
+
+    def _standing(self, projected_gravity: list[float]) -> bool:
+        """Tilt from the HOME attitude below the stand-detection angle."""
+        if HOME_IS_VERTICAL_TRUNK:
+            return float(projected_gravity[2]) < self._stand_threshold
+        tilt = tilt_from_home_rad(projected_gravity)
+        return tilt is not None and tilt < self._stand_tilt_rad
+
     def _tilt_deg(self, projected_gravity: list[float]) -> str:
+        """Tilt from the HOME attitude, for the hand-back log line."""
         if not self._finite_vector(projected_gravity, 3):
             return "unknown"
-        gz = max(-1.0, min(1.0, float(projected_gravity[2])))
-        return f"{math.degrees(math.acos(-gz)):.1f} deg"
+        if HOME_IS_VERTICAL_TRUNK:
+            gz = max(-1.0, min(1.0, float(projected_gravity[2])))
+            return f"{math.degrees(math.acos(-gz)):.1f} deg"
+        tilt = tilt_from_home_rad(projected_gravity)
+        return "unknown" if tilt is None else f"{math.degrees(tilt):.1f} deg from HOME"
 
     def _release_getup_balance(self, reason: str) -> None:
         """End standing-balance and hand back as after a normal get-up."""
@@ -1305,7 +1345,7 @@ class Scheduler:
         if gz > self._fall_threshold:
             self._fallen_tick_count += 1
             self._standing_tick_count = 0
-        elif gz < self._stand_threshold:
+        elif self._standing(projected_gravity):
             self._standing_tick_count += 1
             self._fallen_tick_count = 0
         else:
