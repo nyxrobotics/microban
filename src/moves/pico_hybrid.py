@@ -240,6 +240,22 @@ EXPECTED_V12_POSE_RELEASE_RECIPE_REVISION = (
 EXPECTED_V12_RECIPE_REVISIONS = frozenset(
     (EXPECTED_V12_RECIPE_REVISION, EXPECTED_V12_POSE_RELEASE_RECIPE_REVISION)
 )
+# Optional lateral-fidelity variant of the pose-release recipe: the same
+# recipe string and runtime contract, trained from a gated model_7099 with one
+# extra reward (mixed-command lateral-deficit penalty).  A package that names
+# it must carry the complete, self-consistent marker; nothing else changes.
+EXPECTED_V12_LATERAL_FIDELITY_REVISION = "hand_pose_release_lateral_fidelity_v1"
+EXPECTED_V12_LATERAL_FIDELITY_REWARD_TERM = "mixed_command_lateral_deficit"
+EXPECTED_V12_LATERAL_FIDELITY_WEIGHTS = frozenset((-8.0, -16.0))
+V12_LATERAL_FIDELITY_METADATA_KEYS = frozenset(
+    (
+        "v12_lateral_fidelity_revision",
+        "v12_lateral_fidelity_reward_weight",
+        "v12_lateral_fidelity_parent_checkpoint_sha256",
+        "v12_lateral_fidelity_marker_json",
+        "v12_lateral_fidelity_marker_sha256",
+    )
+)
 # The training HOME the v12 checkpoint is bound to (microban_teleop_v12_home_pose
 # marker, written as v12_home_pose_revision and v12_training_home_pose_json),
 # and the deployment packager that wrote the artifact.
@@ -2185,6 +2201,60 @@ def _exact_json_value(actual: Any, expected: Any) -> bool:
     return bool(actual == expected)
 
 
+def _require_v12_lateral_fidelity(
+    metadata: Mapping[str, str], recipe_revision: str
+) -> dict[str, Any] | None:
+    """Validate the optional lateral-fidelity marker (None when absent)."""
+
+    present = {
+        name for name in metadata if name.startswith("v12_lateral_fidelity_")
+    }
+    if not present:
+        return None
+    if present != V12_LATERAL_FIDELITY_METADATA_KEYS:
+        raise PicoHybridPolicyContractError(
+            "lateral-fidelity metadata must be complete and exact"
+        )
+    if recipe_revision != EXPECTED_V12_POSE_RELEASE_RECIPE_REVISION:
+        raise PicoHybridPolicyContractError(
+            "lateral fidelity applies only to the pose-release recipe"
+        )
+    _require_exact_metadata(
+        metadata,
+        "v12_lateral_fidelity_revision",
+        EXPECTED_V12_LATERAL_FIDELITY_REVISION,
+    )
+    marker = _strict_json_metadata(metadata, "v12_lateral_fidelity_marker_json")
+    if not isinstance(marker, dict):
+        raise PicoHybridPolicyContractError("lateral-fidelity marker must be an object")
+    canonical = json.dumps(
+        marker, ensure_ascii=True, sort_keys=True, separators=(",", ":")
+    ).encode("utf-8")
+    marker_sha256 = _require_lowercase_sha256(
+        metadata, "v12_lateral_fidelity_marker_sha256"
+    )
+    parent_sha256 = _require_lowercase_sha256(
+        metadata, "v12_lateral_fidelity_parent_checkpoint_sha256"
+    )
+    weight = marker.get("reward_weight")
+    if (
+        hashlib.sha256(canonical).hexdigest() != marker_sha256
+        or marker.get("revision") != EXPECTED_V12_LATERAL_FIDELITY_REVISION
+        or marker.get("recipe_revision") != recipe_revision
+        or marker.get("reward_term") != EXPECTED_V12_LATERAL_FIDELITY_REWARD_TERM
+        or isinstance(weight, bool)
+        or not isinstance(weight, (int, float))
+        or float(weight) not in EXPECTED_V12_LATERAL_FIDELITY_WEIGHTS
+        or metadata.get("v12_lateral_fidelity_reward_weight") != str(float(weight))
+        or marker.get("parent_checkpoint_sha256") != parent_sha256
+        or marker.get("parent_iteration") != 7099
+    ):
+        raise PicoHybridPolicyContractError(
+            "lateral-fidelity marker does not match the contract-v12 deployment contract"
+        )
+    return marker
+
+
 def _require_exact_metadata(
     metadata: Mapping[str, str], name: str, expected: str
 ) -> str:
@@ -2410,6 +2480,7 @@ def _parse_v12_contract(session: Any) -> _PolicyContract:
             "deployment contract"
         )
     _require_v12_home_pose(metadata)
+    _require_v12_lateral_fidelity(metadata, recipe_revision)
     _require_exact_metadata(
         metadata,
         "v12_deployment_packager_revision",

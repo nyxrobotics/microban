@@ -823,6 +823,83 @@ class PicoHybridMoveTest(unittest.TestCase):
                 move = PicoHybridMove(session=FakeSession(metadata=metadata))
                 self.assertEqual(move._contract.training_contract_version, "12")
 
+    @staticmethod
+    def _lateral_fidelity_metadata(weight=-8.0):
+        import hashlib
+        import json as _json
+
+        metadata = valid_v12_metadata()
+        metadata["microban_teleop_recipe_revision"] = (
+            EXPECTED_V12_POSE_RELEASE_RECIPE_REVISION
+        )
+        metadata["v12_tracking_profile"] = (
+            EXPECTED_V12_COMPLETION_ALLOWANCE_TRACKING_PROFILE
+        )
+        marker = {
+            "schema_version": 1,
+            "revision": "hand_pose_release_lateral_fidelity_v1",
+            "recipe_revision": EXPECTED_V12_POSE_RELEASE_RECIPE_REVISION,
+            "reward_term": "mixed_command_lateral_deficit",
+            "reward_weight": weight,
+            "parent_checkpoint_sha256": "e" * 64,
+            "parent_iteration": 7099,
+        }
+        canonical = _json.dumps(
+            marker, ensure_ascii=True, sort_keys=True, separators=(",", ":")
+        )
+        metadata.update(
+            {
+                "v12_lateral_fidelity_revision": "hand_pose_release_lateral_fidelity_v1",
+                "v12_lateral_fidelity_reward_weight": str(float(weight)),
+                "v12_lateral_fidelity_parent_checkpoint_sha256": "e" * 64,
+                "v12_lateral_fidelity_marker_json": _json.dumps(
+                    marker, separators=(",", ":")
+                ),
+                "v12_lateral_fidelity_marker_sha256": hashlib.sha256(
+                    canonical.encode("utf-8")
+                ).hexdigest(),
+            }
+        )
+        return metadata
+
+    def test_v12_contract_accepts_a_complete_lateral_fidelity_marker(self):
+        for weight in (-8.0, -16.0):
+            with self.subTest(weight=weight):
+                metadata = self._lateral_fidelity_metadata(weight)
+                move = PicoHybridMove(session=FakeSession(metadata=metadata))
+                self.assertEqual(move._contract.training_contract_version, "12")
+
+    def test_v12_contract_rejects_partial_or_drifted_lateral_fidelity(self):
+        cases = {
+            "partial": lambda m: m.pop("v12_lateral_fidelity_marker_sha256"),
+            "extra": lambda m: m.update({"v12_lateral_fidelity_extra": "1"}),
+            "revision": lambda m: m.update(
+                {"v12_lateral_fidelity_revision": "hand_pose_release_lateral_fidelity_v2"}
+            ),
+            "weight": lambda m: m.update({"v12_lateral_fidelity_reward_weight": "-16.0"}),
+            "marker_sha": lambda m: m.update(
+                {"v12_lateral_fidelity_marker_sha256": "0" * 64}
+            ),
+            "parent": lambda m: m.update(
+                {"v12_lateral_fidelity_parent_checkpoint_sha256": "f" * 64}
+            ),
+            "recipe": lambda m: m.update(
+                {"microban_teleop_recipe_revision": EXPECTED_V12_RECIPE_REVISION}
+            ),
+        }
+        for name, mutate in cases.items():
+            with self.subTest(case=name):
+                metadata = self._lateral_fidelity_metadata()
+                mutate(metadata)
+                session = FakeSession(metadata=metadata)
+                with self.assertRaises(PicoHybridPolicyContractError):
+                    PicoHybridMove(session=session)
+                self.assertEqual(session.run_count, 0)
+        with self.assertRaises(PicoHybridPolicyContractError):
+            PicoHybridMove(
+                session=FakeSession(metadata=self._lateral_fidelity_metadata(-4.0))
+            )
+
     def test_v12_pose_release_recipe_rejects_deadline_and_unknown_profiles(self):
         for profile in (
             EXPECTED_V12_DEADLINE_FINAL_TRACKING_PROFILE,

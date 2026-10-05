@@ -89,6 +89,7 @@ forward-lean ones:
 | `v12_legacy_source_checkpoint_sha256` | `a7c28c8abaf038d85c9c773bdaa2cc6bbe3c9bb2af6135622a4949c38a0401ff` (`checkpoints/forward_lean_velocity/model_29000.pt` = run `2026-10-05_06-14-02_lean_walk_cont2` `model_29000`, the source of the installed lean `walk.onnx`) |
 | `v12_legacy_source_checkpoint_iteration` | `29000` (the checkpoint's saved `iter`) |
 | `v12_legacy_probe_sha256` | `ebcf45549fb68b65b5e5c568a6e8217a7f9fce5dd08c96902e66a337e3064af9` (`artifacts/legacy_teleop_probe/velocity_a7c28c8abaf038d8_teleop83_raw_9x300.json`, written by the fresh pose-release chain's start; 9 x 300 steps, settle 50, seed 42) |
+| `v12_lateral_fidelity_*` (optional) | absent, or all five keys of the lateral-fidelity variant of the v18 recipe: `v12_lateral_fidelity_revision` = `hand_pose_release_lateral_fidelity_v1`, `..._reward_weight` `-8.0` or `-16.0` (the marker's `reward_weight`), `..._parent_checkpoint_sha256` (the gated model_7099 the variant restarted from), `..._marker_json` (term `mixed_command_lateral_deficit`, recipe v18, parent iteration 7099) and `..._marker_sha256` (its canonical sorted-key JSON SHA-256). Same recipe string and runtime contract; only training differs |
 
 Action/target semantics, clip, raw-action guard and the corpus self-test are
 the same as in the centered table below. The lean `src/agents/walk.onnx` is
