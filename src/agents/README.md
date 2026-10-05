@@ -8,7 +8,7 @@ here must be trained and exported at that HOME.
 | --- | --- |
 | `getup.onnx` | installed: forward-lean get-up contract v6, SHA-256 `ce6cdc0489b451b32a35c3a791830ca123cadb308f3b2f4eaf1019c3721678bf` (mjlab_microban lean stage-5 `model_21495`) |
 | `walk.onnx` | installed: forward-lean walk contract `v4_forward_lean_home_servo_range`, SHA-256 `b33cd9ea7dbebbfe4543c0bb616a54d9ba713ded1ffdda0891b79dad09e2c1d2` (mjlab_microban `forward-lean-v2` `artifacts/walk_v4_forward_lean_home_servo_cont2_29000.onnx`, run `2026-10-05_06-14-02_lean_walk_cont2` `model_29000`, checkpoint SHA-256 `a7c28c8abaf038d85c9c773bdaa2cc6bbe3c9bb2af6135622a4949c38a0401ff`); pinned as `EXPECTED_WALK_FALLBACK_SHA256` in `tools/validate_pico_policy.py` |
-| `pico_teleop.onnx` | **not installed**: the forward-lean contract-v12 PICO policy (recipe `..._receiver_box_hands_v17` or the pose-release `..._receiver_box_hands_active_hand_arm_pose_release_v18`) is being trained (fresh pose-release chain from the pinned walking source) |
+| `pico_teleop.onnx` | **not installed**: the forward-lean contract-v12 PICO policy (recipe `..._receiver_box_hands_v17` or the pose-release `..._receiver_box_hands_active_hand_arm_pose_release_v18`) has no passing build (2026-10-06): the fresh pose-release chain `lean_v12_pr_*` passed its 10000 and 10100 gates, but every 10100 -> 15000 retrain (seeds 42, 42, 43, 44) and all six final rescues failed the unchanged 14999 final gate (mixed_forward_left twist/falls), so nothing was packaged. A changed 10100 -> 15000 training recipe is needed before a lean PICO package can exist |
 
 The centered upright-HOME `walk.onnx` (walk contract v3) and `pico_teleop.onnx`
 (centered pose-release v12, SHA-256 `ce343503...`) live on

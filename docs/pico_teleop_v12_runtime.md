@@ -98,10 +98,16 @@ from run `2026-10-05_06-14-02_lean_walk_cont2` `model_29000`, checkpoint sha256
 `a7c28c8abaf038d85c9c773bdaa2cc6bbe3c9bb2af6135622a4949c38a0401ff`) and pinned
 as `EXPECTED_WALK_FALLBACK_SHA256` in `tools/validate_pico_policy.py`.
 The lean source checkpoint and probe are pinned in `pico_hybrid.py` (table
-above). `src/agents/pico_teleop.onnx` is not installed yet: the lean PICO
-policy (fresh pose-release chain `lean_v12_pr_*` in mjlab_microban
-`forward-lean-v2`) is packaged against this repository (the package's runtime
-identity hashes the installed `walk.onnx`).
+above). `src/agents/pico_teleop.onnx` is not installed, and no lean PICO
+package exists (2026-10-06): the fresh pose-release chain `lean_v12_pr_*` in
+mjlab_microban `forward-lean-v2` passed its 10000 and 10100 gates, but four
+10100 -> 15000 retrains (seeds 42, 42, 43, 44) and six final rescues all failed
+the unchanged 14999 final gate on mixed_forward_left (lateral twist response,
+and falls under the evaluator push for the rescues and seed 44). A changed
+10100 -> 15000 recipe is needed first. When one passes, its package must be
+built against this repository (the package's runtime identity hashes the
+installed `walk.onnx`). Until then PICO teleop fails closed on the missing
+file.
 
 ## Centered-HOME package contract (2026-10-04, centered line reference)
 
