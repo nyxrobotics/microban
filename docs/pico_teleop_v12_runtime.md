@@ -105,7 +105,11 @@ mjlab_microban `forward-lean-v2` passed its 10000 and 10100 gates, but four
 10100 -> 15000 retrains (seeds 42, 42, 43, 44) and six final rescues all failed
 the unchanged 14999 final gate on mixed_forward_left (lateral twist response,
 and falls under the evaluator push for the rescues and seed 44). A changed
-10100 -> 15000 recipe is needed first. When one passes, its package must be
+10100 -> 15000 recipe is needed first. A lateral-fidelity variant restarted
+from the gated model_7099 (mixed-command lateral-deficit reward at -8, then
+-16; mjlab_microban `forward-lean-v2` 95fac36) was stopped on 2026-10-06 by
+its pre-registered held-out probe at model_7500, before any gate. The lean
+final gate stays at 10 tries, all failed. When one passes, its package must be
 built against this repository (the package's runtime identity hashes the
 installed `walk.onnx`). Until then PICO teleop fails closed on the missing
 file.
