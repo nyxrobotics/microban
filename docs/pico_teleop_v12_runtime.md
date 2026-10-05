@@ -298,6 +298,13 @@ The ONNX metadata must bind the final checkpoint to all of the following:
   those hash-bound values;
 - a 64-sample full-83-column PyTorch/ONNX parity check (the 20 new columns must
   not be zeroed), plus the independent 10,000-sample zero-extra legacy parity;
+  a package that declares `v12_onnx_parity_rule =
+  max_abs_error_le_atol_plus_rtol_times_max_abs_expected_per_sample_v1` (the
+  training ONNX gate's norm-wise rule) caps the full-83 errors at
+  `atol + 1e-6 * v12_onnx_parity_max_abs_expected_output` (magnitude at most
+  200) and requires both gate bound ratios to be at most 1, as the training
+  stage validator does; the legacy parity stays a plain `atol` bound, and a
+  package without the rule keeps the plain `atol` cap;
 - the exact observation term order, 21 observation joints, 18 action joints,
   defaults, scale, frames, units, body-target limits, raw previous-action and
   servo-range (+-pi) target saturation semantics with the full-precision

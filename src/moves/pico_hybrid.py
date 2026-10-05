@@ -328,6 +328,15 @@ EXPECTED_V12_PARITY_SEED = 20260925
 EXPECTED_V12_PARITY_SAMPLE_COUNT = 64
 EXPECTED_V12_PARITY_ATOL = 2.0e-5
 EXPECTED_V12_DEADLINE_FINAL_PARITY_ATOL = 2.5e-5
+# Norm-wise full-83 parity rule of the training ONNX gate: per sample,
+# max|onnx - torch| <= atol + rtol * max|torch| with rtol = 1e-6 (~8 float32
+# ulps).  The output magnitude is capped so the rule cannot hide a real export
+# defect (O(1e-3) and above) behind an absurd scale.
+EXPECTED_V12_ONNX_PARITY_RULE = (
+    "max_abs_error_le_atol_plus_rtol_times_max_abs_expected_per_sample_v1"
+)
+EXPECTED_V12_ONNX_PARITY_RELATIVE_TOLERANCE = 1.0e-6
+V12_ONNX_PARITY_MAX_EXPECTED_OUTPUT = 200.0
 EXPECTED_V12_OBSERVATION_JOINT_NAMES = (
     "head",
     "neck_roll",
@@ -2132,6 +2141,40 @@ def _require_exact_metadata(
     return actual
 
 
+def _v12_full83_parity_cap(metadata: Mapping[str, str], parity_atol: float) -> float:
+    """Absolute cap on the 64-sample full-83 ONNX parity errors.
+
+    A package without ``v12_onnx_parity_rule`` keeps the plain ``atol`` cap.
+    The norm-wise rule bounds each sample by ``atol + rtol * max|expected|``
+    (the random corpus drives raw actions to tens of radians, so float32
+    accumulation differences scale with the output); the cap is then the one
+    the training stage validator applies, and both gate bound ratios must be
+    at most 1.
+    """
+
+    rule = metadata.get("v12_onnx_parity_rule")
+    if rule is None:
+        return parity_atol
+    if rule != EXPECTED_V12_ONNX_PARITY_RULE:
+        raise PicoHybridPolicyContractError("unsupported v12 ONNX parity rule")
+    relative_tolerance = _require_exact_finite_scalar(
+        metadata,
+        "v12_onnx_parity_relative_tolerance",
+        EXPECTED_V12_ONNX_PARITY_RELATIVE_TOLERANCE,
+    )
+    magnitude = _require_v12_bounded_metric(
+        metadata,
+        "v12_onnx_parity_max_abs_expected_output",
+        upper=V12_ONNX_PARITY_MAX_EXPECTED_OUTPUT,
+    )
+    for name in (
+        "v12_onnx_reference_max_bound_ratio",
+        "v12_onnxruntime_cpu_max_bound_ratio",
+    ):
+        _require_v12_bounded_metric(metadata, name, upper=1.0)
+    return parity_atol + relative_tolerance * magnitude
+
+
 def _require_v12_bounded_metric(
     metadata: Mapping[str, str], name: str, *, lower: float = 0.0, upper: float
 ) -> float:
@@ -2549,12 +2592,16 @@ def _parse_v12_contract(session: Any) -> _PolicyContract:
         else EXPECTED_V12_PARITY_ATOL
     )
     _require_exact_finite_scalar(metadata, "v12_onnx_parity_atol", parity_atol)
+    full83_parity_cap = _v12_full83_parity_cap(metadata, parity_atol)
     for name in (
         "v12_onnx_reference_max_abs_error",
         "v12_onnxruntime_cpu_max_abs_error",
-        "v12_neutral_legacy_parity_max_abs_error",
     ):
-        _require_v12_bounded_metric(metadata, name, upper=parity_atol)
+        _require_v12_bounded_metric(metadata, name, upper=full83_parity_cap)
+    # The 10,000-sample zero-extra legacy parity stays a pure absolute bound.
+    _require_v12_bounded_metric(
+        metadata, "v12_neutral_legacy_parity_max_abs_error", upper=parity_atol
+    )
     if (
         _canonical_nonnegative_int(
             metadata.get("v12_neutral_legacy_parity_sample_count"),

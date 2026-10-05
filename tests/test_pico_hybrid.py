@@ -807,6 +807,66 @@ class PicoHybridMoveTest(unittest.TestCase):
                     PicoHybridMove(session=session)
                 self.assertEqual(session.run_count, 0)
 
+    @staticmethod
+    def _normwise_parity_metadata():
+        metadata = valid_v12_metadata()
+        metadata["microban_teleop_recipe_revision"] = (
+            EXPECTED_V12_POSE_RELEASE_RECIPE_REVISION
+        )
+        metadata["v12_tracking_profile"] = (
+            EXPECTED_V12_COMPLETION_ALLOWANCE_TRACKING_PROFILE
+        )
+        metadata.update(
+            {
+                "v12_onnx_parity_rule": (
+                    "max_abs_error_le_atol_plus_rtol_times_max_abs_expected_"
+                    "per_sample_v1"
+                ),
+                "v12_onnx_parity_relative_tolerance": "1e-06",
+                "v12_onnx_parity_max_abs_expected_output": "46.55878829956055",
+                "v12_onnx_reference_max_bound_ratio": "0.1619720607995987",
+                "v12_onnxruntime_cpu_max_bound_ratio": "0.451808363199234",
+                # Above atol, inside atol + rtol * max|expected| (6.66e-5).
+                "v12_onnxruntime_cpu_max_abs_error": "2.47955322265625e-05",
+            }
+        )
+        return metadata
+
+    def test_v12_contract_accepts_normwise_full83_parity(self):
+        metadata = self._normwise_parity_metadata()
+        move = PicoHybridMove(session=FakeSession(metadata=metadata))
+        self.assertEqual(move._contract.training_contract_version, "12")
+
+    def test_v12_contract_rejects_drifted_normwise_parity(self):
+        cases = {
+            "rule": ("v12_onnx_parity_rule", "elementwise_v0"),
+            "rtol": ("v12_onnx_parity_relative_tolerance", "1e-05"),
+            "ratio": ("v12_onnxruntime_cpu_max_bound_ratio", "1.01"),
+            "reference_ratio_missing": ("v12_onnx_reference_max_bound_ratio", None),
+            "magnitude": ("v12_onnx_parity_max_abs_expected_output", "1000"),
+            "error_beyond_cap": ("v12_onnxruntime_cpu_max_abs_error", "7e-05"),
+            "neutral_stays_absolute": (
+                "v12_neutral_legacy_parity_max_abs_error",
+                "2.5e-05",
+            ),
+        }
+        for case, (name, value) in cases.items():
+            with self.subTest(case=case):
+                metadata = self._normwise_parity_metadata()
+                if value is None:
+                    metadata.pop(name)
+                else:
+                    metadata[name] = value
+                session = FakeSession(metadata=metadata)
+                with self.assertRaises(PicoHybridPolicyContractError):
+                    PicoHybridMove(session=session)
+                self.assertEqual(session.run_count, 0)
+        # Without the rule a package keeps the plain atol cap.
+        metadata = valid_v12_metadata()
+        metadata["v12_onnxruntime_cpu_max_abs_error"] = "2.47955322265625e-05"
+        with self.assertRaises(PicoHybridPolicyContractError):
+            PicoHybridMove(session=FakeSession(metadata=metadata))
+
     def test_v12_contract_accepts_deadline_final_tracking_profile(self):
         metadata = valid_v12_metadata()
         metadata["v12_tracking_profile"] = (
