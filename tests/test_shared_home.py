@@ -14,6 +14,7 @@ from constants import (
     OBSERVATION_DOF_ORDER,
     SERVO_TARGET_RANGE_RAD,
 )
+from home_pose import HOME_POSE
 from input.input_source import UserInput
 from moves import walk as walk_module
 from moves.getup import GetupMove
@@ -30,7 +31,9 @@ from policy_fixtures import (
 )
 from scheduler import Scheduler
 
-# mjlab_microban HOME_FRAME (commit cb55431), in degrees.
+# The centered HOME of mjlab_microban (HOME_FRAME at commit cb55431, now its
+# config/home_pose.yaml), in degrees: pinned here so a changed
+# config/home_pose.yaml is a deliberate, reviewed edit of this test too.
 TRAINING_HOME_DEG = {
     "head": 0.0,
     "neck_roll": 0.0,
@@ -61,6 +64,7 @@ class SharedHomeTest(unittest.TestCase):
         self.assertEqual(set(NEUTRAL_POSE), set(MOTOR_TO_ID))
         for name, degrees in TRAINING_HOME_DEG.items():
             self.assertEqual(NEUTRAL_POSE[name], math.radians(degrees), name)
+        self.assertEqual(dict(HOME_POSE["joint_pos_deg"]), TRAINING_HOME_DEG)
         self.assertEqual(HOME_PITCH_RAD, math.radians(1.198384259489))
         self.assertEqual(HOME_ROOT_POS_Z_M, 0.170554885633559)
         self.assertEqual(SERVO_TARGET_RANGE_RAD, math.pi)

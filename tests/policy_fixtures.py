@@ -18,6 +18,7 @@ from constants import (
     OBSERVATION_DOF_ORDER,
     SERVO_TARGET_RANGE_RAD,
 )
+from home_pose import HOME_CONTRACTS
 
 WALK_POLICY_FIXTURE = Path(__file__).resolve().parent / "fixtures" / "walk_policy_v3.onnx"
 # mjlab's natural joint order (robot.joint_names) as in exported Microban ONNX.
@@ -44,10 +45,25 @@ def csv(values) -> str:
     return ",".join(repr(float(value)) for value in values)
 
 
+def home_pose_stamp(home: dict[str, float] | None = None) -> str:
+    """The exporters' full-precision HOME stamp (walk home_pose, get-up home_pose)."""
+    home = NEUTRAL_POSE if home is None else home
+    return json.dumps(
+        {
+            "root_pos_m": [0.0, 0.0, HOME_ROOT_POS_Z_M],
+            "root_quat_wxyz": list(HOME_ROOT_QUAT_WXYZ),
+            "joint_pos_rad": {name: float(home[name]) for name in sorted(home)},
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+
+
 def walk_contract_metadata(home: dict[str, float] | None = None) -> dict[str, str]:
     home = NEUTRAL_POSE if home is None else home
     return {
-        "walk_contract_version": "v3_centered_home_servo_range",
+        "walk_contract_version": HOME_CONTRACTS["walk_contract_version"],
+        "home_pose": home_pose_stamp(home),
         "previous_action_semantics": "raw_policy_output",
         "joint_names": ",".join(JOINT_NAMES),
         "default_joint_pos": csv(home[name] for name in JOINT_NAMES),
@@ -81,15 +97,7 @@ def getup_contract_metadata(home: dict[str, float] | None = None) -> dict[str, s
         "action_scale": "1.0",
         "microban_getup_checkpoint_contract_stamp": "v5",
         "checkpoint_sha256": "0" * 64,
-        "microban_getup_home_pose": json.dumps(
-            {
-                "root_pos_m": [0.0, 0.0, HOME_ROOT_POS_Z_M],
-                "root_quat_wxyz": list(HOME_ROOT_QUAT_WXYZ),
-                "joint_pos_rad": {name: float(home[name]) for name in sorted(home)},
-            },
-            sort_keys=True,
-            separators=(",", ":"),
-        ),
+        "microban_getup_home_pose": home_pose_stamp(home),
     }
 
 

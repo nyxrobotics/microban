@@ -23,6 +23,34 @@
 > real servo boundary and never change these logical targets or observations;
 > see [Real-robot joint offsets](usage.md#real-robot-joint-offsets).
 
+## HOME source: `config/home_pose.yaml` (2026-10-05)
+
+The HOME is no longer written out in `src/constants.py`. `src/home_pose.py`
+reads `config/home_pose.yaml`, which the training repository generates from
+its single HOME file (`mjlab_microban/config/home_pose.yaml`) with
+`uv run python config/home_pose_tool.py write-robot --microban-repo <this repo>`.
+It holds the 21 joint angles (degrees and bit-exact radians), the root
+position/quaternion, the projected gravity at HOME, the HOME-bound contract
+strings (`walk_contract_version`, `v12_home_pose_revision`, both v12 recipe
+revisions, the packager revision) and the hand-target FK contract
+(`EXPECTED_V12_HAND_TARGET_FK`). `NEUTRAL_POSE`, `HOME_ROOT_*`,
+`HOME_PROJECTED_GRAVITY`, the `pico_hybrid.py` pins above and
+`walk.WALK_CONTRACT_VERSION` come from it, and `walk.onnx` must also carry a
+`home_pose` stamp equal to it. With the current file every value is the
+centered HOME of 2026-10-05 (`tests/test_shared_home.py`,
+`tests/test_home_pose_config.py`). The runtime supports only a vertical trunk
+at HOME and refuses a file with another trunk pitch.
+
+Changing HOME: edit the training repository's `config/home_pose.yaml`,
+retrain walking, get-up and PICO v12, run `write-robot`, install the three
+policies, update the literal HOME in `tests/test_shared_home.py` and the
+run-specific pins (`EXPECTED_V12_LEGACY_SOURCE_*`, `EXPECTED_WALK_FALLBACK_SHA256`),
+then package PICO against this tree. Because `src/constants.py`,
+`src/moves/pico_hybrid.py` and `src/moves/walk.py` are runtime-identity files,
+the installed `pico_teleop.onnx` was re-packaged from the same checkpoint for
+this change (only its three source hashes differ; sha256
+`d4aaff04dbf78e45096e2abf89149f51535cd393f56463513e149b164c232c25`).
+
 ## Centered-HOME package contract (2026-10-04)
 
 The robot accepts only a v12 package from the centered-HOME chain in
@@ -98,6 +126,14 @@ Receipt:
 `artifacts/teleop_v12_releases/2026-10-05_03-31-01_c20k_v12_pr_10100_to15000_model_14999_deployment_receipt.json`
 in the training repository. `tools/validate_pico_policy.py` passes (CPU smoke,
 walk fallback `c9cdd852...`).
+
+Re-packaged the same day from the same checkpoint and gate after the HOME
+moved to `config/home_pose.yaml` (identical graph and metadata except the
+runtime source hashes of `src/constants.py`, `src/moves/pico_hybrid.py` and
+`src/moves/walk.py`): sha256
+`d4aaff04dbf78e45096e2abf89149f51535cd393f56463513e149b164c232c25`; receipt
+`artifacts/teleop_v12_releases/2026-10-05_03-31-01_c20k_v12_pr_10100_to15000_model_14999_homecfg_repack_receipt.json`
+(local, in the training repository's `home-config` worktree).
 
 ## Live checkpoint: 2026-09-27
 

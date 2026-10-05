@@ -7,7 +7,8 @@ does (for example the mjlab_microban venv), from the repository root:
 
 The actor is linear: action[i] = 0.5 * joint_pos_residual[i] + BIAS[i], which
 lets tests predict its output.  Its metadata is the deployed walking contract
-(walk_contract_version v3_centered_home_servo_range: action_clip_lower/upper
+(walk_contract_version from config/home_pose.yaml, v3_centered_home_servo_range
+at the centered HOME, plus the full-precision home_pose stamp: action_clip_lower/upper
 = -pi/+pi on all 18 joints, raw previous action) with a full-precision
 default_joint_pos equal to NEUTRAL_POSE.  The output is byte-for-byte
 deterministic: running it twice writes the same file.
