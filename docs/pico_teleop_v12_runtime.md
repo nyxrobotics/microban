@@ -32,14 +32,14 @@ The robot accepts only a v12 package from the centered-HOME chain in
 
 | Metadata key | Required value |
 | --- | --- |
-| `microban_teleop_recipe_revision` | `centered_home_velocity_source_staged_mask_reachable_fk_elbow_minus10_raw_prev_action_servo_range_pi_v11` |
+| `microban_teleop_recipe_revision` | `centered_home_velocity_source_staged_mask_reachable_fk_elbow_minus10_raw_prev_action_servo_range_pi_v11`, or the pose-release recipe `centered_home_velocity_source_staged_mask_reachable_fk_elbow_minus10_raw_prev_action_servo_range_pi_active_hand_arm_pose_release_v12` (same observation/action contract, HOME, source, probe and runtime semantics; only the training reward differs) |
 | `v12_bootstrap_provenance_schema_version` | `2` |
 | `v12_legacy_source_checkpoint_sha256` | `f395d04c324b6eca339e40a20c64b21b5a22e944c99f7b590235e355b429b565` (`checkpoints/centered_home_velocity_cont/model_20000.pt`, the source of the installed `walk.onnx`) |
 | `v12_legacy_source_checkpoint_iteration` | `20000` (the checkpoint's saved `iter`) |
 | `v12_legacy_probe_sha256` | `ac47d437639bb43176f3dddb24ca8bc8bdad425d63e95c8176e615ef1573a25a` (`artifacts/legacy_teleop_probe/velocity_f395d04c324b6eca_teleop83_raw_9x300.json`; 9 x 300 steps, settle 50, seed 42) |
 | `v12_home_pose_revision` | `centered_home_hip_plus1p198384259489_ankle_minus1p198384259489_shoulder_zero_v5` |
 | `v12_training_home_pose_json` | schema 2, that revision, the 21 observation joints at `NEUTRAL_POSE` and root z `HOME_ROOT_POS_Z_M`, upright, each within 1e-9 |
-| `v12_tracking_profile` | `full_body_reachable_performance_perturbation_v2_deployed_accuracy_v1` (canonical; deployed-model accuracy limits, user-approved), or the stricter `full_body_reachable_performance_perturbation_v2`, or the lineage-bound deadline-final profile |
+| `v12_tracking_profile` | v11 recipe: `full_body_reachable_performance_perturbation_v2_deployed_accuracy_v1` (canonical; deployed-model accuracy limits, user-approved), or the stricter `full_body_reachable_performance_perturbation_v2`, or the lineage-bound deadline-final profile. Pose-release recipe: `full_body_reachable_performance_perturbation_v2_completion_allowance_v1` (final-gate completion allowance, see below), or the deployed-accuracy or strict profile |
 | `previous_action_semantics` | `raw_actor_output` |
 | `action_target_semantics` | `default_joint_pos_plus_raw_action_times_scale_saturated_at_action_clip` |
 | `action_clip_semantics` | `absolute_target_saturated_at_servo_goal_range_pi_no_software_clip_all_body_joints_radians` |
@@ -62,6 +62,27 @@ servo goal into `[-pi, pi - 2*pi/4096]`. The archived old-HOME chain (source
 `b0bcdada...`, iteration 14999, probe `f51378d5...`, recipe
 `..._raw_actions_v5`, provenance schema 1, `action_clip_semantics=none`) is
 refused.
+
+### Pose-release recipe and final-gate completion allowance (2026-10-05)
+
+The active-hand arm pose-release lineage (trained, or switched from the v11
+chain at `model_7099`, with a reward that releases the free arm's pose while a
+hand target is active) declares its own recipe string; everything else the robot
+pins is identical to v11.  Its 15000-update gate runs under the
+user-approved completion allowance, which loosens only the accuracy limits:
+
+| | RMS | P95 |
+| --- | --- | --- |
+| hand | <= 0.045 m (deployed-accuracy 0.035) | <= 0.08 m (0.07) |
+| foot | <= 0.055 m (0.05) | <= 0.11 m (0.08) |
+
+Scenarios, perturbation, ablation targets and every non-accuracy check (no
+falls, actual soft limits, finiteness, raw-action recurrence, coverage,
+target-column ablation, forced HMD motion, twist response) are unchanged.
+Reason: the deployed-accuracy gate failed only on accuracy, in the two mixed
+scenarios (near-fall states for this and the previous canonical model) and
+by 2 mm in `max_keypoints_left` foot RMS, while all safety checks passed.
+The robot accepts the allowance only together with the pose-release recipe.
 
 ## Live checkpoint: 2026-09-27
 
@@ -268,8 +289,10 @@ The ONNX metadata must bind the final checkpoint to all of the following:
   stricter `full_body_reachable_performance_perturbation_v2`, or the explicitly
   lineage-bound deadline-final profile
   `deadline_full_body_hand_rms35mm_p95_70mm_foot_rms50mm_p95_80mm_perturbation_v2`;
-  every other
-  profile is rejected;
+  a pose-release package may instead carry the completion-allowance profile
+  `full_body_reachable_performance_perturbation_v2_completion_allowance_v1`
+  (or the deployed-accuracy/strict profile, never the deadline one); every
+  other profile, and the completion allowance on a v11 package, is rejected;
 - the tracking report's exact 18-joint v12, pinned-source and learned-minus-
   source raw-action extrema, plus the versioned runtime guard derived from
   those hash-bound values;

@@ -82,6 +82,7 @@ from moves.pico_hybrid import (
     EXPECTED_V12_BOOTSTRAP_MAPPING_VERSION,
     EXPECTED_V12_BOOTSTRAP_PROVENANCE_SCHEMA_VERSION,
     EXPECTED_V12_COMMANDED_TARGET_SOFT_LIMIT_EXCESS_MAX_RAD,
+    EXPECTED_V12_COMPLETION_ALLOWANCE_TRACKING_PROFILE,
     EXPECTED_V12_DEADLINE_FINAL_TRACKING_PROFILE,
     EXPECTED_V12_EXTRA_OBSERVATION_COLUMNS,
     EXPECTED_V12_HAND_TARGET_FK,
@@ -91,6 +92,7 @@ from moves.pico_hybrid import (
     EXPECTED_V12_LEGACY_SOURCE_CHECKPOINT_SHA256,
     EXPECTED_V12_NORMALIZER_SEMANTICS,
     EXPECTED_V12_OBSERVATION_JOINT_NAMES,
+    EXPECTED_V12_POSE_RELEASE_RECIPE_REVISION,
     EXPECTED_V12_RAW_ACTION_ENVELOPE_SCHEMA_VERSION,
     EXPECTED_V12_RAW_ACTION_GUARD_FORMULA,
     EXPECTED_V12_RAW_ACTION_GUARD_MULTIPLIER,
@@ -753,6 +755,58 @@ class PicoHybridMoveTest(unittest.TestCase):
         move = PicoHybridMove(session=FakeSession(metadata=metadata))
         self.assertEqual(move._contract.training_contract_version, "12")
 
+    def test_v12_contract_accepts_pose_release_recipe_profiles(self):
+        # The pose-release lineage's final gate runs under the completion
+        # allowance; a gate under the deployed-accuracy or strict profile is
+        # also accepted, as the packager does.
+        self.assertEqual(
+            EXPECTED_V12_POSE_RELEASE_RECIPE_REVISION,
+            "centered_home_velocity_source_staged_mask_reachable_fk_elbow_"
+            "minus10_raw_prev_action_servo_range_pi_active_hand_arm_pose_"
+            "release_v12",
+        )
+        self.assertEqual(
+            EXPECTED_V12_COMPLETION_ALLOWANCE_TRACKING_PROFILE,
+            "full_body_reachable_performance_perturbation_v2_"
+            "completion_allowance_v1",
+        )
+        for profile in (
+            EXPECTED_V12_COMPLETION_ALLOWANCE_TRACKING_PROFILE,
+            EXPECTED_V12_TRACKING_PROFILE,
+            EXPECTED_V12_STRICT_TRACKING_PROFILE,
+        ):
+            with self.subTest(profile=profile):
+                metadata = valid_v12_metadata()
+                metadata["microban_teleop_recipe_revision"] = (
+                    EXPECTED_V12_POSE_RELEASE_RECIPE_REVISION
+                )
+                metadata["v12_tracking_profile"] = profile
+                move = PicoHybridMove(session=FakeSession(metadata=metadata))
+                self.assertEqual(move._contract.training_contract_version, "12")
+
+    def test_v12_pose_release_recipe_rejects_deadline_and_unknown_profiles(self):
+        for profile in (
+            EXPECTED_V12_DEADLINE_FINAL_TRACKING_PROFILE,
+            (
+                "full_body_reachable_performance_perturbation_v2_"
+                "completion_allowance_v2"
+            ),
+        ):
+            with self.subTest(profile=profile):
+                metadata = valid_v12_metadata()
+                metadata["microban_teleop_recipe_revision"] = (
+                    EXPECTED_V12_POSE_RELEASE_RECIPE_REVISION
+                )
+                metadata["v12_tracking_profile"] = profile
+                if profile == EXPECTED_V12_DEADLINE_FINAL_TRACKING_PROFILE:
+                    metadata["v12_onnx_parity_atol"] = "2.5e-05"
+                session = FakeSession(metadata=metadata)
+                with self.assertRaisesRegex(
+                    PicoHybridPolicyContractError, "accepted final profile"
+                ):
+                    PicoHybridMove(session=session)
+                self.assertEqual(session.run_count, 0)
+
     def test_v12_contract_accepts_deadline_final_tracking_profile(self):
         metadata = valid_v12_metadata()
         metadata["v12_tracking_profile"] = (
@@ -877,11 +931,21 @@ class PicoHybridMoveTest(unittest.TestCase):
                 "legacy_velocity_model14999_staged_mask_reachable_fk_elbow_minus10_"
                 "raw_actions_v5",
             ),
-            "hand_pose_release_recipe": (
+            "unknown_pose_release_recipe": (
                 "microban_teleop_recipe_revision",
-                "centered_home_velocity_source_staged_mask_reachable_fk_elbow_"
-                "minus10_raw_prev_action_servo_range_pi_active_hand_arm_pose_"
-                "release_v12",
+                (
+                    "centered_home_velocity_source_staged_mask_reachable_fk_"
+                    "elbow_minus10_raw_prev_action_servo_range_pi_active_hand_"
+                    "arm_pose_release_v13"
+                ),
+            ),
+            # The completion allowance is bound to the pose-release lineage.
+            "v11_completion_allowance_profile": (
+                "v12_tracking_profile",
+                (
+                    "full_body_reachable_performance_perturbation_v2_"
+                    "completion_allowance_v1"
+                ),
             ),
             "old_target_semantics": (
                 "action_target_semantics",

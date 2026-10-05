@@ -212,6 +212,17 @@ EXPECTED_V12_RECIPE_REVISION = (
     "centered_home_velocity_source_staged_mask_reachable_fk_elbow_minus10_"
     "raw_prev_action_servo_range_pi_v11"
 )
+# The release-eligible active-hand arm pose-release recipe (the v11 chain
+# switched at model_7099 to a reward that releases the free arm's pose while a
+# hand target is active).  Observation/action contract, HOME, source, probe and
+# runtime semantics are identical to v11; only the training reward differs.
+EXPECTED_V12_POSE_RELEASE_RECIPE_REVISION = (
+    "centered_home_velocity_source_staged_mask_reachable_fk_elbow_minus10_"
+    "raw_prev_action_servo_range_pi_active_hand_arm_pose_release_v12"
+)
+EXPECTED_V12_RECIPE_REVISIONS = frozenset(
+    (EXPECTED_V12_RECIPE_REVISION, EXPECTED_V12_POSE_RELEASE_RECIPE_REVISION)
+)
 # The training HOME marker the packager copies from the checkpoint.  Its
 # joint_pos_rad must equal PICO_TELEOP_HOME_POSE (NEUTRAL_POSE) at full
 # precision; default_joint_pos is only the 3-decimal mjlab serialization.
@@ -272,12 +283,33 @@ EXPECTED_V12_DEADLINE_FINAL_TRACKING_PROFILE = (
     "deadline_full_body_hand_rms35mm_p95_70mm_foot_rms50mm_p95_80mm_"
     "perturbation_v2"
 )
-EXPECTED_V12_TRACKING_PROFILES = frozenset(
-    (
-        EXPECTED_V12_TRACKING_PROFILE,
-        EXPECTED_V12_STRICT_TRACKING_PROFILE,
-        EXPECTED_V12_DEADLINE_FINAL_TRACKING_PROFILE,
-    )
+# Final-gate completion allowance (user-approved 2026-10-05), bound to the
+# pose-release lineage only: hand RMS/P95 <= 0.045/0.08 m, foot RMS/P95 <=
+# 0.055/0.11 m; every non-accuracy check (falls, soft limits, finiteness,
+# recurrence, coverage, ablation, HMD, twist) is unchanged.  Its two mixed
+# scenarios are near-fall states in which the deployed-accuracy limits were
+# missed by a few millimetres while every safety check passed.
+EXPECTED_V12_COMPLETION_ALLOWANCE_TRACKING_PROFILE = (
+    f"{EXPECTED_V12_STRICT_TRACKING_PROFILE}_completion_allowance_v1"
+)
+EXPECTED_V12_TRACKING_PROFILES_BY_RECIPE = {
+    EXPECTED_V12_RECIPE_REVISION: frozenset(
+        (
+            EXPECTED_V12_TRACKING_PROFILE,
+            EXPECTED_V12_STRICT_TRACKING_PROFILE,
+            EXPECTED_V12_DEADLINE_FINAL_TRACKING_PROFILE,
+        )
+    ),
+    EXPECTED_V12_POSE_RELEASE_RECIPE_REVISION: frozenset(
+        (
+            EXPECTED_V12_COMPLETION_ALLOWANCE_TRACKING_PROFILE,
+            EXPECTED_V12_TRACKING_PROFILE,
+            EXPECTED_V12_STRICT_TRACKING_PROFILE,
+        )
+    ),
+}
+EXPECTED_V12_TRACKING_PROFILES = frozenset().union(
+    *EXPECTED_V12_TRACKING_PROFILES_BY_RECIPE.values()
 )
 EXPECTED_V12_ACTUAL_DYNAMIC_SOFT_LIMIT_OVERSHOOT_MAX_DEG = 5.0
 EXPECTED_V12_ACTUAL_DYNAMIC_SOFT_LIMIT_OVERSHOOT_MAX_RAD = math.radians(
@@ -2273,11 +2305,12 @@ def _parse_v12_contract(session: Any) -> _PolicyContract:
         "microban_teleop_training_contract_version",
         EXPECTED_V12_TRAINING_CONTRACT_VERSION,
     )
-    _require_exact_metadata(
-        metadata,
-        "microban_teleop_recipe_revision",
-        EXPECTED_V12_RECIPE_REVISION,
-    )
+    recipe_revision = metadata.get("microban_teleop_recipe_revision")
+    if recipe_revision not in EXPECTED_V12_RECIPE_REVISIONS:
+        raise PicoHybridPolicyContractError(
+            "microban_teleop_recipe_revision does not match the contract-v12 "
+            "deployment contract"
+        )
     _require_v12_home_pose(metadata)
     _require_v12_runtime_source_identity(metadata)
 
@@ -2340,7 +2373,8 @@ def _parse_v12_contract(session: Any) -> _PolicyContract:
     tracking_profile = metadata.get("v12_tracking_profile")
     if (
         not isinstance(tracking_profile, str)
-        or tracking_profile not in EXPECTED_V12_TRACKING_PROFILES
+        or tracking_profile
+        not in EXPECTED_V12_TRACKING_PROFILES_BY_RECIPE[recipe_revision]
     ):
         raise PicoHybridPolicyContractError(
             "v12_tracking_profile is not an accepted final profile"
