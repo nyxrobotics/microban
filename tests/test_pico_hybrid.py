@@ -709,6 +709,22 @@ class PicoHybridMoveTest(unittest.TestCase):
 
         self.assertEqual(session.run_count, 0)
 
+    def test_dry_run_package_is_refused_unless_the_dry_run_allows_it(self):
+        metadata = valid_v12_metadata()
+        metadata["dry_run_not_deployable"] = "true"
+        with patch.dict("os.environ", {}, clear=False):
+            import os
+
+            os.environ.pop("MICROBAN_ALLOW_DRYRUN_POLICY", None)
+            session = FakeSession(metadata=metadata)
+            with self.assertRaisesRegex(PicoHybridPolicyContractError, "DRY RUN"):
+                PicoHybridMove(session=session)
+            self.assertEqual(session.run_count, 0)
+            # Only scripts/retrain_all_for_home.py --dry-run sets this for its
+            # own validator and test calls.
+            os.environ["MICROBAN_ALLOW_DRYRUN_POLICY"] = "1"
+            PicoHybridMove(session=FakeSession(metadata=metadata))
+
     def test_v12_contract_rechecks_runtime_source_identity_after_smoke(self):
         changed = dict(CURRENT_RUNTIME_SOURCE_IDENTITY)
         changed["microban_scheduler_source_sha256"] = "0" * 64

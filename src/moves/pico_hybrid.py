@@ -14,6 +14,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import os
 import re
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
@@ -2268,6 +2269,21 @@ def _parse_v12_raw_action_envelope(
     )
 
 
+# A package built by a dry run of the training repository's
+# scripts/retrain_all_for_home.py (a few updates per stage, gates forced) is
+# marked with this metadata key.  It never runs on the robot: only the dry run's
+# own validator and test calls set DRY_RUN_POLICY_ALLOW_ENV to "1".
+DRY_RUN_METADATA_KEY = "dry_run_not_deployable"
+DRY_RUN_POLICY_ALLOW_ENV = "MICROBAN_ALLOW_DRYRUN_POLICY"
+
+
+def _refuse_dry_run_policy(metadata: Mapping[str, str]) -> None:
+    if DRY_RUN_METADATA_KEY in metadata and os.environ.get(DRY_RUN_POLICY_ALLOW_ENV) != "1":
+        raise PicoHybridPolicyContractError(
+            "policy is a DRY RUN package (dry_run_not_deployable); it is not deployable"
+        )
+
+
 def _parse_v12_contract(session: Any) -> _PolicyContract:
     """Parse the raw-action v12 contract without relaxing contract v10.
 
@@ -2300,6 +2316,7 @@ def _parse_v12_contract(session: Any) -> _PolicyContract:
         )
 
     metadata = session.get_modelmeta().custom_metadata_map
+    _refuse_dry_run_policy(metadata)
     _require_exact_metadata(metadata, "policy_type", EXPECTED_POLICY_TYPE)
     _require_exact_metadata(
         metadata,
@@ -2949,6 +2966,7 @@ def _parse_contract(session: Any) -> _PolicyContract:
         metadata = session.get_modelmeta().custom_metadata_map
     except Exception as exc:
         raise PicoHybridPolicyContractError("failed to read ONNX metadata") from exc
+    _refuse_dry_run_policy(metadata)
     version = metadata.get("microban_teleop_training_contract_version")
     if version == EXPECTED_V12_TRAINING_CONTRACT_VERSION:
         return _parse_v12_contract(session)

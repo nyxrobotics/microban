@@ -79,6 +79,26 @@ re-packaged once more from the same checkpoint and gate with the training
 in the training repository. The robot now also requires
 `v12_deployment_packager_revision` to be the file's packager revision.
 
+A package built by a dry run of the training repository's
+`scripts/retrain_all_for_home.py` carries `dry_run_not_deployable` and is
+refused unless `MICROBAN_ALLOW_DRYRUN_POLICY=1` (set only by the dry run's own
+validator and test calls). That edit of `src/moves/pico_hybrid.py` needed one
+more re-package from the same checkpoint and gate, with the training
+`home-config` packager 1059fe3 (`export_teleop_v12_deployment.py` sha256
+`92aa3100...`): sha256
+`13deb3be1e302836a27573d59d42317f64bb3badb15f26af10b401e2c6cc78a8`, receipt
+`artifacts/teleop_v12_releases/2026-10-05_03-31-01_c20k_v12_pr_10100_to15000_model_14999_homecfg_r2_repack_receipt.json`
+in the training repository; graph and weights are unchanged.
+
+Compared with the deploy branch (`feature/neck-roll-pitch-camera` a62a793),
+these checks are deliberately stricter at the centered HOME too (they are the
+forward-lean branch's checks, applied at every HOME; the deployed walk.onnx
+`c9cdd852`, getup.onnx `80cd7ddb` and this package pass them): a walk.onnx
+without the `home_pose` stamp is refused, the get-up stamp's root position is
+compared in x, y and z, `v12_deployment_packager_revision` must match, the
+v12 training-HOME marker must be the exact JSON, and dry-run packages are
+refused.
+
 ## Centered-HOME package contract (2026-10-04)
 
 The robot accepts only a v12 package from the centered-HOME chain in
