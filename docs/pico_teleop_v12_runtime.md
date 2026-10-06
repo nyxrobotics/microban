@@ -99,27 +99,57 @@ from run `2026-10-05_06-14-02_lean_walk_cont2` `model_29000`, checkpoint sha256
 `a7c28c8abaf038d85c9c773bdaa2cc6bbe3c9bb2af6135622a4949c38a0401ff`) and pinned
 as `EXPECTED_WALK_FALLBACK_SHA256` in `tools/validate_pico_policy.py`.
 The lean source checkpoint and probe are pinned in `pico_hybrid.py` (table
-above). `src/agents/pico_teleop.onnx` is not installed, and no lean PICO
-package exists (2026-10-06): the fresh pose-release chain `lean_v12_pr_*` in
-mjlab_microban `forward-lean-v2` passed its 10000 and 10100 gates, but four
-10100 -> 15000 retrains (seeds 42, 42, 43, 44) and six final rescues all failed
-the unchanged 14999 final gate on mixed_forward_left (lateral twist response,
-and falls under the evaluator push for the rescues and seed 44). A changed
-10100 -> 15000 retrain alone cannot fix it: a held-out probe found the
-lateral loss starts at update 7100, when hand targets activate, so the
-training recipe must change from the gated model_7099 onward. A
-lateral-fidelity variant restarted from that model_7099 (v1: mixed-command
-lateral-deficit reward at -8, then -16; mjlab_microban `forward-lean-v2`
-95fac36) was stopped on 2026-10-06 by its pre-registered held-out probe at
-model_7500, before any gate. Its v1 term scaled with forward progress, so
-the policy could reduce it by walking forward more slowly. Its successor V3
-(v2 term `hand_active_lateral_shortfall`, which does not read forward speed,
-at -24 with a -40 fallback; `forward-lean-v2` ac0123c) is training under
-new pre-registered held-out rules. The lean
-final gate stays at 10 tries, all failed. When one passes, its package must be
-built against this repository (the package's runtime identity hashes the
-installed `walk.onnx`). Until then PICO teleop fails closed on the missing
-file.
+above). 2026-10-06 時点の `src/agents/pico_teleop.onnx` は、ゲート合格版ではなく
+ユーザー承認による**暫定版**です（次節）。
+
+### 暫定版 PICO モデル（ユーザー承認の waiver、2026-10-06）
+
+**このモデルは暫定版です。修正版モデル（twist-ratio レシピで再学習中）ができ次第、
+置き換えます。**
+
+- モデル: mjlab_microban `forward-lean-v2` の run
+  `2026-10-06_01-05-06_lean_v12_pr_10100_to15000` の `model_14999.pt`
+  （pose-release レシピ v18、seed 43、checkpoint SHA-256
+  `b41a6cb2df5e05909f75b35f50889b298559e97bf2ee56d1c35277fb2cc71e54`）。
+  10000 / 10100 の境界ゲート（`5a53c6ef...` / `9e6fca8a...`）は合格済みで、
+  パッケージに記録されています。
+- インストール済み `pico_teleop.onnx`: SHA-256
+  `ed656a2a479dc1d457d7370a4e237c68048197f064cc843dd1df9d9681a31f9e`。
+  ステージゲートの状態は `pass` ではなく `provisional_user_waiver`、
+  tracking profile は
+  `full_body_reachable_performance_perturbation_v2_completion_allowance_v1_user_waiver_mixed_forward_left_twist_v1`。
+- **既知の制限（はっきり言うと）: スティックを斜め左前に倒しながら左旋回し、手を
+  伸ばしている（左手を前に出す）と、左方向にほとんど進みません。** 評価器の
+  `mixed_forward_left` シナリオ（周期的な押しあり）で左右方向の速度応答が
+  -0.017 m/s（必要な最小値 0.02 m/s、符号も逆）でした。前進と旋回は効きます
+  （前進 0.29 m/s、旋回 0.94 rad/s）。シミュレーションのロボット実行時でも同じ傾向で、
+  前 0.7・左 0.3・左旋回 1.5 の指令で手を伸ばすと左右速度は約 -0.01 m/s でした。
+- ユーザーが許可した例外はこの 3 項目だけです（それ以外の判定はすべて通常どおり合格）:
+  1. 上記の `twist_directional_response`（`mixed_forward_left` の左右軸のみ、-0.0170 対 0.02）。
+     ユーザーの判断（2026-10-06 10:00 頃）: 「苦手な動きが1つ残ったまま実機の前傾版ブランチに入れてよい。その後直す、が良いと思います」
+  2. ONNX 変換一致チェック（乱数入力 64 件）のうち 1 件（sample 60）で ONNX Runtime CPU
+     が許容値をわずかに超過（比 1.0179、9.155e-5 対 8.995e-5）。
+  3. その乱数入力での出力最大値 219.999 がロボット側の上限 200 を超過。
+     2 と 3 についてのユーザーの判断（2026-10-06 10:20 頃）: 「「A（許容して入れる）」」。
+     条件として、パッケージに記録された実機相当の観測（自己診断コーパス 16 件）で
+     torch と ONNX（Runtime CPU / reference）が通常ルールで一致することを確認済み
+     （比の最大 0.043）。sim のロボット実行時入力 46,339 件（ONNX Runtime 1.30）でも
+     比の最大 0.195、出力最大 15.9 で、通常ルール内でした。
+- それ以外は通常どおり: 9x300 歩行判定、転倒なし、ソフト限界（最大 0.0512 rad）、
+  手足の追従精度（completion allowance）、中立時の旧方策一致、ONNX reference 一致、
+  起動時の自己診断（記録コーパス 16 件）、walk フォールバック確認。
+  `tools/validate_pico_policy.py` は `v12_provisional_user_waiver` に暫定版である旨と
+  例外 3 項目を出力します。
+- ロボット側は、この 1 つのパッケージ（checkpoint、暫定ゲート `39200a85...`、
+  3 つのレポート、ゲート ONNX、例外値 2 つの各ハッシュ／値）だけを受け付けます。
+  他のパッケージがこの waiver・profile・状態を名乗っても拒否されます。
+- 削除手順（修正版を入れるとき）: `src/moves/pico_hybrid.py` の
+  `V12 USER WAIVER` ブロックと `TEMPORARY user waiver` タグの付いた行、
+  `tools/validate_pico_policy.py` の同タグの 2 か所、`tests/test_pico_user_waiver.py`、
+  および本節を削除します。学習側は mjlab_microban の
+  `src/mjlab_microban/scripts/teleop_v12_user_waiver.py`、
+  `tests/test_teleop_v12_user_waiver.py`、`export_teleop_v12_deployment.py` の
+  `TEMPORARY user waiver` タグ行です。
 
 ## Centered-HOME package contract (2026-10-04, centered line reference)
 
