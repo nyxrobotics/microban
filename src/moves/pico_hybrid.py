@@ -246,15 +246,22 @@ EXPECTED_V12_RECIPE_REVISIONS = frozenset(
 # complete marker, and the marker must equal, field for field and type for
 # type (canonical JSON), the one the trainer builds for that revision and
 # weight: v1 = mixed-command lateral deficit (weights -8, -16), v2 =
-# hand-active lateral shortfall that does not read forward speed (-24, -40).
+# hand-active lateral shortfall that does not read forward speed (-24, -40),
+# v3 = the v2 shortfall plus mixed-command forward excess above 0.15 m/s while
+# a hand is active (-32, -48).
 # The parent model_7099 and its stage gate are pinned by path and SHA-256.
 EXPECTED_V12_LATERAL_FIDELITY_REVISION = "hand_pose_release_lateral_fidelity_v1"
 EXPECTED_V12_LATERAL_FIDELITY_V2_REVISION = "hand_pose_release_lateral_fidelity_v2"
+EXPECTED_V12_LATERAL_FIDELITY_V3_REVISION = "hand_pose_release_lateral_fidelity_v3"
 EXPECTED_V12_LATERAL_FIDELITY_REWARD_TERM = "mixed_command_lateral_deficit"
 EXPECTED_V12_LATERAL_FIDELITY_V2_REWARD_TERM = "hand_active_lateral_shortfall"
+EXPECTED_V12_LATERAL_FIDELITY_V3_REWARD_TERM = (
+    "hand_active_lateral_shortfall_forward_excess"
+)
 EXPECTED_V12_LATERAL_FIDELITY_WEIGHTS_BY_REVISION = {
     EXPECTED_V12_LATERAL_FIDELITY_REVISION: frozenset((-8.0, -16.0)),
     EXPECTED_V12_LATERAL_FIDELITY_V2_REVISION: frozenset((-24.0, -40.0)),
+    EXPECTED_V12_LATERAL_FIDELITY_V3_REVISION: frozenset((-32.0, -48.0)),
 }
 EXPECTED_V12_LATERAL_FIDELITY_WEIGHTS = frozenset().union(
     *EXPECTED_V12_LATERAL_FIDELITY_WEIGHTS_BY_REVISION.values()
@@ -294,6 +301,15 @@ _V12_LATERAL_FIDELITY_V2_REASON = (
     "restart from the gated model_7099 with a forward-speed-independent "
     "lateral shortfall penalty while a hand is active"
 )
+_V12_LATERAL_FIDELITY_V3_REASON = (
+    "forward-lean pose-release chain trades lateral for forward speed on "
+    "forward+lateral commands once hands activate and falls under pushes while "
+    "walking fast (gate mixed_forward_left vx 0.41 m/s vs centered 0.06 m/s); "
+    "the v2 shortfall alone failed its 8000 probe (vx rose to 0.23 m/s, left "
+    "pushed lateral 0.00 m/s); restart from the gated model_7099 with the v2 "
+    "shortfall plus the forward progress above 0.15 m/s on mixed commands "
+    "while a hand is active"
+)
 
 
 def expected_v12_lateral_fidelity_marker(
@@ -309,13 +325,16 @@ def expected_v12_lateral_fidelity_marker(
         or weight not in weights
     ):
         return None
-    v2 = revision == EXPECTED_V12_LATERAL_FIDELITY_V2_REVISION
+    v3 = revision == EXPECTED_V12_LATERAL_FIDELITY_V3_REVISION
+    v2 = v3 or revision == EXPECTED_V12_LATERAL_FIDELITY_V2_REVISION
     marker: dict[str, Any] = {
-        "schema_version": 2 if v2 else 1,
+        "schema_version": 3 if v3 else 2 if v2 else 1,
         "revision": revision,
         "recipe_revision": EXPECTED_V12_POSE_RELEASE_RECIPE_REVISION,
         "reward_term": (
-            EXPECTED_V12_LATERAL_FIDELITY_V2_REWARD_TERM
+            EXPECTED_V12_LATERAL_FIDELITY_V3_REWARD_TERM
+            if v3
+            else EXPECTED_V12_LATERAL_FIDELITY_V2_REWARD_TERM
             if v2
             else EXPECTED_V12_LATERAL_FIDELITY_REWARD_TERM
         ),
@@ -324,12 +343,18 @@ def expected_v12_lateral_fidelity_marker(
         "velocity_frame": "home_levelled_trunk_pitch_10deg",
         **EXPECTED_V12_LATERAL_FIDELITY_PARENT,
         "reason": (
-            _V12_LATERAL_FIDELITY_V2_REASON if v2 else _V12_LATERAL_FIDELITY_V1_REASON
+            _V12_LATERAL_FIDELITY_V3_REASON
+            if v3
+            else _V12_LATERAL_FIDELITY_V2_REASON
+            if v2
+            else _V12_LATERAL_FIDELITY_V1_REASON
         ),
     }
     if v2:
         marker["lateral_cap_m_s"] = 0.10
         marker["requires_active_hand"] = True
+    if v3:
+        marker["forward_cap_m_s"] = 0.15
     return marker
 
 

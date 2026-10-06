@@ -962,6 +962,27 @@ class PicoHybridMoveTest(unittest.TestCase):
                 session=FakeSession(metadata=self._lateral_fidelity_metadata(-4.0))
             )
 
+    def test_v12_contract_accepts_the_v3_marker_and_refuses_its_drift(self):
+        from moves.pico_hybrid import expected_v12_lateral_fidelity_marker
+
+        for weight in (-32.0, -48.0):
+            marker = expected_v12_lateral_fidelity_marker(
+                "hand_pose_release_lateral_fidelity_v3", weight
+            )
+            self.assertEqual(marker["forward_cap_m_s"], 0.15)
+            self.assertEqual(marker["schema_version"], 3)
+            self.assertEqual(
+                {k: v for k, v in marker.items() if k.startswith("parent_")},
+                self._LF_PARENT,
+            )
+            metadata = self._lateral_fidelity_metadata(marker=marker)
+            move = PicoHybridMove(session=FakeSession(metadata=metadata))
+            self.assertEqual(move._contract.training_contract_version, "12")
+            for drift in ({"forward_cap_m_s": 0.3}, {"reward_weight": -24.0}):
+                metadata = self._lateral_fidelity_metadata(marker={**marker, **drift})
+                with self.assertRaises(PicoHybridPolicyContractError):
+                    PicoHybridMove(session=FakeSession(metadata=metadata))
+
     def test_v12_contract_rejects_a_resigned_marker_with_drifted_fields(self):
         # Each marker is edited and its SHA-256 recomputed (a self-consistent
         # package): only the exact trainer marker is accepted.
