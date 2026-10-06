@@ -110,8 +110,19 @@ def _finite_float(value) -> float:
     return result
 
 
-def _unit_float(value) -> float:
-    return max(-1.0, min(1.0, _finite_float(value)))
+def _unit_twist(velocity: dict) -> dict[str, float]:
+    """Normalized (vx, vy, vtheta) with the commanded ratio kept.
+
+    A command beyond the normalized range [-1, 1] on any axis is scaled down
+    as a whole (all three axes by the same factor), never clipped per axis:
+    clipping one axis would turn the robot's walking direction.
+    """
+
+    values = {
+        axis: _finite_float(velocity.get(axis, 0.0)) for axis in ("vx", "vy", "vtheta")
+    }
+    peak = max(1.0, *(abs(value) for value in values.values()))
+    return {axis: value / peak for axis, value in values.items()}
 
 
 def _tuple3(value) -> tuple[float, float, float] | None:
@@ -541,11 +552,7 @@ class NetworkInputSource(InputSource):
         velocity = packet.get("velocity") or {}
         if not isinstance(velocity, dict):
             raise TypeError("velocity must be an object")
-        parsed_velocity = {
-            "vx": _unit_float(velocity.get("vx", 0.0)),
-            "vy": _unit_float(velocity.get("vy", 0.0)),
-            "vtheta": _unit_float(velocity.get("vtheta", 0.0)),
-        }
+        parsed_velocity = _unit_twist(velocity)
 
         move_values = packet.get("active_moves") or []
         if not isinstance(move_values, list) or not all(

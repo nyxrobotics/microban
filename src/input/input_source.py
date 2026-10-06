@@ -96,14 +96,18 @@ def scale_velocity(velocity: dict[str, float]) -> dict[str, float]:
     Applied centrally (in the scheduler) so the limits are identical for every input
     source — keyboard, gamepad, or agent. Forward and backward have different caps, and
     rotation gets a wider range when turning in place (vx = vy = 0) than while translating.
+    A command beyond [-1, 1] on any axis is scaled down as a whole, keeping the ratio of
+    the three components (the direction the robot walks), instead of clipping one axis.
     """
-    def finite_unit(name: str) -> float:
+    def finite(name: str) -> float:
         value = float(velocity.get(name, 0.0))
-        return max(-1.0, min(1.0, value)) if math.isfinite(value) else 0.0
+        return value if math.isfinite(value) else 0.0
 
-    vx = finite_unit("vx")
-    vy = finite_unit("vy")
-    vtheta = finite_unit("vtheta")
+    vx = finite("vx")
+    vy = finite("vy")
+    vtheta = finite("vtheta")
+    peak = max(1.0, abs(vx), abs(vy), abs(vtheta))
+    vx, vy, vtheta = vx / peak, vy / peak, vtheta / peak
 
     moving = abs(vx) > 1e-6 or abs(vy) > 1e-6
     vtheta_max = VTHETA_MAX_MOVING if moving else VTHETA_MAX_STATIONARY

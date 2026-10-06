@@ -335,6 +335,25 @@ class NetworkInputTest(unittest.TestCase):
         source._apply(packet(2, ["walk"], {"vx": 1.0}, session="new"))
         self.assertIn("walk", source.read().active_moves)
 
+    def test_out_of_range_twist_is_scaled_as_a_whole(self):
+        # A command beyond [-1, 1] keeps the ratio of its three components
+        # (the walking direction) instead of being clipped per axis.
+        source = NetworkInputSource(stale_after_s=0.5)
+        source._apply(packet(0))
+        source._apply(packet(1, ["walk"], {"vx": 2.0, "vy": -1.0, "vtheta": 0.5}))
+        self.assertEqual(
+            source.read().velocity, {"vx": 1.0, "vy": -0.5, "vtheta": 0.25}
+        )
+        source._apply(packet(2, ["walk"], {"vx": 0.4, "vy": -0.3, "vtheta": -0.9}))
+        self.assertEqual(
+            source.read().velocity, {"vx": 0.4, "vy": -0.3, "vtheta": -0.9}
+        )
+        source._apply(packet(3, ["walk"], {"vx": 0.5, "vy": 0.0, "vtheta": -3.0}))
+        state = source.read().velocity
+        self.assertAlmostEqual(state["vx"], 0.5 / 3.0)
+        self.assertEqual(state["vy"], 0.0)
+        self.assertEqual(state["vtheta"], -1.0)
+
     def test_out_of_order_snapshot_is_ignored(self):
         source = NetworkInputSource(stale_after_s=0.5)
         source._apply(packet(5, [], session="same"))
