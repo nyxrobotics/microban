@@ -89,7 +89,7 @@ forward-lean ones:
 | `v12_legacy_source_checkpoint_sha256` | `a7c28c8abaf038d85c9c773bdaa2cc6bbe3c9bb2af6135622a4949c38a0401ff` (`checkpoints/forward_lean_velocity/model_29000.pt` = run `2026-10-05_06-14-02_lean_walk_cont2` `model_29000`, the source of the installed lean `walk.onnx`) |
 | `v12_legacy_source_checkpoint_iteration` | `29000` (the checkpoint's saved `iter`) |
 | `v12_legacy_probe_sha256` | `ebcf45549fb68b65b5e5c568a6e8217a7f9fce5dd08c96902e66a337e3064af9` (`artifacts/legacy_teleop_probe/velocity_a7c28c8abaf038d8_teleop83_raw_9x300.json`, written by the fresh pose-release chain's start; 9 x 300 steps, settle 50, seed 42) |
-| `v12_lateral_fidelity_*` (optional) | absent, or all five keys of the lateral-fidelity variant of the v18 recipe: `v12_lateral_fidelity_revision` = `hand_pose_release_lateral_fidelity_v1`, `..._reward_weight` `-8.0` or `-16.0` (the marker's `reward_weight`), `..._parent_checkpoint_sha256` (the gated model_7099 the variant restarted from), `..._marker_json` (term `mixed_command_lateral_deficit`, recipe v18, parent iteration 7099) and `..._marker_sha256` (its canonical sorted-key JSON SHA-256). Same recipe string and runtime contract; only training differs |
+| `v12_lateral_fidelity_*` (optional) | absent, or all five keys of the lateral-fidelity variant of the v18 recipe: `v12_lateral_fidelity_revision` = `hand_pose_release_lateral_fidelity_v1` (term `mixed_command_lateral_deficit`, weight `-8.0` or `-16.0`) or `hand_pose_release_lateral_fidelity_v2` (term `hand_active_lateral_shortfall`, weight `-24.0` or `-40.0`, with `lateral_cap_m_s` 0.1 and `requires_active_hand` true), `..._reward_weight` (the marker's `reward_weight`), `..._parent_checkpoint_sha256` (pinned: the gated model_7099 `ee7ac215...` the variant restarted from), `..._marker_json` and `..._marker_sha256` (its canonical sorted-key JSON SHA-256). The marker must equal, field for field and type for type, the one the trainer builds for that revision and weight, including the pinned parent checkpoint and stage gate (path and SHA-256), schema version, frame, threshold and reason; any extra or drifted field is refused. Same recipe string and runtime contract; only training differs |
 
 Action/target semantics, clip, raw-action guard and the corpus self-test are
 the same as in the centered table below. The lean `src/agents/walk.onnx` is
@@ -105,10 +105,17 @@ mjlab_microban `forward-lean-v2` passed its 10000 and 10100 gates, but four
 10100 -> 15000 retrains (seeds 42, 42, 43, 44) and six final rescues all failed
 the unchanged 14999 final gate on mixed_forward_left (lateral twist response,
 and falls under the evaluator push for the rescues and seed 44). A changed
-10100 -> 15000 recipe is needed first. A lateral-fidelity variant restarted
-from the gated model_7099 (mixed-command lateral-deficit reward at -8, then
--16; mjlab_microban `forward-lean-v2` 95fac36) was stopped on 2026-10-06 by
-its pre-registered held-out probe at model_7500, before any gate. The lean
+10100 -> 15000 retrain alone cannot fix it: a held-out probe found the
+lateral loss starts at update 7100, when hand targets activate, so the
+training recipe must change from the gated model_7099 onward. A
+lateral-fidelity variant restarted from that model_7099 (v1: mixed-command
+lateral-deficit reward at -8, then -16; mjlab_microban `forward-lean-v2`
+95fac36) was stopped on 2026-10-06 by its pre-registered held-out probe at
+model_7500, before any gate. Its v1 term scaled with forward progress, so
+the policy could reduce it by walking forward more slowly. Its successor V3
+(v2 term `hand_active_lateral_shortfall`, which does not read forward speed,
+at -24 with a -40 fallback; `forward-lean-v2` ac0123c) is training under
+new pre-registered held-out rules. The lean
 final gate stays at 10 tries, all failed. When one passes, its package must be
 built against this repository (the package's runtime identity hashes the
 installed `walk.onnx`). Until then PICO teleop fails closed on the missing

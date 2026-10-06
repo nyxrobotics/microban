@@ -823,8 +823,75 @@ class PicoHybridMoveTest(unittest.TestCase):
                 move = PicoHybridMove(session=FakeSession(metadata=metadata))
                 self.assertEqual(move._contract.training_contract_version, "12")
 
-    @staticmethod
-    def _lateral_fidelity_metadata(weight=-8.0):
+    # The exact v1 marker a lean lateral-fidelity checkpoint records (copied
+    # from 2026-10-06_08-34-40_lean_v12_lf16_7100_to10000/model_7500.pt with
+    # its weight as a parameter); v2 adds the cap and the hand condition.
+    _LF_PARENT = {
+        "parent_lineage": "fresh_chain",
+        "parent_checkpoint_path": (
+            "repo://logs/rsl_rl/mjlab_microban_teleop_v12/"
+            "2026-10-05_14-02-37_lean_v12_pr_7000_to7100/model_7099.pt"
+        ),
+        "parent_checkpoint_sha256": (
+            "ee7ac215e06e22134488c7046877fd7c51dd2769206dc6ff699a4355c7dc8c3d"
+        ),
+        "parent_iteration": 7099,
+        "parent_completed_updates": 7100,
+        "parent_stage_gate_path": (
+            "repo://artifacts/teleop_v12_gates/"
+            "2026-10-05_14-02-37_lean_v12_pr_7000_to7100_model_7099_gate.json"
+        ),
+        "parent_stage_gate_sha256": (
+            "cc193cdf0e195e78ee96a41d55bad1dd014d808c693b8fa9745bde3e807a5a22"
+        ),
+    }
+
+    @classmethod
+    def _lateral_fidelity_marker(cls, weight=-8.0):
+        v2 = weight in (-24.0, -40.0)
+        marker = {
+            "schema_version": 2 if v2 else 1,
+            "revision": (
+                "hand_pose_release_lateral_fidelity_v2"
+                if v2
+                else "hand_pose_release_lateral_fidelity_v1"
+            ),
+            "recipe_revision": EXPECTED_V12_POSE_RELEASE_RECIPE_REVISION,
+            "reward_term": (
+                "hand_active_lateral_shortfall"
+                if v2
+                else "mixed_command_lateral_deficit"
+            ),
+            "reward_weight": weight,
+            "min_abs_command_m_s": 0.05,
+            "velocity_frame": "home_levelled_trunk_pitch_10deg",
+            **cls._LF_PARENT,
+            "reason": (
+                "forward-lean pose-release chain loses lateral velocity on "
+                "forward+lateral commands once hands activate (held-out lean "
+                "7099 +0.07 m/s, 9999 about 0 with full targets); the v1 deficit "
+                "scaled with forward progress and failed its 7500 probes at "
+                "weights 8 and 16; a crossed probe tied the residual left/right "
+                "gap to the command direction, not the target layout or HMD; "
+                "restart from the gated model_7099 with a "
+                "forward-speed-independent lateral shortfall penalty while a "
+                "hand is active"
+                if v2
+                else "forward-lean pose-release chain loses lateral velocity on "
+                "combined forward+lateral commands after hand activation "
+                "(held-out lean 7099 +0.078 m/s, 9500 +0.018 m/s); the 15000 "
+                "final gate's mixed_forward_left lateral minimum failed in 10 "
+                "tries; restart from the gated model_7099 with a lateral-deficit "
+                "penalty on mixed commands"
+            ),
+        }
+        if v2:
+            marker["lateral_cap_m_s"] = 0.10
+            marker["requires_active_hand"] = True
+        return marker
+
+    @classmethod
+    def _lateral_fidelity_metadata(cls, weight=-8.0, marker=None):
         import hashlib
         import json as _json
 
@@ -835,23 +902,18 @@ class PicoHybridMoveTest(unittest.TestCase):
         metadata["v12_tracking_profile"] = (
             EXPECTED_V12_COMPLETION_ALLOWANCE_TRACKING_PROFILE
         )
-        marker = {
-            "schema_version": 1,
-            "revision": "hand_pose_release_lateral_fidelity_v1",
-            "recipe_revision": EXPECTED_V12_POSE_RELEASE_RECIPE_REVISION,
-            "reward_term": "mixed_command_lateral_deficit",
-            "reward_weight": weight,
-            "parent_checkpoint_sha256": "e" * 64,
-            "parent_iteration": 7099,
-        }
+        if marker is None:
+            marker = cls._lateral_fidelity_marker(weight)
         canonical = _json.dumps(
             marker, ensure_ascii=True, sort_keys=True, separators=(",", ":")
         )
         metadata.update(
             {
-                "v12_lateral_fidelity_revision": "hand_pose_release_lateral_fidelity_v1",
-                "v12_lateral_fidelity_reward_weight": str(float(weight)),
-                "v12_lateral_fidelity_parent_checkpoint_sha256": "e" * 64,
+                "v12_lateral_fidelity_revision": str(marker["revision"]),
+                "v12_lateral_fidelity_reward_weight": str(marker["reward_weight"]),
+                "v12_lateral_fidelity_parent_checkpoint_sha256": str(
+                    marker["parent_checkpoint_sha256"]
+                ),
                 "v12_lateral_fidelity_marker_json": _json.dumps(
                     marker, separators=(",", ":")
                 ),
@@ -863,7 +925,7 @@ class PicoHybridMoveTest(unittest.TestCase):
         return metadata
 
     def test_v12_contract_accepts_a_complete_lateral_fidelity_marker(self):
-        for weight in (-8.0, -16.0):
+        for weight in (-8.0, -16.0, -24.0, -40.0):
             with self.subTest(weight=weight):
                 metadata = self._lateral_fidelity_metadata(weight)
                 move = PicoHybridMove(session=FakeSession(metadata=metadata))
@@ -899,6 +961,48 @@ class PicoHybridMoveTest(unittest.TestCase):
             PicoHybridMove(
                 session=FakeSession(metadata=self._lateral_fidelity_metadata(-4.0))
             )
+
+    def test_v12_contract_rejects_a_resigned_marker_with_drifted_fields(self):
+        # Each marker is edited and its SHA-256 recomputed (a self-consistent
+        # package): only the exact trainer marker is accepted.
+        cases = {
+            "min_abs_command": {"min_abs_command_m_s": 0.5},
+            "velocity_frame": {"velocity_frame": "raw"},
+            "schema_version": {"schema_version": 99},
+            "schema_bool": {"schema_version": True},
+            "extra_key": {"extra": 1},
+            "parent_completed_updates": {"parent_completed_updates": 7000},
+            "parent_lineage": {"parent_lineage": "recipe_switch"},
+            "parent_gate_path": {"parent_stage_gate_path": "repo://x_gate.json"},
+            "parent_gate_sha": {"parent_stage_gate_sha256": "c" * 64},
+            "parent_sha": {"parent_checkpoint_sha256": "e" * 64},
+            "reason": {"reason": "x"},
+            "v2_term_on_v1": {"reward_term": "hand_active_lateral_shortfall"},
+            "weight_int": {"reward_weight": -8},
+        }
+        for name, drift in cases.items():
+            with self.subTest(case=name):
+                marker = {**self._lateral_fidelity_marker(), **drift}
+                metadata = self._lateral_fidelity_metadata(marker=marker)
+                session = FakeSession(metadata=metadata)
+                with self.assertRaises(PicoHybridPolicyContractError):
+                    PicoHybridMove(session=session)
+                self.assertEqual(session.run_count, 0)
+        for name, drift in {
+            "v2_cap": {"lateral_cap_m_s": 0.2},
+            "v2_hand": {"requires_active_hand": False},
+            "v2_missing_cap": None,
+            "v2_on_v1_weight": {"reward_weight": -8.0},
+        }.items():
+            with self.subTest(case=name):
+                marker = self._lateral_fidelity_marker(-24.0)
+                if drift is None:
+                    marker.pop("lateral_cap_m_s")
+                else:
+                    marker.update(drift)
+                metadata = self._lateral_fidelity_metadata(marker=marker)
+                with self.assertRaises(PicoHybridPolicyContractError):
+                    PicoHybridMove(session=FakeSession(metadata=metadata))
 
     def test_v12_pose_release_recipe_rejects_deadline_and_unknown_profiles(self):
         for profile in (

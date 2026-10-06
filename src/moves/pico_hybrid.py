@@ -241,12 +241,98 @@ EXPECTED_V12_RECIPE_REVISIONS = frozenset(
     (EXPECTED_V12_RECIPE_REVISION, EXPECTED_V12_POSE_RELEASE_RECIPE_REVISION)
 )
 # Optional lateral-fidelity variant of the pose-release recipe: the same
-# recipe string and runtime contract, trained from a gated model_7099 with one
-# extra reward (mixed-command lateral-deficit penalty).  A package that names
-# it must carry the complete, self-consistent marker; nothing else changes.
+# recipe string and runtime contract, trained from the gated fresh-chain
+# model_7099 with one extra reward.  A package that names it must carry the
+# complete marker, and the marker must equal, field for field and type for
+# type (canonical JSON), the one the trainer builds for that revision and
+# weight: v1 = mixed-command lateral deficit (weights -8, -16), v2 =
+# hand-active lateral shortfall that does not read forward speed (-24, -40).
+# The parent model_7099 and its stage gate are pinned by path and SHA-256.
 EXPECTED_V12_LATERAL_FIDELITY_REVISION = "hand_pose_release_lateral_fidelity_v1"
+EXPECTED_V12_LATERAL_FIDELITY_V2_REVISION = "hand_pose_release_lateral_fidelity_v2"
 EXPECTED_V12_LATERAL_FIDELITY_REWARD_TERM = "mixed_command_lateral_deficit"
-EXPECTED_V12_LATERAL_FIDELITY_WEIGHTS = frozenset((-8.0, -16.0))
+EXPECTED_V12_LATERAL_FIDELITY_V2_REWARD_TERM = "hand_active_lateral_shortfall"
+EXPECTED_V12_LATERAL_FIDELITY_WEIGHTS_BY_REVISION = {
+    EXPECTED_V12_LATERAL_FIDELITY_REVISION: frozenset((-8.0, -16.0)),
+    EXPECTED_V12_LATERAL_FIDELITY_V2_REVISION: frozenset((-24.0, -40.0)),
+}
+EXPECTED_V12_LATERAL_FIDELITY_WEIGHTS = frozenset().union(
+    *EXPECTED_V12_LATERAL_FIDELITY_WEIGHTS_BY_REVISION.values()
+)
+EXPECTED_V12_LATERAL_FIDELITY_PARENT = {
+    "parent_lineage": "fresh_chain",
+    "parent_checkpoint_path": (
+        "repo://logs/rsl_rl/mjlab_microban_teleop_v12/"
+        "2026-10-05_14-02-37_lean_v12_pr_7000_to7100/model_7099.pt"
+    ),
+    "parent_checkpoint_sha256": (
+        "ee7ac215e06e22134488c7046877fd7c51dd2769206dc6ff699a4355c7dc8c3d"
+    ),
+    "parent_iteration": 7099,
+    "parent_completed_updates": 7100,
+    "parent_stage_gate_path": (
+        "repo://artifacts/teleop_v12_gates/"
+        "2026-10-05_14-02-37_lean_v12_pr_7000_to7100_model_7099_gate.json"
+    ),
+    "parent_stage_gate_sha256": (
+        "cc193cdf0e195e78ee96a41d55bad1dd014d808c693b8fa9745bde3e807a5a22"
+    ),
+}
+_V12_LATERAL_FIDELITY_V1_REASON = (
+    "forward-lean pose-release chain loses lateral velocity on combined "
+    "forward+lateral commands after hand activation (held-out lean 7099 +0.078 "
+    "m/s, 9500 +0.018 m/s); the 15000 final gate's mixed_forward_left lateral "
+    "minimum failed in 10 tries; restart from the gated model_7099 with a "
+    "lateral-deficit penalty on mixed commands"
+)
+_V12_LATERAL_FIDELITY_V2_REASON = (
+    "forward-lean pose-release chain loses lateral velocity on forward+lateral "
+    "commands once hands activate (held-out lean 7099 +0.07 m/s, 9999 about 0 "
+    "with full targets); the v1 deficit scaled with forward progress and failed "
+    "its 7500 probes at weights 8 and 16; a crossed probe tied the residual "
+    "left/right gap to the command direction, not the target layout or HMD; "
+    "restart from the gated model_7099 with a forward-speed-independent "
+    "lateral shortfall penalty while a hand is active"
+)
+
+
+def expected_v12_lateral_fidelity_marker(
+    revision: object, weight: object
+) -> dict[str, Any] | None:
+    """The exact marker the trainer writes for (revision, weight), or None."""
+
+    weights = EXPECTED_V12_LATERAL_FIDELITY_WEIGHTS_BY_REVISION.get(revision)  # type: ignore[arg-type]
+    if (
+        weights is None
+        or isinstance(weight, bool)
+        or not isinstance(weight, float)
+        or weight not in weights
+    ):
+        return None
+    v2 = revision == EXPECTED_V12_LATERAL_FIDELITY_V2_REVISION
+    marker: dict[str, Any] = {
+        "schema_version": 2 if v2 else 1,
+        "revision": revision,
+        "recipe_revision": EXPECTED_V12_POSE_RELEASE_RECIPE_REVISION,
+        "reward_term": (
+            EXPECTED_V12_LATERAL_FIDELITY_V2_REWARD_TERM
+            if v2
+            else EXPECTED_V12_LATERAL_FIDELITY_REWARD_TERM
+        ),
+        "reward_weight": weight,
+        "min_abs_command_m_s": 0.05,
+        "velocity_frame": "home_levelled_trunk_pitch_10deg",
+        **EXPECTED_V12_LATERAL_FIDELITY_PARENT,
+        "reason": (
+            _V12_LATERAL_FIDELITY_V2_REASON if v2 else _V12_LATERAL_FIDELITY_V1_REASON
+        ),
+    }
+    if v2:
+        marker["lateral_cap_m_s"] = 0.10
+        marker["requires_active_hand"] = True
+    return marker
+
+
 V12_LATERAL_FIDELITY_METADATA_KEYS = frozenset(
     (
         "v12_lateral_fidelity_revision",
@@ -2219,11 +2305,12 @@ def _require_v12_lateral_fidelity(
         raise PicoHybridPolicyContractError(
             "lateral fidelity applies only to the pose-release recipe"
         )
-    _require_exact_metadata(
-        metadata,
-        "v12_lateral_fidelity_revision",
-        EXPECTED_V12_LATERAL_FIDELITY_REVISION,
-    )
+    revision = metadata.get("v12_lateral_fidelity_revision")
+    if revision not in EXPECTED_V12_LATERAL_FIDELITY_WEIGHTS_BY_REVISION:
+        raise PicoHybridPolicyContractError(
+            "v12_lateral_fidelity_revision does not match the contract-v12 "
+            "deployment contract"
+        )
     marker = _strict_json_metadata(metadata, "v12_lateral_fidelity_marker_json")
     if not isinstance(marker, dict):
         raise PicoHybridPolicyContractError("lateral-fidelity marker must be an object")
@@ -2237,17 +2324,16 @@ def _require_v12_lateral_fidelity(
         metadata, "v12_lateral_fidelity_parent_checkpoint_sha256"
     )
     weight = marker.get("reward_weight")
+    expected = expected_v12_lateral_fidelity_marker(revision, weight)
     if (
-        hashlib.sha256(canonical).hexdigest() != marker_sha256
-        or marker.get("revision") != EXPECTED_V12_LATERAL_FIDELITY_REVISION
-        or marker.get("recipe_revision") != recipe_revision
-        or marker.get("reward_term") != EXPECTED_V12_LATERAL_FIDELITY_REWARD_TERM
-        or isinstance(weight, bool)
-        or not isinstance(weight, (int, float))
-        or float(weight) not in EXPECTED_V12_LATERAL_FIDELITY_WEIGHTS
-        or metadata.get("v12_lateral_fidelity_reward_weight") != str(float(weight))
-        or marker.get("parent_checkpoint_sha256") != parent_sha256
-        or marker.get("parent_iteration") != 7099
+        expected is None
+        or canonical
+        != json.dumps(
+            expected, ensure_ascii=True, sort_keys=True, separators=(",", ":")
+        ).encode("utf-8")
+        or hashlib.sha256(canonical).hexdigest() != marker_sha256
+        or metadata.get("v12_lateral_fidelity_reward_weight") != str(weight)
+        or parent_sha256 != EXPECTED_V12_LATERAL_FIDELITY_PARENT["parent_checkpoint_sha256"]
     ):
         raise PicoHybridPolicyContractError(
             "lateral-fidelity marker does not match the contract-v12 deployment contract"
