@@ -1,10 +1,11 @@
 import unittest
 
-from constants import KP_DEFAULT, KP_HARDWARE_NEUTRAL, KP_RL, MOTOR_TO_ID, NEUTRAL_POSE, OBSERVATION_DOF_ORDER
+from constants import KP_HARDWARE_NEUTRAL, KP_RL, MOTOR_TO_ID, NEUTRAL_POSE, OBSERVATION_DOF_ORDER
 from input.input_source import UserInput
 from moves.getup import GetupMove
 from moves.move import MotorCommand, Move, MoveState
 from observer import Observation, RobotState
+from policy_fixtures import fake_session
 
 
 class FakeController:
@@ -29,7 +30,7 @@ def transition_only_move(controller):
     Move.__init__(move)
     move._controller = controller
     # These tests exercise the transition/gain-handoff logic assuming a
-    # contract-compliant policy is installed (see the model_ready v5-contract
+    # contract-compliant policy is installed (see the model_ready contract
     # gate in GetupMove.__init__); the real per-checkpoint metadata gating is
     # exercised separately via the real GetupMove(...) instances below.
     move.model_ready = True
@@ -73,20 +74,16 @@ class GetupTransitionTest(unittest.TestCase):
 
         self.assertEqual(move.state, MoveState.ACTIVE)
         self.assertEqual(command.target_angles, obs.robot_state.motor_positions)
-        gains_by_name = dict(zip(move._joint_names, controller.kp_writes[-1][1]))
-        for name in move._joint_names:
-            expected = KP_RL if name in OBSERVATION_DOF_ORDER else KP_DEFAULT
-            self.assertEqual(gains_by_name[name], expected)
+        # A learned policy runs every joint, head and neck included, at P125.
+        self.assertEqual(controller.kp_writes[-1][1], [KP_RL] * len(MOTOR_TO_ID))
 
     def test_stop_without_walk_holds_pose_at_neutral_gain(self):
         controller = FakeController()
         move = transition_only_move(controller)
         move.state = MoveState.STOPPING
         move.on_stop(observation(set()), MotorCommand())
-        gains_by_name = dict(zip(move._joint_names, controller.kp_writes[-1][1]))
-        for name in move._joint_names:
-            expected = KP_HARDWARE_NEUTRAL if name in OBSERVATION_DOF_ORDER else KP_DEFAULT
-            self.assertEqual(gains_by_name[name], expected)
+        # A static stand without a learned policy holds every joint at P900.
+        self.assertEqual(controller.kp_writes[-1][1], [KP_HARDWARE_NEUTRAL] * len(MOTOR_TO_ID))
 
     def test_stop_holds_pose_and_hands_policy_gains_to_walk(self):
         controller = FakeController()
@@ -98,10 +95,7 @@ class GetupTransitionTest(unittest.TestCase):
 
         self.assertEqual(move.state, MoveState.INACTIVE)
         self.assertEqual(command.target_angles, obs.robot_state.motor_positions)
-        gains_by_name = dict(zip(move._joint_names, controller.kp_writes[-1][1]))
-        for name in move._joint_names:
-            expected = KP_RL if name in OBSERVATION_DOF_ORDER else KP_DEFAULT
-            self.assertEqual(gains_by_name[name], expected)
+        self.assertEqual(controller.kp_writes[-1][1], [KP_RL] * len(MOTOR_TO_ID))
 
     def test_safety_resume_discards_action_history_and_restarts_with_hold(self):
         controller = FakeController()
@@ -122,17 +116,11 @@ class GetupTransitionTest(unittest.TestCase):
         self.assertEqual(command.target_angles, obs.robot_state.motor_positions)
 
     def test_step_runs_the_real_policy_and_holds_the_neck(self):
-        # Loads the actual onnx (not the transition-only bypass above): a
-        # mismatch between build_observation()'s vector and what the policy
-        # was actually trained/exported for must fail here, not at runtime.
-        move = GetupMove(controller=None)
-        # This test's job is to catch a build_observation()/onnx I/O mismatch,
-        # independent of whether the checkpoint currently committed under
-        # src/agents/ carries the full v5 contract metadata (model_ready).
-        # Without this, a not-yet-contract-tagged checkpoint would silently
-        # skip inference below (step() falls back to _step_recover_to_neutral)
-        # and this test would stop exercising the ONNX call it exists to check.
-        move.model_ready = True
+        # A contract session (not the transition-only bypass above): a
+        # mismatch between build_observation()'s vector and the contract's
+        # 60-wide input must fail here, not at runtime.
+        move = GetupMove(controller=None, session=fake_session("getup"))
+        self.assertTrue(move.model_ready)
         obs = observation({"getup"})
         command = MotorCommand()
         move.on_start(obs, command)
@@ -200,10 +188,10 @@ class GetupTransitionTest(unittest.TestCase):
         self.assertEqual(move._last_action, [0.0] * len(OBSERVATION_DOF_ORDER))
 
     def test_arming_then_disarming_returns_to_recovery_without_double_torque_write(self):
-        # Real GetupMove (loads the actual onnx): the armed tick must go
-        # through the real policy, not the transition-only bypass.
+        # Real GetupMove: the armed tick must go through the policy, not the
+        # transition-only bypass.
         controller = FakeTorqueController()
-        move = GetupMove(controller=controller)
+        move = GetupMove(controller=controller, session=fake_session("getup"))
         obs_armed = observation({"getup"}, torque_enabled=True, getup_armed=True)
         obs_disarmed = observation({"getup"}, torque_enabled=True, getup_armed=False)
         command = MotorCommand()

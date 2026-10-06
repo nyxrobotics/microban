@@ -7,11 +7,10 @@
 # Source of truth: mjlab_microban config/home_pose.yaml (the training repo).
 # Regenerate after changing HOME there (and after retraining every policy):
 #   uv run python config/home_pose_tool.py write-robot --microban-repo <this repo>
-# src/home_pose.py reads this file; constants.NEUTRAL_POSE, the HOME root pose,
-# the HOME projected gravity and every HOME-bound policy contract string come
-# from it.  Policies trained at another HOME are refused.
+# src/home_pose.py reads this file; constants.NEUTRAL_POSE, the HOME root pose
+# and the HOME projected gravity come from it.  Policies whose home_pose stamp is another HOME are refused.
 
-schema_version: 1
+schema_version: 2
 name: "Forward-lean HOME: trunk 10 deg forward, knees straight, COM over the sole centre"
 label: "forward_lean_home"
 tag: "forward_lean_home"
@@ -65,15 +64,6 @@ joint_pos_rad:
   right_ankle_roll: 0.08726646259971647
   left_ankle_pitch: 0.07204678733669492
   right_ankle_pitch: 0.07204678733669492
-contracts:
-  walk_contract_version: "v4_forward_lean_home_servo_range"
-  getup_contract_version: "v6"
-  getup_checkpoint_stamp: "v6"
-  v12_home_pose_revision: "forward_lean10_hip_minus14p166561199931_ankle_plus4p127976841869_shoulder_zero_v6"
-  v12_recipe_revision: "forward_lean_home_velocity_source_staged_mask_reachable_fk_elbow_minus10_raw_prev_action_servo_range_pi_home_levelled_targets_level_hmd_receiver_box_hands_v17"
-  v12_hand_pose_release_recipe_revision: "forward_lean_home_velocity_source_staged_mask_reachable_fk_elbow_minus10_raw_prev_action_servo_range_pi_home_levelled_targets_level_hmd_receiver_box_hands_active_hand_arm_pose_release_v18"
-  v12_packager_revision: "microban_teleop_v12_final_deployment_packager_v7_forward_lean_home_servo_range"
-  v12_target_frame: "robot_home_levelled_trunk_xyz_forward_left_up"
 hand_target_fk:
   revision: "microban_robot_xml_arm_fk_reachable_box_elbow_upper_minus10_home_levelled_lean10_receiver_box64mm_v4"
   target_frame: "robot_home_levelled_trunk_xyz_forward_left_up"

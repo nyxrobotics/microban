@@ -161,7 +161,8 @@ To add a move:
 The walk move runs an ONNX policy trained in simulation. 
 
 PICO 4 Ultra network control and the left-trigger-held hybrid policy
-are documented in [contract-v12 PICO policy runtime](pico_teleop_v12_runtime.md).
+and the contract, installation and validation of every learned policy are
+documented in [learned policies](policies.md).
 You can train your own walking — or other learned skills — and drop the resulting `.onnx` file into [src/agents/](../src/agents/) to use it on the robot. Check the repository [MarcDcls/mjlab_microban](https://github.com/MarcDcls/mjlab_microban) for the training pipeline. 
 
 If you achieve some interesting results, don't hesitate to make a pull request to the repository as it is also a community-driven project!

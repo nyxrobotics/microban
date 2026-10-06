@@ -2,6 +2,8 @@ import math
 import unittest
 
 from constants import (
+    KP_HARDWARE_NEUTRAL,
+    KP_RL,
     MOTOR_TO_ID,
     NEUTRAL_POSE,
     OBSERVATION_DOF_ORDER,
@@ -16,10 +18,9 @@ from policy_fixtures import (
     OLD_HOME,
     WALK_BIAS,
     WALK_OBS_WIDTH,
-    WALK_POLICY_FIXTURE,
     WALK_POSITION_GAIN,
     FakeSession,
-    csv,
+    LinearWalkSession,
     walk_contract_metadata,
 )
 
@@ -48,115 +49,55 @@ def fake_walk(metadata=None, **kwargs):
     return WalkMove(controller=None, session=session), session
 
 
+class GainController:
+    def __init__(self):
+        self.kp_writes = []
+
+    def sync_write_kp(self, ids, gains):
+        self.kp_writes.append((list(ids), list(gains)))
+
+
 class WalkContractTest(unittest.TestCase):
-    def test_fixture_with_the_deployed_contract_loads(self):
-        move = WalkMove(controller=None, policy_path=WALK_POLICY_FIXTURE)
+    def test_contract_at_this_home_loads_with_robot_constants(self):
+        move = WalkMove(controller=None, session=LinearWalkSession())
         for name in OBSERVATION_DOF_ORDER:
             self.assertEqual(move._default_pose[name], NEUTRAL_POSE[name])
             self.assertEqual(
                 move._action_clip[name], (-SERVO_TARGET_RANGE_RAD, SERVO_TARGET_RANGE_RAD)
             )
         self.assertEqual(move.action_scale, 1.0)
-        self.assertFalse(move._use_reference_phase)
+        self.assertEqual(move.contract.kind, "walk")
 
-    def test_missing_contract_fields_fail_closed(self):
-        for key in (
-            "walk_contract_version",
-            "previous_action_semantics",
-            "default_joint_pos",
-            "joint_names",
-            "action_scale",
-            "action_clip_lower",
-            "action_clip_upper",
-        ):
-            metadata = walk_contract_metadata()
-            del metadata[key]
-            with self.subTest(missing=key), self.assertRaises(WalkPolicyContractError):
-                fake_walk(metadata)
+    def test_other_home_reference_phase_and_other_kinds_are_refused(self):
+        with self.assertRaises(WalkPolicyContractError):
+            fake_walk(walk_contract_metadata(OLD_HOME))
+        # The 65-wide reference-phase actors are not part of the contract.
+        with self.assertRaises(WalkPolicyContractError):
+            fake_walk(input_width=WALK_OBS_WIDTH + 2)
+        with self.assertRaises(WalkPolicyContractError):
+            fake_walk({**walk_contract_metadata(), "microban_policy_kind": "getup"})
 
-    def test_inconsistent_contract_fields_fail_closed(self):
-        three_decimal = walk_contract_metadata()
-        three_decimal["default_joint_pos"] = ",".join(
-            f"{NEUTRAL_POSE[name]:.3f}"
-            for name in three_decimal["joint_names"].split(",")
+
+class WalkGainTest(unittest.TestCase):
+    def test_policy_runs_every_joint_at_the_trained_gain_and_holds_home_at_p900(self):
+        controller = GainController()
+        move = WalkMove(controller=controller, session=LinearWalkSession())
+        move.on_start(observation(), MotorCommand())
+        self.assertEqual(controller.kp_writes, [(list(MOTOR_TO_ID.values()), [KP_RL] * 21)])
+
+        move.state = MoveState.STOPPING
+        move.on_stop(observation(time_s=1.0), MotorCommand())
+        self.assertEqual(len(controller.kp_writes), 1)
+        move.on_stop(observation(time_s=2.0), MotorCommand())
+        self.assertEqual(move.state, MoveState.INACTIVE)
+        self.assertEqual(
+            controller.kp_writes[-1], (list(MOTOR_TO_ID.values()), [KP_HARDWARE_NEUTRAL] * 21)
         )
-        cases = {
-            "old_home": walk_contract_metadata(OLD_HOME),
-            "three_decimal_default": three_decimal,
-            "version": {**walk_contract_metadata(), "walk_contract_version": "v1"},
-            "semantics": {
-                **walk_contract_metadata(),
-                "previous_action_semantics": "clipped_target",
-            },
-            "scale": {**walk_contract_metadata(), "action_scale": "0.5"},
-            "old_v2_clip157_contract": {
-                **walk_contract_metadata(),
-                "walk_contract_version": "v2_centered_home_clip157",
-                "action_clip_lower": csv([-1.57] * ACTION_COUNT),
-                "action_clip_upper": csv([1.57] * ACTION_COUNT),
-            },
-            "v3_with_old_clip157": {
-                **walk_contract_metadata(),
-                "action_clip_lower": csv([-1.57] * ACTION_COUNT),
-                "action_clip_upper": csv([1.57] * ACTION_COUNT),
-            },
-            "narrow_clip": {
-                **walk_contract_metadata(),
-                "action_clip_lower": csv([-1.0] * ACTION_COUNT),
-            },
-            "slightly_narrow_clip": {
-                **walk_contract_metadata(),
-                "action_clip_upper": csv([3.14] * ACTION_COUNT),
-            },
-            "three_decimal_clip": {
-                **walk_contract_metadata(),
-                "action_clip_upper": ",".join(["3.142"] * ACTION_COUNT),
-            },
-            "wide_clip": {
-                **walk_contract_metadata(),
-                "action_clip_upper": csv([math.pi + 1.0e-5] * ACTION_COUNT),
-            },
-            "one_joint_wide": {
-                **walk_contract_metadata(),
-                "action_clip_lower": csv([-math.pi] * (ACTION_COUNT - 1) + [-4.0]),
-            },
-            "short_clip": {
-                **walk_contract_metadata(),
-                "action_clip_upper": csv([SERVO_TARGET_RANGE_RAD] * (ACTION_COUNT - 1)),
-            },
-            "nan_clip": {
-                **walk_contract_metadata(),
-                "action_clip_upper": ",".join(["nan"] * ACTION_COUNT),
-            },
-            "action_order": {
-                **walk_contract_metadata(),
-                "action_joint_names": ",".join(reversed(OBSERVATION_DOF_ORDER)),
-            },
-        }
-        for case, metadata in cases.items():
-            with self.subTest(case=case), self.assertRaises(WalkPolicyContractError):
-                fake_walk(metadata)
-        for case, kwargs in (
-            ("input_width", {"input_width": WALK_OBS_WIDTH + 1}),
-            ("output_width", {"output_width": ACTION_COUNT - 1}),
-        ):
-            with self.subTest(case=case), self.assertRaises(WalkPolicyContractError):
-                fake_walk(**kwargs)
-
-    def test_installed_walk_onnx_is_accepted_only_on_contract(self):
-        # Whatever is installed must carry the contract or be refused;
-        # never silently accepted.
-        try:
-            move = WalkMove(controller=None)
-        except WalkPolicyContractError:
-            return
-        for name in OBSERVATION_DOF_ORDER:
-            self.assertEqual(move._default_pose[name], NEUTRAL_POSE[name])
 
 
 class WalkTargetRuleTest(unittest.TestCase):
     def test_real_onnx_target_is_home_plus_raw_action(self):
-        move = WalkMove(controller=None, policy_path=WALK_POLICY_FIXTURE)
+        move = WalkMove(controller=None, session=LinearWalkSession())
         offsets = {name: 0.01 * (index - 9) for index, name in enumerate(OBSERVATION_DOF_ORDER)}
         positions = dict(NEUTRAL_POSE)
         for name, offset in offsets.items():
@@ -173,7 +114,7 @@ class WalkTargetRuleTest(unittest.TestCase):
             )
 
     def test_large_raw_output_is_clipped_but_recurs_raw(self):
-        move = WalkMove(controller=None, policy_path=WALK_POLICY_FIXTURE)
+        move = WalkMove(controller=None, session=LinearWalkSession())
         positions = dict(NEUTRAL_POSE)
         signs = {}
         for index, name in enumerate(OBSERVATION_DOF_ORDER):

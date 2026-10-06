@@ -959,9 +959,9 @@ class CanBalanceTest(unittest.TestCase):
 
     def test_walk_move_balances(self):
         from moves.walk import WalkMove
-        from policy_fixtures import WALK_POLICY_FIXTURE
+        from policy_fixtures import LinearWalkSession
 
-        walk = WalkMove(controller=None, policy_path=WALK_POLICY_FIXTURE)
+        walk = WalkMove(controller=None, session=LinearWalkSession())
         self.assertTrue(walk.can_balance(UserInput()))
 
 

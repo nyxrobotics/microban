@@ -44,13 +44,14 @@ run: sync
 teleop-run: sync
 	ssh -tt $(HOST) "bash -l -c 'cd microban && MICROBAN_INPUT=network MICROBAN_NETWORK_ALLOWED_IP=\$${SSH_CONNECTION%% *} PYTHONPATH=src .venv/bin/python src/main.py'"
 
-# Validate the final PICO policy with the exact local runtime, sync the same
-# checkout and lockfile, materialize the Pi environment, then repeat the same
-# CPU-only parser/inference smoke on the Pi. This never opens the motor bus.
+# Validate the installed walk, get-up and PICO policies (contract, manifest and
+# startup self-test) with the exact local runtime, sync the same checkout and
+# lockfile, materialize the Pi environment, then repeat the same CPU-only
+# validation on the Pi (docs/policies.md). This never opens the motor bus.
 teleop-validate:
-	PYTHONPATH=src uv run --locked python tools/validate_pico_policy.py src/agents/pico_teleop.onnx
+	PYTHONPATH=src uv run --locked python tools/validate_policies.py src/agents
 	$(MAKE) setup HOST=$(HOST)
-	ssh $(HOST) "bash -l -c 'cd microban && PYTHONPATH=src .venv/bin/python tools/validate_pico_policy.py src/agents/pico_teleop.onnx'"
+	ssh $(HOST) "bash -l -c 'cd microban && PYTHONPATH=src .venv/bin/python tools/validate_policies.py src/agents'"
 
 teleop-sim:
 	PYTHONPATH=src uv run --group sim src/sim/sim_main.py --hz 50 --input network

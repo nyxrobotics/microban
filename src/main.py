@@ -6,7 +6,7 @@ import numpy as np
 import os
 from pathlib import Path
 
-from constants import MOTOR_TO_ID, NEUTRAL_POSE, KP_DEFAULT
+from constants import MOTOR_TO_ID, NEUTRAL_POSE, KP_HARDWARE_NEUTRAL
 from robot_controller import RobotController
 from scheduler import Scheduler
 from input.input_source import InputSource
@@ -17,7 +17,6 @@ from moves.pico_arms import PicoArmTrackingMove
 from moves.policy_selector import PolicySelectableWalkMove
 from moves.rotate_head import RotateHeadMove
 from moves.squat import SquatMove
-from moves.walk import WalkMove
 
 PID_FILE = Path("/tmp/microban_scheduler.pid")
 
@@ -149,7 +148,9 @@ def main() -> None:
                 motor_ids, [False] * len(motor_ids)
             )
         controller.sync_write_status_return_level(motor_ids, [1] * len(motor_ids))
-        controller.sync_write_kp(motor_ids, [KP_DEFAULT] * len(motor_ids))
+        # The one startup gain write: every servo is told the static holding
+        # gain, so RobotController knows each servo's gain from here on.
+        controller.sync_write_kp(motor_ids, [KP_HARDWARE_NEUTRAL] * len(motor_ids))
 
         if start_limp:
             print(

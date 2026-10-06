@@ -1,7 +1,7 @@
 import math
 import unittest
 
-from constants import KP_DEFAULT, KP_RL, MOTOR_TO_ID, NEUTRAL_POSE
+from constants import KP_HARDWARE_NEUTRAL, KP_RL, MOTOR_TO_ID, NEUTRAL_POSE
 from input.input_source import UserInput
 from moves.move import MotorCommand, MoveState
 from moves.pico_arms import PICO_ARM_JOINT_ORDER, PicoArmTrackingMove
@@ -63,7 +63,9 @@ class FakeController:
 
 class PicoArmContractTest(unittest.TestCase):
     def test_direct_contract_is_expanded_and_distinct_from_v12_policy_fk_box(self):
-        from moves.pico_hybrid import EXPECTED_V12_HAND_TARGET_FK
+        from home_pose import hand_target_fk_contract
+
+        EXPECTED_V12_HAND_TARGET_FK = hand_target_fk_contract()
 
         self.assertEqual(
             PICO_ARM_TARGET_CONTRACT_REVISION,
@@ -219,7 +221,7 @@ class PicoArmTrackingMoveTest(unittest.TestCase):
         self.assertEqual(move.state, MoveState.INACTIVE)
         for name in PICO_ARM_JOINT_ORDER:
             self.assertEqual(command.target_angles[name], NEUTRAL_POSE[name])
-        self.assertEqual(controller.kp_writes[-1][1], [KP_DEFAULT] * 6)
+        self.assertEqual(controller.kp_writes[-1][1], [KP_HARDWARE_NEUTRAL] * 6)
         self.assertEqual(move._last_targets, {})
 
     def test_getup_owns_arms_and_clears_stopping_overlay(self):

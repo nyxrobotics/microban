@@ -28,7 +28,7 @@ from xc330_actuator import XC330Actuator  # noqa: E402
 
 bam.actuators.actuators["xc330"] = lambda: XC330Actuator(Pendulum)
 
-from constants import MOTOR_TO_ID, ID_TO_MOTOR, NEUTRAL_POSE, HOME_ROOT_POS_Z_M, HOME_ROOT_QUAT_WXYZ, HOME_TRUNK_PITCH_RAD, KP_DEFAULT, BAM_VIN, BAM_VOLTAGE_DROP_GAIN, BAM_VIN_MIN, BAM_MAX_CURRENT
+from constants import MOTOR_TO_ID, ID_TO_MOTOR, NEUTRAL_POSE, HOME_ROOT_POS_Z_M, HOME_ROOT_QUAT_WXYZ, HOME_TRUNK_PITCH_RAD, KP_HARDWARE_NEUTRAL, BAM_VIN, BAM_VOLTAGE_DROP_GAIN, BAM_VIN_MIN
 
 
 class _DelayBuffer:
@@ -127,7 +127,7 @@ class MuJoCoController:
         # identified 2026-09-21 against a real servo (see tools/actuator_id/). Previously the
         # bundled XL330 m6 preset, left over from before the XC330 swap.
         bam_model = bam_load_model(json_file="tools/actuator_id/xc330_params.json")
-        bam_model.actuator.kp = KP_DEFAULT
+        bam_model.actuator.kp = KP_HARDWARE_NEUTRAL
         bam_model.actuator.vin = BAM_VIN
         self._bam = BamController(
             bam_model,
@@ -143,10 +143,10 @@ class MuJoCoController:
         self._set_home_qpos()
         mujoco.mj_forward(self._model, self._data)
         # Per-servo P gain, in the BAM controller's actuator order, so that
-        # sync_write_kp has the hardware's per-ID semantics (get-up runs the 18
-        # policy joints at KP_RL and the neck at KP_DEFAULT).
+        # sync_write_kp has the hardware's per-ID semantics.  The startup value
+        # is the static holding gain main.py also writes first.
         self._kp_names = list(MOTOR_TO_ID.keys())
-        self._kp = np.full(len(self._kp_names), float(KP_DEFAULT))
+        self._kp = np.full(len(self._kp_names), float(KP_HARDWARE_NEUTRAL))
         self._bam.model.actuator.kp = self._kp
 
         self._viewer = mujoco.viewer.launch_passive(

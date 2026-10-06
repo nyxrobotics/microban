@@ -5,7 +5,7 @@ from input.input_source import UserInput
 from moves.move import MotorCommand, MoveState
 from moves.walk import WalkMove
 from observer import Observation, RobotState
-from policy_fixtures import WALK_POLICY_FIXTURE
+from policy_fixtures import LinearWalkSession
 
 
 class WalkStopTest(unittest.TestCase):
@@ -14,7 +14,7 @@ class WalkStopTest(unittest.TestCase):
         cls.move = WalkMove(
             controller=None,
             neutral_return_duration_s=0.8,
-            policy_path=WALK_POLICY_FIXTURE,
+            session=LinearWalkSession(),
         )
 
     def setUp(self):

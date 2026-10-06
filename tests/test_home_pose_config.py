@@ -9,36 +9,12 @@ from pathlib import Path
 
 import constants
 import home_pose
-from moves import pico_hybrid, walk
+import policy_contract
 from moves.walk import WalkPolicyContractError
 from policy_fixtures import OLD_HOME, home_pose_stamp, walk_contract_metadata
 from test_walk_contract import fake_walk
 
 CONFIG_TEXT = home_pose.HOME_POSE_PATH.read_text(encoding="utf-8")
-
-# The centered HOME every installed policy was trained at (2026-10-05).
-CENTERED_CONTRACTS = {
-    "walk_contract_version": "v3_centered_home_servo_range",
-    "getup_contract_version": "v5",
-    # The centered v5 exporter also published runs stamped "v4": not checked.
-    "getup_checkpoint_stamp": "",
-    "v12_target_frame": "robot_trunk_xyz_forward_left_up",
-    "v12_home_pose_revision": (
-        "centered_home_hip_plus1p198384259489_ankle_minus1p198384259489_shoulder_zero_v5"
-    ),
-    "v12_recipe_revision": (
-        "centered_home_velocity_source_staged_mask_reachable_fk_elbow_minus10_"
-        "raw_prev_action_servo_range_pi_v11"
-    ),
-    "v12_hand_pose_release_recipe_revision": (
-        "centered_home_velocity_source_staged_mask_reachable_fk_elbow_minus10_"
-        "raw_prev_action_servo_range_pi_active_hand_arm_pose_release_v12"
-    ),
-    "v12_packager_revision": (
-        "microban_teleop_v12_final_deployment_packager_v6_centered_home_servo_range"
-    ),
-}
-
 
 def _edit(pattern, replace, text=None):
     """CONFIG_TEXT with the first match of ``pattern`` rewritten by ``replace(match)``."""
@@ -78,22 +54,8 @@ class HomePoseConfigTest(unittest.TestCase):
         self.assertEqual(home_pose.HOME_ROOT_QUAT_WXYZ, (1.0, 0.0, 0.0, 0.0))
         self.assertEqual(home_pose.HOME_PROJECTED_GRAVITY, (0.0, 0.0, -1.0))
         self.assertEqual(home_pose.HOME_TRUNK_PITCH_RAD, 0.0)
-        self.assertEqual(dict(home_pose.HOME_CONTRACTS), CENTERED_CONTRACTS)
-        self.assertEqual(walk.WALK_CONTRACT_VERSION, CENTERED_CONTRACTS["walk_contract_version"])
-        self.assertEqual(
-            pico_hybrid.EXPECTED_V12_HOME_POSE_REVISION,
-            CENTERED_CONTRACTS["v12_home_pose_revision"],
-        )
-        self.assertEqual(
-            pico_hybrid.EXPECTED_V12_RECIPE_REVISIONS,
-            frozenset(
-                (
-                    CENTERED_CONTRACTS["v12_recipe_revision"],
-                    CENTERED_CONTRACTS["v12_hand_pose_release_recipe_revision"],
-                )
-            ),
-        )
-        fk = pico_hybrid.EXPECTED_V12_HAND_TARGET_FK
+        self.assertEqual(policy_contract.PICO_TARGET_FRAME, "robot_trunk_xyz_forward_left_up")
+        fk = home_pose.hand_target_fk_contract()
         self.assertEqual(fk["revision"], "microban_robot_xml_arm_fk_reachable_box_elbow_upper_minus10_v2")
         self.assertEqual(fk["home_joint_deg"], [[0.0, 10.0, -20.0], [0.0, -10.0, -20.0]])
         self.assertEqual(fk["normalizer_abs_bound_m"], [0.063, 0.0388, 0.0605])
@@ -127,8 +89,11 @@ class HomePoseConfigTest(unittest.TestCase):
                 r"^trunk_pitch_deg: (\S+)\ntrunk_pitch_rad: \S+$", _trunk_pitched_by_10_deg
             ),
             "gravity": _edit(r"^projected_gravity: .*$", lambda m: "projected_gravity: [0.0, 0.0, 1.0]"),
-            "missing_contract": CONFIG_TEXT.replace("  walk_contract_version:", "  walk_contract:", 1),
-            "schema": CONFIG_TEXT.replace("schema_version: 1", "schema_version: 2", 1),
+            # Schema 1's per-HOME contract strings are gone.
+            "contracts": CONFIG_TEXT.replace(
+                "hand_target_fk:", 'contracts:\n  walk_contract_version: "v3"\nhand_target_fk:', 1
+            ),
+            "schema": CONFIG_TEXT.replace("schema_version: 2", "schema_version: 1", 1),
         }
         for case, text in cases.items():
             with self.subTest(case=case):

@@ -2,14 +2,13 @@
 
 tests/fixtures/home_pose_forward_lean.yaml is what mjlab_microban home-config's
 write-robot generates for the forward-lean HOME (trunk +10 deg).  With it the
-runtime has exactly the constants of robot branch forward-lean-home, accepts
-that branch's walk.onnx / getup.onnx (the forward-lean walk cont2 model_29000
-and get-up stage 5 model_21495, read from its git objects) and refuses the
-centered ones; with tests/fixtures/home_pose_centered.yaml (the centered
-config/home_pose.yaml, frozen so this test holds on a branch of any HOME) it
-is the other way round, with the centered policies read from commit 5f859e6.  The posture rules follow the HOME gravity: settle / stand are measured
-from HOME_PROJECTED_GRAVITY, falls stay physical (from vertical), and the
-neck stabilisation reference is the HOME trunk pitch.
+runtime has exactly the constants of robot branch forward-lean-home; with
+tests/fixtures/home_pose_centered.yaml (the centered config/home_pose.yaml,
+frozen so this test holds on a branch of any HOME) it has the centered ones.
+The posture rules follow the HOME gravity: settle / stand are measured from
+HOME_PROJECTED_GRAVITY, falls stay physical (from vertical), and the neck
+stabilisation reference is the HOME trunk pitch.  Which policies each HOME
+accepts is test_policy_contract.py (the policies carry their HOME stamp).
 
 Each case runs in a subprocess (MICROBAN_HOME_POSE_YAML selects the HOME).
 """
@@ -17,11 +16,9 @@ Each case runs in a subprocess (MICROBAN_HOME_POSE_YAML selects the HOME).
 from __future__ import annotations
 
 import json
-import math
 import os
 import subprocess
 import sys
-import tempfile
 import unittest
 from pathlib import Path
 
@@ -30,35 +27,10 @@ import numpy as np
 REPO_ROOT = Path(__file__).resolve().parents[1]
 LEAN_YAML = REPO_ROOT / "tests" / "fixtures" / "home_pose_forward_lean.yaml"
 CENTERED_YAML = REPO_ROOT / "tests" / "fixtures" / "home_pose_centered.yaml"
-# The centered walk v3 / get-up v5 policies (installed in 5f859e6).
-CENTERED_AGENTS_COMMIT = "5f859e6"
-CENTERED_AGENTS = {
-    "walk.onnx": "c9cdd8527704046d5c8058fc63fc3ef148716d659509666d0dc844b64c18fa40",
-    "getup.onnx": "80cd7ddb13066f6563b07927e85e6fb7916149d4275218b9ad80ee58f5b08cfa",
-}
-# forward-lean-home: walk.onnx b33cd9ea (b46feb8), getup.onnx ce6cdc04 (47f3455).
-LEAN_AGENTS_COMMIT = "3c11e91"
-LEAN_AGENTS = {
-    "walk.onnx": "b33cd9ea7dbebbfe4543c0bb616a54d9ba713ded1ffdda0891b79dad09e2c1d2",
-    "getup.onnx": "ce6cdc0489b451b32a35c3a791830ca123cadb308f3b2f4eaf1019c3721678bf",
-}
 
 PROBE = r"""
 import json, sys, math
-import constants, home_pose, scheduler
-from moves import walk, getup, pico_hybrid
-import onnxruntime as ort
-
-def walk_ok(path):
-    try:
-        walk.parse_walk_contract(ort.InferenceSession(path, providers=["CPUExecutionProvider"]))
-        return True
-    except walk.WalkPolicyContractError:
-        return False
-
-def getup_ok(path):
-    move = getup.GetupMove(controller=None, session=ort.InferenceSession(path, providers=["CPUExecutionProvider"]))
-    return bool(move.model_ready)
+import constants, home_pose, policy_contract, scheduler
 
 s = scheduler.Scheduler.__new__(scheduler.Scheduler)
 s._settle_threshold = -math.cos(math.radians(scheduler.GETUP_HANDBACK_SETTLE_TILT_DEG))
@@ -70,7 +42,6 @@ def gravity(pitch_deg):
     p = math.radians(pitch_deg)
     return [math.sin(p), 0.0, -math.cos(p)]
 
-agents = json.loads(sys.argv[1])
 print(json.dumps({
     "trunk": constants.HOME_TRUNK_PITCH_RAD,
     "hip": constants.HOME_HIP_PITCH_RAD,
@@ -79,41 +50,24 @@ print(json.dumps({
     "quat": list(constants.HOME_ROOT_QUAT_WXYZ),
     "gravity": list(constants.HOME_PROJECTED_GRAVITY),
     "neutral": constants.NEUTRAL_POSE,
-    "walk_contract": walk.WALK_CONTRACT_VERSION,
-    "getup_contract": getup.GETUP_CONTRACT_VERSION,
-    "getup_stamp": getup.GETUP_CHECKPOINT_STAMP,
-    "v12_home": pico_hybrid.EXPECTED_V12_HOME_POSE_REVISION,
-    "v12_recipes": sorted(pico_hybrid.EXPECTED_V12_RECIPE_REVISIONS),
-    "v12_packager": pico_hybrid.EXPECTED_V12_PACKAGER_REVISION,
-    "v12_frame": pico_hybrid.PICO_V12_TARGET_FRAME,
-    "v12_hand_fk_revision": pico_hybrid.EXPECTED_V12_HAND_TARGET_FK["revision"],
-    "smoke_gravity": [float(v) for v in pico_hybrid.onnxruntime_compatibility_smoke_inputs()[0][0][3:6]],
+    "tag": home_pose.HOME_TAG,
+    "pico_frame": policy_contract.PICO_TARGET_FRAME,
+    "hand_fk_revision": home_pose.hand_target_fk_contract()["revision"],
     "settled": {str(p): s._settled(gravity(p)) for p in (-15, -5, 0, 5, 10, 15, 20, 25)},
     "standing": {str(p): s._standing(gravity(p)) for p in (-30, -20, -15, 0, 10, 30, 35, 40)},
     "tilt_at_home": home_pose.tilt_from_home_rad(constants.HOME_PROJECTED_GRAVITY),
-    "agents": {name: [walk_ok(path), getup_ok(path)] for name, path in agents.items()},
 }))
 """
 
 
-def _git_show(commit: str, path: str, destination: Path) -> bool:
-    completed = subprocess.run(
-        ["git", "-C", str(REPO_ROOT), "show", f"{commit}:{path}"], capture_output=True, check=False
-    )
-    if completed.returncode != 0:
-        return False
-    destination.write_bytes(completed.stdout)
-    return True
-
-
-def _probe(yaml_path: Path, agents: dict[str, str]) -> dict:
+def _probe(yaml_path: Path) -> dict:
     environment = dict(os.environ)
     environment["MICROBAN_HOME_POSE_YAML"] = str(yaml_path)
     environment["PYTHONPATH"] = os.pathsep.join(
         [str(REPO_ROOT / "src"), *filter(None, [os.environ.get("PYTHONPATH")])]
     )
     completed = subprocess.run(
-        [sys.executable, "-c", PROBE, json.dumps(agents)],
+        [sys.executable, "-c", PROBE],
         env=environment, cwd=REPO_ROOT, capture_output=True, text=True, timeout=600, check=False,
     )
     if completed.returncode != 0:
@@ -124,32 +78,8 @@ def _probe(yaml_path: Path, agents: dict[str, str]) -> dict:
 class AnyTrunkHomeTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
-        cls._directory = tempfile.TemporaryDirectory()
-        root = Path(cls._directory.name)
-        import hashlib
-
-        cls.agents = {}
-        cls.have_lean_agents = True
-        for prefix, commit, pinned in (
-            ("centered", CENTERED_AGENTS_COMMIT, CENTERED_AGENTS),
-            ("lean", LEAN_AGENTS_COMMIT, LEAN_AGENTS),
-        ):
-            for name in pinned:
-                destination = root / f"{prefix}_{name}"
-                if not _git_show(commit, f"src/agents/{name}", destination):
-                    if prefix == "lean":
-                        cls.have_lean_agents = False
-                        continue
-                    raise AssertionError(f"{commit}:src/agents/{name} is not in this clone")
-                if hashlib.sha256(destination.read_bytes()).hexdigest() != pinned[name]:
-                    raise AssertionError(f"{commit} {name} is not the expected artifact")
-                cls.agents[f"{prefix}_{name.split('.')[0]}"] = str(destination)
-        cls.lean = _probe(LEAN_YAML, cls.agents)
-        cls.centered = _probe(CENTERED_YAML, cls.agents)
-
-    @classmethod
-    def tearDownClass(cls) -> None:
-        cls._directory.cleanup()
+        cls.lean = _probe(LEAN_YAML)
+        cls.centered = _probe(CENTERED_YAML)
 
     def test_forward_lean_constants_are_the_forward_lean_home_branch(self):
         lean = self.lean
@@ -181,26 +111,12 @@ class AnyTrunkHomeTest(unittest.TestCase):
             "neck_pitch": 0.0,
         }
         self.assertEqual(lean["neutral"], expected_neutral)
-        self.assertEqual(lean["walk_contract"], "v4_forward_lean_home_servo_range")
-        self.assertEqual((lean["getup_contract"], lean["getup_stamp"]), ("v6", "v6"))
+        self.assertEqual(lean["tag"], "forward_lean_home")
+        self.assertEqual(lean["pico_frame"], "robot_home_levelled_trunk_xyz_forward_left_up")
         self.assertEqual(
-            lean["v12_home"],
-            "forward_lean10_hip_minus14p166561199931_ankle_plus4p127976841869_shoulder_zero_v6",
-        )
-        self.assertEqual(
-            lean["v12_packager"],
-            "microban_teleop_v12_final_deployment_packager_v7_forward_lean_home_servo_range",
-        )
-        self.assertEqual(lean["v12_frame"], "robot_home_levelled_trunk_xyz_forward_left_up")
-        self.assertEqual(
-            lean["v12_hand_fk_revision"],
+            lean["hand_fk_revision"],
             "microban_robot_xml_arm_fk_reachable_box_elbow_upper_minus10_"
             "home_levelled_lean10_receiver_box64mm_v4",
-        )
-        self.assertTrue(all("_home_levelled_targets_level_hmd_" in r for r in lean["v12_recipes"]))
-        self.assertEqual(
-            lean["smoke_gravity"],
-            [float(np.float32(value)) for value in lean["gravity"]],
         )
 
     def test_centered_constants_are_unchanged(self):
@@ -208,10 +124,8 @@ class AnyTrunkHomeTest(unittest.TestCase):
         self.assertEqual(centered["trunk"], 0.0)
         self.assertEqual(centered["gravity"], [0.0, 0.0, -1.0])
         self.assertEqual(centered["quat"], [1.0, 0.0, 0.0, 0.0])
-        self.assertEqual(centered["walk_contract"], "v3_centered_home_servo_range")
-        self.assertEqual((centered["getup_contract"], centered["getup_stamp"]), ("v5", ""))
-        self.assertEqual(centered["v12_frame"], "robot_trunk_xyz_forward_left_up")
-        self.assertEqual(centered["smoke_gravity"], [0.0, 0.0, -1.0])
+        self.assertEqual(centered["tag"], "centered_home")
+        self.assertEqual(centered["pico_frame"], "robot_trunk_xyz_forward_left_up")
 
     def test_settle_and_stand_are_measured_from_home_gravity(self):
         # Forward-lean HOME: settled within 12 deg of the 10 deg lean, so a
@@ -239,19 +153,6 @@ class AnyTrunkHomeTest(unittest.TestCase):
             {"-30": False, "-20": True, "-15": True, "0": True, "10": True, "30": False,
              "35": False, "40": False},
         )
-
-    def test_each_home_accepts_only_its_own_walk_and_getup_policies(self):
-        if not self.have_lean_agents:
-            self.skipTest(f"forward-lean-home objects ({LEAN_AGENTS_COMMIT}) not in this clone")
-        # [walk contract accepted, get-up model ready]
-        self.assertEqual(self.lean["agents"]["lean_walk"][0], True)
-        self.assertEqual(self.lean["agents"]["lean_getup"][1], True)
-        self.assertEqual(self.lean["agents"]["centered_walk"][0], False)
-        self.assertEqual(self.lean["agents"]["centered_getup"][1], False)
-        self.assertEqual(self.centered["agents"]["centered_walk"][0], True)
-        self.assertEqual(self.centered["agents"]["centered_getup"][1], True)
-        self.assertEqual(self.centered["agents"]["lean_walk"][0], False)
-        self.assertEqual(self.centered["agents"]["lean_getup"][1], False)
 
 
 if __name__ == "__main__":

@@ -9,10 +9,10 @@ work after the get-up retraining milestone.
 
 The TWIST2 tracking actor, velocity walking actor, get-up actor, and PICO v12
 training actor read `robot/imu_ang_vel` in the IMU site's local axes. The robot
-feeds raw BMI088 gyro values to walking, get-up, and now PICO v12. The historical
-PICO v10 contract still uses `sensor_gyro_to_body` and `robot_body_xyz`. A
-separate train/export/runtime audit should verify each remaining model's exact
-frame and document the intended common convention.
+feeds raw BMI088 gyro values to walking, get-up and PICO, and contract
+microban-policy-1 requires `base_ang_vel_frame=imu_sensor_xyz` of all three
+(docs/policies.md). A separate train/export/runtime audit should verify the
+physical axis signs.
 
 For broader unification:
 
@@ -23,5 +23,3 @@ For broader unification:
 3. Export a newly authenticated ONNX, evaluate it in simulation, and verify the
    actual robot behavior before replacing the working artifact.
 
-The get-up v2 contract already requires `imu_sensor_xyz`. Its retraining and
-deployment can proceed independently of this TODO.

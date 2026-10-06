@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import math
 
-from constants import KP_DEFAULT, KP_RL, MOTOR_TO_ID, NEUTRAL_POSE
+from constants import KP_HARDWARE_NEUTRAL, KP_RL, MOTOR_TO_ID, NEUTRAL_POSE
 from controller import ControllerProtocol
 from moves.move import MotorCommand, Move, MoveState
 from observer import Observation
@@ -208,7 +208,9 @@ class PicoArmTrackingMove(Move):
         if fraction >= 1.0:
             if self._controller is not None:
                 ids = [MOTOR_TO_ID[name] for name in PICO_ARM_JOINT_ORDER]
-                gain = KP_RL if "walk" in obs.user_input.active_moves else KP_DEFAULT
+                # A learned walking/PICO policy keeps its gain; a static stand
+                # holds at the static gain.
+                gain = KP_RL if "walk" in obs.user_input.active_moves else KP_HARDWARE_NEUTRAL
                 self._controller.sync_write_kp(ids, [gain] * len(ids))
             self._last_targets = {}
             self._last_time_s = None

@@ -1,0 +1,24 @@
+{
+  "contract": "microban-policy-1",
+  "home_tag": "forward_lean_home",
+  "training_commit": "a083cc02ef1599b27f25fc71039e5ec79bf265d5",
+  "dry_run": true,
+  "release": "test fixture: mjlab_microban home-config a083cc0, retrain_all_for_home.py --dry-run --dry-envs 64, forward-lean HOME",
+  "policies": {
+    "walk": {
+      "file": "walk.onnx",
+      "sha256": "c7c77bf1ed90d938cb1ea8d26fd8aa5ed7716b3735cd405b2467355f28d3d21a",
+      "checkpoint_sha256": "4e7f4a821a33d591fdb1d2519c48352d7632bfcbad3416701ff4bc0bc3416ae1"
+    },
+    "getup": {
+      "file": "getup.onnx",
+      "sha256": "8e560fbe1a7f6bd29d00cf34758056f01dfca2fa442b61ff6c6590f75619f8a7",
+      "checkpoint_sha256": "cd575b687229df118616e5747868f75ad4c62524ff050aecf9a6958d9464985b"
+    },
+    "pico": {
+      "file": "pico_teleop.onnx",
+      "sha256": "8c935119fd4115a7d11e0e64c60b26f29ba538df4db08f8b9c57b50e8dc43162",
+      "checkpoint_sha256": "b202a779a0fbd2f3bc4c0a836e66dab9936825f23fe09413d71793cb1c4545d4"
+    }
+  }
+}

@@ -11,7 +11,7 @@ from collections.abc import Callable
 from collections.abc import Mapping
 from pathlib import Path
 
-from constants import KP_DEFAULT, KP_HARDWARE_NEUTRAL, MOTOR_TO_ID, NEUTRAL_POSE, OBSERVATION_DOF_ORDER
+from constants import KP_HARDWARE_NEUTRAL, MOTOR_TO_ID, NEUTRAL_POSE, OBSERVATION_DOF_ORDER
 from controller import ControllerProtocol
 from moves.move import MotorCommand, Move, MoveState
 from moves.pico_hybrid import AGENT_NAME as PICO_AGENT_NAME
@@ -130,7 +130,7 @@ class _HoldPositionMove(Move):
         if fraction >= 1.0:
             if self._controller is not None:
                 ids = [MOTOR_TO_ID[name] for name in OBSERVATION_DOF_ORDER]
-                self._controller.sync_write_kp(ids, [KP_DEFAULT] * len(ids))
+                self._controller.sync_write_kp(ids, [KP_HARDWARE_NEUTRAL] * len(ids))
             self.state = MoveState.INACTIVE
 
     def on_safety_resume(self, obs: Observation) -> None:
