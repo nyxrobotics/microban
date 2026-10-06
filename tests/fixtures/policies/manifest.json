@@ -1,24 +1,95 @@
 {
-  "contract": "microban-policy-1",
-  "home_tag": "forward_lean_home",
-  "training_commit": "a083cc02ef1599b27f25fc71039e5ec79bf265d5",
-  "dry_run": true,
-  "release": "test fixture: mjlab_microban home-config a083cc0, retrain_all_for_home.py --dry-run --dry-envs 64, forward-lean HOME",
-  "policies": {
-    "walk": {
-      "file": "walk.onnx",
-      "sha256": "c7c77bf1ed90d938cb1ea8d26fd8aa5ed7716b3735cd405b2467355f28d3d21a",
-      "checkpoint_sha256": "4e7f4a821a33d591fdb1d2519c48352d7632bfcbad3416701ff4bc0bc3416ae1"
-    },
-    "getup": {
-      "file": "getup.onnx",
-      "sha256": "8e560fbe1a7f6bd29d00cf34758056f01dfca2fa442b61ff6c6590f75619f8a7",
-      "checkpoint_sha256": "cd575b687229df118616e5747868f75ad4c62524ff050aecf9a6958d9464985b"
-    },
-    "pico": {
-      "file": "pico_teleop.onnx",
-      "sha256": "8c935119fd4115a7d11e0e64c60b26f29ba538df4db08f8b9c57b50e8dc43162",
-      "checkpoint_sha256": "b202a779a0fbd2f3bc4c0a836e66dab9936825f23fe09413d71793cb1c4545d4"
-    }
+ "checkpoints": {
+  "getup": "model_15.pt",
+  "pico": "model_8.pt",
+  "walk": "model_19.pt"
+ },
+ "contract": "microban-policy-1",
+ "created": "2026-10-07 03:41:24",
+ "dry_run": true,
+ "home_joint_hash": "481503d292",
+ "home_tag": "forward_lean_home",
+ "home_yaml_sha256": "f9d80d8dff9b7926cd3e9e8a4aa1b2172b1c8a9ea90c1cb6df29605a07017ce3",
+ "judgments": {
+  "getup": {
+   "failures": [
+    "fallen-start standing 0.00 < 0.85",
+    "standing tremble 0.66 rad/s > 0.3",
+    "posture standing 0.00 < 0.8"
+   ],
+   "passed": false,
+   "summary": {
+    "final_tilt_deg": 95.26459503173828,
+    "min_fallen_standing_fraction": 0.0,
+    "posture_standing_fraction": 0.0,
+    "push_fall_fraction": 0.0,
+    "standing_joint_abs_vel_rad_s": 0.6594148874282837,
+    "standing_targets_beyond_1p57": 0.0
+   }
+  },
+  "pico": {
+   "failures": [
+    "9x300:actual_soft_limits",
+    "9x300:all_scenarios_completed",
+    "9x300:directional_signs",
+    "9x300:minimum_directional_response",
+    "9x300:no_falls",
+    "tracking:all_scenarios_completed",
+    "tracking:foot_tracking_p95",
+    "tracking:foot_tracking_rms",
+    "tracking:forced_hmd_motion",
+    "tracking:hand_tracking_p95",
+    "tracking:hand_tracking_rms",
+    "tracking:no_falls",
+    "tracking:twist_directional_response"
+   ],
+   "passed": false
+  },
+  "walk_source_probe": {
+   "below": [
+    "backward_0p1",
+    "backward_0p2",
+    "lateral_left_0p1",
+    "lateral_right_0p1",
+    "yaw_left_0p5",
+    "yaw_right_0p5"
+   ],
+   "falls": 9,
+   "ok": false,
+   "receipt": "/tmp/claude-1000/-home-rtx-server-Git-projects-microban/d1f0f65a-ee88-4c31-b554-95f79532c226/scratchpad/contract_fix/runs/c3_lean/train/artifacts/legacy_teleop_probe/velocity_87485ddc834efcd1_teleop83_raw_9x300.json",
+   "receipt_sha256": "5d21c1bba36cdd2f464e70d1fd7c50a97846d091880faefe5fb8e491b8033e57",
+   "responses": {
+    "backward_0p1": -0.13650368256768322,
+    "backward_0p2": -0.12825621405823362,
+    "forward_0p1": 0.14823544498974994,
+    "forward_0p2": 0.15880921236904605,
+    "lateral_left_0p1": -0.008019637684247712,
+    "lateral_right_0p1": 0.012977107096678363,
+    "yaw_left_0p5": -0.04930311786010862,
+    "yaw_right_0p5": 0.1347654340788722
+   },
+   "worst": "yaw_left_0p5",
+   "worst_margin": -0.24930311786010861
   }
+ },
+ "policies": {
+  "getup": {
+   "checkpoint_sha256": "6e18fa04bd3ef359c311884f4053b93c8febcbd29ed81b56e8cf4ce2ecadb5e8",
+   "file": "getup.onnx",
+   "sha256": "2a9729dbc1661d6625f3d803161bb054387b0256f043fefad63bc2f84d4807ca"
+  },
+  "pico": {
+   "checkpoint_sha256": "44c550219bca2616b4fc553f33d37fba60f34a9618e22233644bd411a7c6d4a8",
+   "file": "pico_teleop.onnx",
+   "sha256": "0cf3d5ebc3ae0af44b948c7ec68d14096d7cf4bba998d20a4aff4a57a51536d5"
+  },
+  "walk": {
+   "checkpoint_sha256": "87485ddc834efcd1ecc14c9029f6c94ba92781a1ec6db9f992c9e86358157840",
+   "file": "walk.onnx",
+   "sha256": "f96597290c5e8d1bfd1a8d117b9fcd7b52a801ae9d10f047a245699afcd5a077"
+  }
+ },
+ "release": "test fixture: mjlab_microban home-config 0d811f4, retrain_all_for_home.py --dry-run (64 envs), forward-lean HOME",
+ "training_branch": "dryrun-base",
+ "training_commit": "0d811f4a483ea4b20b528b2ec633459ccf5e0900"
 }
