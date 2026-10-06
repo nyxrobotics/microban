@@ -25,6 +25,7 @@ from moves.pico_hybrid import (
     require_unchanged_runtime_source_identity,
     runtime_source_identity,
 )
+from moves.pico_hybrid import v12_user_waiver_summary  # TEMPORARY user waiver (V12 USER WAIVER block): delete with it
 
 __all__ = [
     "RUNTIME_SOURCE_IDENTITY_KEYS",
@@ -255,6 +256,9 @@ def main() -> None:
                 "v12_legacy_probe_sha256": contract.v12_legacy_probe_sha256,
                 "v12_stage_gate_sha256": contract.v12_stage_gate_sha256,
                 "v12_tracking_report_sha256": (contract.v12_tracking_report_sha256),
+                "v12_provisional_user_waiver": v12_user_waiver_summary(  # TEMPORARY user waiver (V12 USER WAIVER block): delete with it
+                    contract.v12_user_waiver_revision
+                ),
                 "runtime_source_identity": source_identity,
                 "v12_raw_action_guard": (
                     {

@@ -1893,6 +1893,7 @@ class _PolicyContract:
     # must state at full precision.
     v12_target_clip_lower: tuple[float, ...] = ()
     v12_target_clip_upper: tuple[float, ...] = ()
+    v12_user_waiver_revision: str | None = None  # TEMPORARY user waiver (V12 USER WAIVER block): delete with it
 
 
 def _parse_v10_contract(session: Any) -> _PolicyContract:
@@ -2546,6 +2547,329 @@ def _parse_v12_raw_action_envelope(
     )
 
 
+# ============================================================================
+# V12 USER WAIVER -- TEMPORARY.  Delete this whole block, the lines tagged
+# "TEMPORARY user waiver" in _parse_v12_contract, _PolicyContract and
+# tools/validate_pico_policy.py, and tests/test_pico_user_waiver.py when the
+# twist-ratio replacement model is installed.
+#
+# Provisional user waiver (2026-10-06) for exactly ONE forward-lean package:
+# the pose-release model_14999 of 2026-10-06_01-05-06_lean_v12_pr_10100_to15000
+# (checkpoint b41a6cb2...).  It is not a gate pass: its stage gate status is
+# "provisional_user_waiver" and it fails three named checks the user accepted
+# ("苦手な動きが1つ残ったまま実機の前傾版ブランチに入れてよい。その後直す、が良いと
+# 思います" and "「A（許容して入れる）」"): the mixed_forward_left lateral
+# response (-0.0170 vs 0.02 m/s), ONNX Runtime CPU random-corpus parity on
+# sample 60 (bound ratio 1.0179) and that corpus's largest expected output
+# (219.999 vs V12_ONNX_PARITY_MAX_EXPECTED_OUTPUT 200).  The package must carry
+# the exact record, the exact checkpoint/gate/report hashes pinned below and a
+# passing torch-vs-ONNX parity on its recorded self-test corpus; anything else
+# naming the waiver, its profile or its status is refused.  The startup
+# self-test on the recorded corpus runs unchanged.
+# ============================================================================
+EXPECTED_V12_USER_WAIVER_REVISION = "provisional_user_waiver_lean_pr_model_14999_v1"
+EXPECTED_V12_USER_WAIVER_GATE_STATUS = "provisional_user_waiver"
+EXPECTED_V12_USER_WAIVER_TRACKING_PROFILE = (
+    f"{EXPECTED_V12_COMPLETION_ALLOWANCE_TRACKING_PROFILE}_user_waiver_"
+    "mixed_forward_left_twist_v1"
+)
+_V12_USER_WAIVER_CHECKPOINT_SHA256 = (
+    "b41a6cb2df5e05909f75b35f50889b298559e97bf2ee56d1c35277fb2cc71e54"
+)
+_V12_USER_WAIVER_RANDOM_CORPUS = (
+    "torch_randn_seed20260925_skip_10000x83_then_64x83_all_columns"
+)
+EXPECTED_V12_USER_WAIVER_ONNXRUNTIME_BOUND_RATIO = 1.0178567171096802
+EXPECTED_V12_USER_WAIVER_MAX_EXPECTED_OUTPUT = 219.99908447265625
+EXPECTED_V12_USER_WAIVER_RECORD: dict[str, Any] = {
+    "schema_version": 1,
+    "revision": EXPECTED_V12_USER_WAIVER_REVISION,
+    "install_kind": "provisional_user_waiver",
+    "stage_gate_pass": False,
+    "provisional": True,
+    "to_be_replaced_by_a_fixed_model": True,
+    "checkpoint": {
+        "run": "2026-10-06_01-05-06_lean_v12_pr_10100_to15000",
+        "filename": "model_14999.pt",
+        "iteration": 14999,
+        "completed_updates": 15000,
+        "sha256": _V12_USER_WAIVER_CHECKPOINT_SHA256,
+    },
+    "recipe_revision": EXPECTED_V12_POSE_RELEASE_RECIPE_REVISION,
+    "base_tracking_profile": EXPECTED_V12_COMPLETION_ALLOWANCE_TRACKING_PROFILE,
+    "tracking_profile": EXPECTED_V12_USER_WAIVER_TRACKING_PROFILE,
+    "waived": [
+        {
+            "id": "tracking_twist_mixed_forward_left_lateral",
+            "report": "tracking",
+            "check": "twist_directional_response",
+            "scenario": "mixed_forward_left",
+            "axis": "vy_m_s",
+            "command": 0.3,
+            "measured_signed_response": -0.016997758105397224,
+            "minimum_signed_response": 0.02,
+        },
+        {
+            "id": "onnxruntime_cpu_random_parity_sample_60",
+            "report": "onnx",
+            "check": "onnxruntime_cpu_full83_parity",
+            "corpus": _V12_USER_WAIVER_RANDOM_CORPUS,
+            "rule": (
+                "max_abs_error_le_atol_plus_rtol_times_max_abs_expected_per_sample_v1"
+            ),
+            "atol": 2e-05,
+            "rtol": 1e-06,
+            "sample_index": 60,
+            "absolute_error": 9.1552734375e-05,
+            "sample_maximum_absolute_expected_output": 69.94658660888672,
+            "bound_ratio": EXPECTED_V12_USER_WAIVER_ONNXRUNTIME_BOUND_RATIO,
+            "maximum_allowed_bound_ratio": 1.0,
+        },
+        {
+            "id": "random_parity_expected_output_above_robot_cap",
+            "report": "onnx",
+            "check": "robot_v12_onnx_parity_max_abs_expected_output",
+            "corpus": _V12_USER_WAIVER_RANDOM_CORPUS,
+            "maximum_absolute_expected_output": (
+                EXPECTED_V12_USER_WAIVER_MAX_EXPECTED_OUTPUT
+            ),
+            "robot_cap": 200.0,
+        },
+    ],
+    "user_decisions": [
+        {
+            "date": "2026-10-06",
+            "time": "about 10:00 JST",
+            "verbatim": (
+                "苦手な動きが1つ残ったまま実機の前傾版ブランチに入れてよい。"
+                "その後直す、が良いと思います"
+            ),
+            "covers": ["tracking_twist_mixed_forward_left_lateral"],
+        },
+        {
+            "date": "2026-10-06",
+            "time": "about 10:20 JST",
+            "verbatim": "「A（許容して入れる）」",
+            "covers": [
+                "onnxruntime_cpu_random_parity_sample_60",
+                "random_parity_expected_output_above_robot_cap",
+            ],
+            "condition": (
+                "torch, ONNX Runtime CPU and the ONNX reference evaluator agree "
+                "under the normal norm-wise rule (bound ratio <= 1) on the "
+                "package's recorded self-test corpus"
+            ),
+        },
+    ],
+    "known_limitation": (
+        "stick forward-left plus left yaw while reaching with the hands "
+        "(evaluator scenario mixed_forward_left, with its periodic push): the "
+        "robot moves almost not at all to the left, lateral response -0.0170 "
+        "m/s against the 0.02 m/s minimum; a fixed model will replace this "
+        "provisional one"
+    ),
+    "unwaived": (
+        "every other tracking check of the base profile, locomotion 9x300, "
+        "neutral legacy parity, ONNX reference parity, every other random "
+        "parity sample, the recorded-corpus parity and the robot runtime "
+        "checks run and must pass unchanged"
+    ),
+}
+# The exact evidence of that one package: checkpoint, provisional stage gate,
+# its three reports and gate ONNX, and the two waived ONNX values.
+EXPECTED_V12_USER_WAIVER_BINDINGS = {
+    "checkpoint_sha256": _V12_USER_WAIVER_CHECKPOINT_SHA256,
+    "v12_stage_gate_checkpoint_sha256": _V12_USER_WAIVER_CHECKPOINT_SHA256,
+    "v12_stage_gate_status": EXPECTED_V12_USER_WAIVER_GATE_STATUS,
+    "v12_tracking_profile": EXPECTED_V12_USER_WAIVER_TRACKING_PROFILE,
+    "v12_stage_gate_sha256": (
+        "39200a85042a788b1b28e448026e9c5dc3ed1ab825b6318177daf6cd8acc2b81"
+    ),
+    "v12_tracking_report_sha256": (
+        "7920bb9ec395abae3dbcdc1b1fc7064c872bc01a14cd26483311a7141f330f6c"
+    ),
+    "v12_locomotion_report_sha256": (
+        "2078d52b38ade760fe6f44b98dbc4d06ae7df227ac4ea81ffbe516f79042f2c6"
+    ),
+    "v12_onnx_report_sha256": (
+        "70158baf80632d829d04bfc87f104c946a3b82b4c5dd8470353718655437b6f9"
+    ),
+    "v12_gate_onnx_artifact_sha256": (
+        "d03387fa367654a5e828763b09ca10453a8a06293e62728395302fe9989064e9"
+    ),
+    "v12_onnx_parity_rule": (
+        "max_abs_error_le_atol_plus_rtol_times_max_abs_expected_per_sample_v1"
+    ),
+    "v12_onnxruntime_cpu_max_bound_ratio": repr(
+        EXPECTED_V12_USER_WAIVER_ONNXRUNTIME_BOUND_RATIO
+    ),
+    "v12_onnx_parity_max_abs_expected_output": repr(
+        EXPECTED_V12_USER_WAIVER_MAX_EXPECTED_OUTPUT
+    ),
+}
+V12_USER_WAIVER_METADATA_KEYS = frozenset(
+    (
+        "v12_provisional_install",
+        "v12_user_waiver_revision",
+        "v12_user_waiver_json",
+        "v12_user_waiver_sha256",
+        "v12_user_waiver_recorded_corpus_parity_json",
+    )
+)
+_V12_USER_WAIVER_RECORDED_CORPUS_PARITY_KEYS = frozenset(
+    (
+        "semantics",
+        "corpus_sha256",
+        "samples",
+        "rule",
+        "atol",
+        "rtol",
+        "maximum_absolute_expected_output",
+        "reference_evaluator_maximum_absolute_error",
+        "onnxruntime_cpu_maximum_absolute_error",
+        "reference_evaluator_maximum_bound_ratio",
+        "onnxruntime_cpu_maximum_bound_ratio",
+        "status",
+    )
+)
+_V12_USER_WAIVER_RECORDED_CORPUS_PARITY_SEMANTICS = (
+    "torch_vs_onnxruntime_cpu_and_reference_on_final_tracking_runtime_smoke_"
+    "observations_normwise_rule_v1"
+)
+
+
+def _v12_user_waiver_number(value: Any) -> float | None:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    value = float(value)
+    return value if math.isfinite(value) else None
+
+
+def _require_v12_user_waiver(
+    metadata: Mapping[str, str], recipe_revision: str
+) -> dict[str, Any] | None:
+    """The provisional user waiver's record, or None for an ordinary package."""
+
+    present = {name for name in metadata if name in V12_USER_WAIVER_METADATA_KEYS}
+    present |= {name for name in metadata if name.startswith("v12_user_waiver")}
+    if not present:
+        if (
+            metadata.get("v12_stage_gate_status") == EXPECTED_V12_USER_WAIVER_GATE_STATUS
+            or metadata.get("v12_tracking_profile")
+            == EXPECTED_V12_USER_WAIVER_TRACKING_PROFILE
+        ):
+            raise PicoHybridPolicyContractError(
+                "a provisional user-waiver profile or status needs the waiver record"
+            )
+        return None
+    if present != V12_USER_WAIVER_METADATA_KEYS:
+        raise PicoHybridPolicyContractError(
+            "provisional user-waiver metadata must be complete and exact"
+        )
+    if recipe_revision != EXPECTED_V12_POSE_RELEASE_RECIPE_REVISION:
+        raise PicoHybridPolicyContractError(
+            "the provisional user waiver applies only to the pose-release recipe"
+        )
+    canonical = json.dumps(
+        EXPECTED_V12_USER_WAIVER_RECORD,
+        ensure_ascii=True,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    record = _strict_json_metadata(metadata, "v12_user_waiver_json")
+    if (
+        metadata.get("v12_provisional_install") != "true"
+        or metadata.get("v12_user_waiver_revision") != EXPECTED_V12_USER_WAIVER_REVISION
+        or not _exact_json_value(record, EXPECTED_V12_USER_WAIVER_RECORD)
+        or metadata.get("v12_user_waiver_sha256") != hashlib.sha256(canonical).hexdigest()
+    ):
+        raise PicoHybridPolicyContractError(
+            "provisional user-waiver record does not match the recorded waiver"
+        )
+    for name, value in EXPECTED_V12_USER_WAIVER_BINDINGS.items():
+        if metadata.get(name) != value:
+            raise PicoHybridPolicyContractError(
+                f"the provisional user waiver does not cover this package ({name})"
+            )
+    # The user's condition: torch == ONNX on the recorded self-test corpus.
+    parity = _strict_json_metadata(
+        metadata, "v12_user_waiver_recorded_corpus_parity_json"
+    )
+    rows = _strict_json_metadata(metadata, "v12_runtime_smoke_observations_json")
+    if (
+        not isinstance(parity, dict)
+        or set(parity) != _V12_USER_WAIVER_RECORDED_CORPUS_PARITY_KEYS
+        or parity["semantics"] != _V12_USER_WAIVER_RECORDED_CORPUS_PARITY_SEMANTICS
+        or parity["status"] != "pass"
+        or parity["rule"] != EXPECTED_V12_ONNX_PARITY_RULE
+        or not isinstance(rows, list)
+        or isinstance(parity["samples"], bool)
+        or parity["samples"] != len(rows)
+        or parity["corpus_sha256"]
+        != metadata.get("v12_runtime_smoke_observations_sha256")
+        or _v12_user_waiver_number(parity["atol"]) != EXPECTED_V12_PARITY_ATOL
+        or _v12_user_waiver_number(parity["rtol"])
+        != EXPECTED_V12_ONNX_PARITY_RELATIVE_TOLERANCE
+    ):
+        raise PicoHybridPolicyContractError(
+            "provisional user waiver recorded-corpus parity is missing or drifted"
+        )
+    magnitude = _v12_user_waiver_number(parity["maximum_absolute_expected_output"])
+    if magnitude is None or not 0.0 <= magnitude <= V12_ONNX_PARITY_MAX_EXPECTED_OUTPUT:
+        raise PicoHybridPolicyContractError(
+            "provisional user waiver recorded-corpus output magnitude is invalid"
+        )
+    cap = EXPECTED_V12_PARITY_ATOL + EXPECTED_V12_ONNX_PARITY_RELATIVE_TOLERANCE * magnitude
+    for name, upper in (
+        ("reference_evaluator_maximum_bound_ratio", 1.0),
+        ("onnxruntime_cpu_maximum_bound_ratio", 1.0),
+        ("reference_evaluator_maximum_absolute_error", cap),
+        ("onnxruntime_cpu_maximum_absolute_error", cap),
+    ):
+        value = _v12_user_waiver_number(parity[name])
+        if value is None or not 0.0 <= value <= upper:
+            raise PicoHybridPolicyContractError(
+                f"provisional user waiver recorded-corpus parity failed: {name}"
+            )
+    return record
+
+
+def _v12_user_waiver_full83_parity_cap(
+    metadata: Mapping[str, str], parity_atol: float
+) -> float:
+    """``_v12_full83_parity_cap`` with only the two waived values lifted.
+
+    Their exact strings are pinned by EXPECTED_V12_USER_WAIVER_BINDINGS; the
+    reference ratio keeps the normal bound.
+    """
+
+    relative_tolerance = _require_exact_finite_scalar(
+        metadata,
+        "v12_onnx_parity_relative_tolerance",
+        EXPECTED_V12_ONNX_PARITY_RELATIVE_TOLERANCE,
+    )
+    _require_v12_bounded_metric(metadata, "v12_onnx_reference_max_bound_ratio", upper=1.0)
+    return parity_atol + relative_tolerance * EXPECTED_V12_USER_WAIVER_MAX_EXPECTED_OUTPUT
+
+
+def v12_user_waiver_summary(revision: str | None) -> dict[str, Any] | None:
+    """What tools/validate_pico_policy.py prints for an accepted waiver package."""
+
+    if revision is None:
+        return None
+    return {
+        "revision": revision,
+        "provisional": True,
+        "stage_gate_status": EXPECTED_V12_USER_WAIVER_GATE_STATUS,
+        "tracking_profile": EXPECTED_V12_USER_WAIVER_TRACKING_PROFILE,
+        "waived": [item["id"] for item in EXPECTED_V12_USER_WAIVER_RECORD["waived"]],
+        "known_limitation": EXPECTED_V12_USER_WAIVER_RECORD["known_limitation"],
+    }
+
+
+# ============================ end V12 USER WAIVER ============================
+
+
 def _parse_v12_contract(session: Any) -> _PolicyContract:
     """Parse the raw-action v12 contract without relaxing contract v10.
 
@@ -2592,6 +2916,7 @@ def _parse_v12_contract(session: Any) -> _PolicyContract:
         )
     _require_v12_home_pose(metadata)
     _require_v12_lateral_fidelity(metadata, recipe_revision)
+    user_waiver = _require_v12_user_waiver(metadata, recipe_revision)  # TEMPORARY user waiver (V12 USER WAIVER block): delete with it
     _require_exact_metadata(
         metadata,
         "v12_deployment_packager_revision",
@@ -2645,7 +2970,8 @@ def _parse_v12_contract(session: Any) -> _PolicyContract:
     ):
         raise PicoHybridPolicyContractError("unsupported v12 stage gate schema")
     _require_exact_metadata(metadata, "v12_stage_gate_name", EXPECTED_V12_STAGE_GATE)
-    _require_exact_metadata(metadata, "v12_stage_gate_status", "pass")
+    if user_waiver is None:  # TEMPORARY user waiver (V12 USER WAIVER block): delete with it
+        _require_exact_metadata(metadata, "v12_stage_gate_status", "pass")
     _require_exact_metadata(metadata, "v12_stage_gate_canonical_boundary", "true")
     stage_gate_sha256 = _require_lowercase_sha256(metadata, "v12_stage_gate_sha256")
     locomotion_report_sha256 = _require_lowercase_sha256(
@@ -2656,7 +2982,7 @@ def _parse_v12_contract(session: Any) -> _PolicyContract:
         metadata, "v12_tracking_report_sha256"
     )
     tracking_profile = metadata.get("v12_tracking_profile")
-    if (
+    if user_waiver is None and (  # TEMPORARY user waiver (V12 USER WAIVER block): delete with it
         not isinstance(tracking_profile, str)
         or tracking_profile
         not in EXPECTED_V12_TRACKING_PROFILES_BY_RECIPE[recipe_revision]
@@ -2834,7 +3160,11 @@ def _parse_v12_contract(session: Any) -> _PolicyContract:
         else EXPECTED_V12_PARITY_ATOL
     )
     _require_exact_finite_scalar(metadata, "v12_onnx_parity_atol", parity_atol)
-    full83_parity_cap = _v12_full83_parity_cap(metadata, parity_atol)
+    full83_parity_cap = (
+        _v12_user_waiver_full83_parity_cap(metadata, parity_atol)  # TEMPORARY user waiver (V12 USER WAIVER block): delete with it
+        if user_waiver is not None
+        else _v12_full83_parity_cap(metadata, parity_atol)
+    )
     for name in (
         "v12_onnx_reference_max_abs_error",
         "v12_onnxruntime_cpu_max_abs_error",
@@ -3139,6 +3469,9 @@ def _parse_v12_contract(session: Any) -> _PolicyContract:
         v12_runtime_smoke_observations=v12_runtime_smoke_observations,
         v12_target_clip_lower=target_clip_lower,
         v12_target_clip_upper=target_clip_upper,
+        v12_user_waiver_revision=(  # TEMPORARY user waiver (V12 USER WAIVER block): delete with it
+            None if user_waiver is None else str(user_waiver["revision"])
+        ),
     )
 
 
