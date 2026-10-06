@@ -488,14 +488,6 @@ class Scheduler:
                             obs.user_input.velocity = {"vx": 0.0, "vy": 0.0, "vtheta": 0.0}
                         else:
                             obs.user_input.active_moves = (obs.user_input.active_moves | {"getup"}) - {"walk"}
-                        # Tell the walk owner (PolicySelectableWalkMove) that
-                        # its next start follows get-up.
-                        walk_move = self.registered_moves.get("walk")
-                        seed_from_getup = getattr(
-                            walk_move, "seed_next_start_from_getup", None
-                        )
-                        if callable(seed_from_getup):
-                            seed_from_getup()
                         if not model_ready and hardware_mode == "policy":
                             self._stop_auto_getup("get-up model contract unavailable; returning to neutral")
                         can_attempt = imu_safe and hardware_mode == "policy" and model_ready

@@ -3,7 +3,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from constants import KP_HARDWARE_NEUTRAL, MOTOR_TO_ID, NEUTRAL_POSE, OBSERVATION_DOF_ORDER
+from constants import KP_HARDWARE_NEUTRAL, KP_RL, MOTOR_TO_ID, NEUTRAL_POSE, OBSERVATION_DOF_ORDER
 from input.input_source import UserInput
 from input.network_input import NetworkInputSource
 from moves.move import MotorCommand, Move, MoveState
@@ -12,6 +12,8 @@ from moves.policy_selector import PolicySelectableWalkMove
 from moves.walk import WalkMove
 from observer import Observation, RobotState
 from policy_fixtures import LinearWalkSession
+from test_getup_transitions import observation as getup_observation
+from test_getup_transitions import transition_only_move
 
 
 class FakeMove(Move):
@@ -443,41 +445,76 @@ class _KpRecorder:
         self.goal_writes.append((list(ids), list(positions)))
 
 
-class HoldAfterGetupGainTest(unittest.TestCase):
-    def _selector(self, controller):
+class HoldGainTest(unittest.TestCase):
+    """A static hold is P900 on all 21 joints (docs/policies.md), whatever it follows."""
+
+    ALL_IDS = list(MOTOR_TO_ID.values())
+
+    def _selector(self, controller, pico_move=None):
         return PolicySelectableWalkMove(
             controller=controller,
+            pico_move=pico_move,
             pico_policy_path=Path(tempfile.gettempdir()) / "missing_pico_policy.onnx",
         )
 
-    def _obs(self):
+    def _obs(self, policy="pico_teleop", time_s=0.0, active=True):
         return Observation(
             robot_state=RobotState(
-                time_s=0.0,
+                time_s=time_s,
                 motor_positions={name: NEUTRAL_POSE[name] + 0.01 for name in MOTOR_TO_ID},
             ),
-            user_input=UserInput(active_moves={"walk"}, locomotion_policy="walk"),
+            user_input=UserInput(
+                active_moves={"walk"} if active else set(), locomotion_policy=policy
+            ),
         )
 
-    def test_hold_taking_over_from_getup_raises_gain_after_reseeding_goals(self):
+    @staticmethod
+    def _gains(controller):
+        gains = {}
+        for ids, values in controller.kp_writes:
+            gains.update(zip(ids, values))
+        return gains
+
+    def test_hold_after_getup_raises_every_joint_after_reseeding_goals(self):
         controller = _KpRecorder()
+        getup = transition_only_move(controller)
+        getup.on_stop(getup_observation(active_moves=("walk",)), MotorCommand())
+        self.assertEqual(set(self._gains(controller).values()), {KP_RL})
         move = self._selector(controller)
-        move.seed_next_start_from_getup()
+        written = len(controller.kp_writes)
         move.on_start(self._obs(), MotorCommand())
-        self.assertEqual(controller.kp_writes, [])
+        self.assertEqual(move.effective_policy, "hold")
+        self.assertEqual(len(controller.kp_writes), written)  # goals are sent first
         move.step(self._obs(), MotorCommand())
         ids = [MOTOR_TO_ID[name] for name in OBSERVATION_DOF_ORDER]
         self.assertEqual(controller.goal_writes[-1][0], ids)
-        self.assertEqual(controller.kp_writes, [(ids, [KP_HARDWARE_NEUTRAL] * len(ids))])
+        self.assertEqual(controller.kp_writes[-1], (self.ALL_IDS, [KP_HARDWARE_NEUTRAL] * 21))
+        # head, neck_roll and neck_pitch included (P125 lets the neck sag)
+        self.assertEqual(set(self._gains(controller).values()), {KP_HARDWARE_NEUTRAL})
         move.step(self._obs(), MotorCommand())
-        self.assertEqual(len(controller.kp_writes), 1)
+        self.assertEqual(len(controller.kp_writes), written + 1)
 
-    def test_hold_not_from_getup_leaves_gain_unchanged(self):
+    def test_hold_after_a_pico_failure_raises_every_joint(self):
+        controller = _KpRecorder()
+        pico = FakeMove(step_error=RuntimeError("inference failed"))
+        move = self._selector(controller, pico_move=pico)
+        move.on_start(self._obs(), MotorCommand())
+        self.assertEqual(move.effective_policy, "pico_teleop")
+        controller.kp_writes.append((self.ALL_IDS, [KP_RL] * 21))  # PICO's start gain
+        move.step(self._obs(), MotorCommand())
+        self.assertEqual(move.effective_policy, "hold")
+        self.assertEqual(set(self._gains(controller).values()), {KP_HARDWARE_NEUTRAL})
+
+    def test_hold_returning_to_neutral_ends_at_p900_on_every_joint(self):
         controller = _KpRecorder()
         move = self._selector(controller)
         move.on_start(self._obs(), MotorCommand())
         move.step(self._obs(), MotorCommand())
-        self.assertEqual(controller.kp_writes, [])
+        controller.kp_writes.clear()
+        move.on_stop(self._obs(active=False), MotorCommand())
+        move.on_stop(self._obs(time_s=5.0, active=False), MotorCommand())
+        self.assertEqual(move.state, MoveState.INACTIVE)
+        self.assertEqual(controller.kp_writes, [(self.ALL_IDS, [KP_HARDWARE_NEUTRAL] * 21)])
 
 
 if __name__ == "__main__":
