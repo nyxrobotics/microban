@@ -16,7 +16,7 @@ if TYPE_CHECKING:
 from bam.model import load_model as bam_load_model
 from bam.mujoco import MujocoController as BamController
 
-from constants import MOTOR_TO_ID, ID_TO_MOTOR, NEUTRAL_POSE, KP_DEFAULT, BAM_VIN, BAM_VOLTAGE_DROP_GAIN, BAM_VIN_MIN, BAM_MAX_CURRENT
+from constants import MOTOR_TO_ID, ID_TO_MOTOR, NEUTRAL_POSE, KP_DEFAULT, BAM_VIN, BAM_VOLTAGE_DROP_GAIN, BAM_VIN_MIN
 
 
 class _DelayBuffer:
@@ -84,10 +84,7 @@ class MuJoCoController:
             self._model.body_ipos[trunk_id, 2] += trunk_com_offset[2]
 
         # Set initial pose to neutral so the robot starts upright
-        self._data.qpos[2] = 0.165
-        for name, angle in NEUTRAL_POSE.items():
-            if name in self._name_to_qpos_idx:
-                self._data.qpos[self._name_to_qpos_idx[name]] = angle
+        self._set_home_qpos()
         mujoco.mj_forward(self._model, self._data)
 
         # Delay buffers — simulate sensor/communication latency
@@ -121,11 +118,14 @@ class MuJoCoController:
             list(MOTOR_TO_ID.keys()),
             self._model,
             self._data,
-            vin_drop_gain=BAM_VOLTAGE_DROP_GAIN,
+            vin_drop_resistance=BAM_VOLTAGE_DROP_GAIN,
             vin_min=BAM_VIN_MIN,
-            max_current=BAM_MAX_CURRENT,
         )
-        self._bam.reset(self._data.qpos)
+        self._bam.last_ts = self._data.time
+        # BamController.__init__ calls mj_setConst, which overwrites data.qpos
+        # with qpos0 (z=0, every joint 0): re-apply the upright neutral spawn.
+        self._set_home_qpos()
+        mujoco.mj_forward(self._model, self._data)
 
         self._viewer = mujoco.viewer.launch_passive(
             self._model, self._data, key_callback=key_callback
@@ -255,17 +255,22 @@ class MuJoCoController:
             current = (float(w), float(x), float(y), float(z))
         return self._delay_quat.push_and_read(current)
 
-    def reset(self) -> None:
-        """Reset the simulation to the initial neutral standing pose."""
+    def _set_home_qpos(self) -> None:
+        """Spawn upright at the neutral pose, soles on the ground."""
         self._data.qpos[:] = 0.0
-        self._data.qvel[:] = 0.0
-        self._data.ctrl[:] = 0.0
         self._data.qpos[2] = 0.165
+        self._data.qpos[3:7] = (1.0, 0.0, 0.0, 0.0)
         for name, angle in NEUTRAL_POSE.items():
             if name in self._name_to_qpos_idx:
                 self._data.qpos[self._name_to_qpos_idx[name]] = angle
+
+    def reset(self) -> None:
+        """Reset the simulation to the initial neutral standing pose."""
+        self._data.qvel[:] = 0.0
+        self._data.ctrl[:] = 0.0
+        self._set_home_qpos()
         mujoco.mj_forward(self._model, self._data)
-        self._bam.reset(self._data.qpos)
+        self._bam.last_ts = self._data.time
         for mid in MOTOR_TO_ID.values():
             neutral = self._data.qpos[self._name_to_qpos_idx[ID_TO_MOTOR[mid]]]
             self._delay_act[mid].fill(neutral)
