@@ -80,6 +80,51 @@ keyboard, gamepad and sim. Defaults (in [constants.py](../src/constants.py)):
 | `vtheta` (turning in place, `vx = vy = 0`) | ±3.0 |
 | `vtheta` (while translating) | ±1.5 |
 
+## Real-robot joint offsets
+
+If one robot holds a joint slightly off from where the policies expect it (a servo
+horn mounted slightly off, a slightly bent bracket, a robot that wants its ankles
+pitched forward a little), correct it with the per-joint table
+`HARDWARE_JOINT_OFFSET_DEG` in [constants.py](../src/constants.py). It lists all 21
+joints and every value is `0.0` by default.
+
+- Units: degrees of the **logical** joint coordinate (the one used by the policies,
+  training, `NEUTRAL_POSE` and the observations; before `MOTOR_SIGN`). A positive value
+  moves the real joint further in that joint's positive direction.
+- Convention: `servo command = MOTOR_SIGN * (logical target + offset)` and
+  `logical measurement = MOTOR_SIGN * servo reading - offset`.
+- Scope: applied only inside `RobotController` (the real servo bus), on every goal
+  write and every position read. Every move and every input source gets it
+  automatically, and the policies keep observing
+  training coordinates. Velocities and currents are unchanged. MuJoCo / placo
+  simulation (`make sim`, `make viewer`) and training ignore it.
+- Measuring: with all offsets `0.0`, hold the joint at a known true angle (in the
+  logical coordinate) and read its logical position `m` from the runtime (it already
+  includes `MOTOR_SIGN`). Then `offset = m - true angle`, converted to degrees. Getting
+  the sign wrong doubles the error instead of removing it.
+- Limit: each value must be finite and at most `HARDWARE_JOINT_OFFSET_MAX_RAD`
+  (0.2 rad, about 11.5 deg); otherwise the runtime refuses to start. Nonzero values are
+  printed once when the runtime starts (`Hardware joint offsets (...)`). Offsets are
+  calibration trims; they do not keep goals in range.
+- Servo range: after sign and offset, `RobotController` saturates every servo goal into
+  `[SERVO_GOAL_MIN_RAD, SERVO_GOAL_MAX_RAD] = [-pi, pi - 2*pi/4096]` rad, which is raw
+  0..4095 in XC330 Position Control mode (rustypot: `raw = (rad + pi) * 4096 / (2*pi)`).
+  An in-range goal is sent unchanged. A goal past an edge is sent as that edge, and the
+  cached goal becomes the edge mapped back to the logical coordinate. At startup the
+  runtime reads every servo's Operating Mode and Min/Max Position Limit: a servo that
+  answers with a mode other than Position Control (3), or with fewer than two raw values
+  between its limits, stops startup with an error naming the joints and every servo's
+  torque OFF; a servo with narrower limits (read the same twice) gets them as its own
+  goal range (intersected with 0..4095) and is printed once (`Servo position limits: ...
+  raw [min, max] -> logical [lo, hi] rad`, plus a WARNING if its neutral pose is outside);
+  a servo that does not answer keeps the full range with one warning line and is read
+  again when it first answers a position read (a non-position mode found then stops the
+  runtime the same way).
+
+Example: to pitch both feet 1 degree forward, set
+`"left_ankle_pitch": -1.0` and `"right_ankle_pitch": -1.0`, then `make sync` and restart
+the runtime.
+
 ## Developing: adding your own moves
 
 Each behavior is a subclass of `Move` ([src/moves/move.py](../src/moves/move.py)) with

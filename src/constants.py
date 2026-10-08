@@ -1,6 +1,8 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright 2026 Marc Duclusaud
 
+import numpy as np
+
 from home_pose import (
     HOME_JOINT_POS_RAD as _HOME_JOINT_POS_RAD,
     HOME_ROOT_POS_M as _HOME_ROOT_POS_M,
@@ -74,6 +76,55 @@ MOTOR_SIGN = {
     "neck_roll": 1.0,
     "neck_pitch": 1.0,
 }
+
+# Real-robot joint calibration offsets, in degrees of the LOGICAL joint coordinate
+# (the policy/training coordinate, before MOTOR_SIGN). Use them to correct a
+# servo horn that is mounted a little off on one particular robot. They act ONLY
+# at the real-hardware servo boundary (RobotController) and apply to every move
+# (walk, PICO, get-up, neutral/A return, arms, head/neck):
+#   servo command       = MOTOR_SIGN * (logical target + offset)
+#   logical measurement = MOTOR_SIGN * servo reading - offset
+# so everything above RobotController (policies, observations, scheduler, goal
+# caches) keeps seeing training coordinates. A positive offset makes the servo
+# hold the joint further in the joint's positive direction for the same logical
+# target. Simulation (src/sim/*) and training never use these values. Every
+# joint in MOTOR_TO_ID must be listed; 0.0 everywhere means no correction.
+HARDWARE_JOINT_OFFSET_DEG = {
+    "left_hip_yaw": 0.0,
+    "left_hip_roll": 0.0,
+    "left_hip_pitch": 0.0,
+    "left_knee": 0.0,
+    "left_ankle_pitch": 0.0,
+    "left_ankle_roll": 0.0,
+    "right_hip_yaw": 0.0,
+    "right_hip_roll": 0.0,
+    "right_hip_pitch": 0.0,
+    "right_knee": 0.0,
+    "right_ankle_pitch": 0.0,
+    "right_ankle_roll": 0.0,
+    "left_shoulder_pitch": 0.0,
+    "left_shoulder_roll": 0.0,
+    "left_elbow": 0.0,
+    "right_shoulder_pitch": 0.0,
+    "right_shoulder_roll": 0.0,
+    "right_elbow": 0.0,
+    "head": 0.0,
+    "neck_roll": 0.0,
+    "neck_pitch": 0.0,
+}
+HARDWARE_JOINT_OFFSET_RAD = {
+    name: float(np.deg2rad(value)) for name, value in HARDWARE_JOINT_OFFSET_DEG.items()
+}
+# Offsets are calibration trims, not pose changes, hence the small bound. They
+# do not keep goals in range: policy targets reach +-pi, so sign * (target +
+# offset) can leave the servo's goal range, and RobotController saturates
+# every servo goal into [SERVO_GOAL_MIN_RAD, SERVO_GOAL_MAX_RAD] instead (or
+# into a servo's narrower Min/Max Position Limit, read at startup).
+HARDWARE_JOINT_OFFSET_MAX_RAD = 0.2
+# The servo's raw goal range in rustypot radians, raw = (rad + pi) * 4096 /
+# (2 * pi): raw 0 is -pi and raw 4095 is pi - 2 * pi / 4096 (one turn).
+SERVO_GOAL_MIN_RAD = -float(np.pi)
+SERVO_GOAL_MAX_RAD = float(np.pi) - 2.0 * float(np.pi) / 4096.0
 
 # Position P Gain (Dynamixel register value)
 KP_DEFAULT: int = 400        # ~0.886 Nm/rad in MuJoCo
