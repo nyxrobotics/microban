@@ -31,6 +31,7 @@ by default; add `HOST=microban-ext` to operate over the secondary network (see t
 | `make viewer` | Open the MuJoCo viewer locally (no robot needed). |
 | `make teleop-run` | Run the robot with the PICO UDP input from the `microban_teleop` PC bridge (see [Teleoperation](teleop.md)). |
 | `make teleop-sim` | Run MuJoCo with the same UDP input, for testing before hardware. |
+| `make camera-stream-enable` | Install/start the optional stereo MJPEG service after the camera is connected. |
 
 ## Running the robot
 
