@@ -7,15 +7,15 @@
 # and the HOME projected gravity come from it.  Policies whose home_pose stamp is another HOME are refused.
 
 schema_version: 2
-name: "Centered upright HOME: trunk vertical, knees straight, COM over the sole centre"
-label: "centered_home"
-tag: "centered_home"
-joint_hash: "bbef07cab8"
-trunk_pitch_deg: 0.0
-trunk_pitch_rad: 0.0
-root_pos_m: [0.0, 0.0, 0.170554885633559]
-root_quat_wxyz: [1.0, 0.0, 0.0, 0.0]
-projected_gravity: [0.0, 0.0, -1.0]
+name: "Forward-lean HOME: trunk 10 deg forward, knees straight, COM over the sole centre"
+label: "forward_lean_home"
+tag: "forward_lean_home"
+joint_hash: "481503d292"
+trunk_pitch_deg: 10.0
+trunk_pitch_rad: 0.17453292519943295
+root_pos_m: [0.0, 0.0, 0.170430569776402]
+root_quat_wxyz: [0.9961946980917455, 0.0, 0.08715574274765817, 0.0]
+projected_gravity: [0.17364817766693033, 0.0, -0.984807753012208]
 joint_pos_deg:
   head: 0.0
   neck_roll: 0.0
@@ -28,16 +28,16 @@ joint_pos_deg:
   right_elbow: -20.0
   left_hip_roll: 5.0
   right_hip_roll: -5.0
-  left_hip_pitch: 1.198384259489
-  right_hip_pitch: 1.198384259489
+  left_hip_pitch: -14.166561199931119
+  right_hip_pitch: -14.166561199931119
   left_hip_yaw: 0.0
   right_hip_yaw: 0.0
   left_knee: 0.0
   right_knee: 0.0
   left_ankle_roll: -5.0
   right_ankle_roll: 5.0
-  left_ankle_pitch: -1.198384259489
-  right_ankle_pitch: -1.198384259489
+  left_ankle_pitch: 4.127976841869204
+  right_ankle_pitch: 4.127976841869204
 joint_pos_rad:
   head: 0.0
   neck_roll: 0.0
@@ -50,38 +50,43 @@ joint_pos_rad:
   right_elbow: -0.3490658503988659
   left_hip_roll: 0.08726646259971647
   right_hip_roll: -0.08726646259971647
-  left_hip_pitch: 0.020915751032157148
-  right_hip_pitch: 0.020915751032157148
+  left_hip_pitch: -0.24725313662407672
+  right_hip_pitch: -0.24725313662407672
   left_hip_yaw: 0.0
   right_hip_yaw: 0.0
   left_knee: 0.0
   right_knee: 0.0
   left_ankle_roll: -0.08726646259971647
   right_ankle_roll: 0.08726646259971647
-  left_ankle_pitch: -0.020915751032157148
-  right_ankle_pitch: -0.020915751032157148
+  left_ankle_pitch: 0.07204678733669492
+  right_ankle_pitch: 0.07204678733669492
 hand_target_fk:
-  revision: "microban_robot_xml_arm_fk_reachable_box_elbow_upper_minus10_v2"
+  revision: "microban_robot_xml_arm_fk_reachable_box_elbow_upper_minus10_home_levelled_lean10_receiver_box64mm_v4"
+  target_frame: "robot_home_levelled_trunk_xyz_forward_left_up"
+  target_frame_trunk_pitch_rad: 0.17453292519943295
   side_order: ["left", "right"]
   joint_order: ["shoulder_pitch", "shoulder_roll", "elbow"]
   joint_lower_deg: [[-25.0, 10.0, -50.0], [-25.0, -30.0, -50.0]]
   joint_upper_deg: [[25.0, 30.0, -10.0], [25.0, -10.0, -10.0]]
   home_joint_deg: [[0.0, 10.0, -20.0], [0.0, -10.0, -20.0]]
   bound_grid_points_per_axis: 401
-  offset_aabb_min_m: [[-0.06120170602356862, -0.0034550417440758485, -0.0035619649312883805], [-0.06120170602356864, -0.0387512193701912, -0.0035619649312883944]]
-  offset_aabb_max_m: [[0.06289464331528255, 0.0387512193701912, 0.060477220857479266], [0.06289464331528258, 0.0034550417440758485, 0.060477220857479225]]
-  normalizer_abs_bound_m: [0.063, 0.0388, 0.0605]
+  trunk_offset_aabb_min_m: [[-0.06120170602356862, -0.0034550417440758485, -0.0035619649312883805], [-0.06120170602356864, -0.0387512193701912, -0.0035619649312883944]]
+  trunk_offset_aabb_max_m: [[0.06289464331528255, 0.0387512193701912, 0.060477220857479266], [0.06289464331528258, 0.0034550417440758485, 0.060477220857479225]]
+  offset_aabb_min_m: [[-0.05976319909948816, -0.0034550417440758485, -0.0012919613069190107], [-0.05976319909948818, -0.0387512193701912, -0.0012919613069190233]]
+  offset_aabb_max_m: [[0.06399997388471845, 0.0387512193701912, 0.04573068026176937], [0.06399997388471848, 0.0034550417440758485, 0.04573068026176935]]
+  normalizer_abs_bound_m: [0.064, 0.0388, 0.0458]
   wire_abs_bound_m: [0.08, 0.08, 0.08]
   runtime_validated_abs_limit_m: [0.064, 0.064, 0.064]
-  evaluation_joint_degrees: [["F", [-25.0, 25.0, -50.0]], ["B", [25.0, 20.0, -10.0]], ["f", [-12.0, 18.0, -32.0]], ["b", [12.0, 18.0, -32.0]]]
-  evaluation_offsets_m: [["F", [[0.05965182377803401, 0.02001299541823158, 0.05695429454214103], [0.059651823778034005, -0.02001299541823158, 0.056954294542141]]], ["B", [[-0.05889031574552025, 0.020262900077370374, 0.00788636819595702], [-0.058890315745520276, -0.020262900077370388, 0.007886368195956998]]], ["f", [[0.03317253316144149, 0.013564446512561182, 0.01946788065760361], [0.0331725331614415, -0.013564446512561182, 0.019467880657603583]]], ["b", [[-0.009540835008328632, 0.013564446512561182, 0.004701156748151122], [-0.009540835008328644, -0.013564446512561182, 0.0047011567481511154]]]]
+  max_rejection_rounds: 64
+  evaluation_joint_degrees: [["F", [-20.0, 25.0, -50.0]], ["B", [25.0, 20.0, -10.0]], ["f", [-12.0, 18.0, -32.0]], ["b", [12.0, 18.0, -32.0]]]
+  evaluation_offsets_m: [["F", [[0.06234049962549173, 0.020012995418231566, 0.0397478141516205], [0.06234049962549175, -0.02001299541823158, 0.039747814151620486]]], ["B", [[-0.05662618605788688, 0.020262900077370374, 0.017992752553927096], [-0.05662618605788691, -0.020262900077370388, 0.017992752553927082]]], ["f", [[0.0360491298436723, 0.013564446512561182, 0.01341176987424431], [0.036049129843672305, -0.013564446512561182, 0.013411769874244278]]], ["b", [[-0.008579540984169296, 0.013564446512561182, 0.006286484226322005], [-0.00857954098416931, -0.013564446512561182, 0.0062864842263219995]]]]
   source: "src/mjlab_microban/robot/microban/robot.xml"
-  sampling: "uniform_independent_joint_box_then_exact_fk_offset_from_home"
+  sampling: "uniform_independent_joint_box_then_exact_fk_offset_from_home_rotated_into_home_levelled_frame_rejecting_joint_samples_outside_runtime_validated_abs_limit"
 fk:
-  head_standing_height_m: 0.2965
-  feet_lateral_m: 0.094
-  com_m: [-0.004576250448896906, -2.96699720122555e-05, 0.17694311657053768]
-  sole_x_range_m: [-0.03540625044889713, 0.02625374955110284]
-  heel_margin_m: 0.030830000000000222
-  toe_margin_m: 0.030829999999999746
+  head_standing_height_m: 0.2953
+  feet_lateral_m: 0.0941
+  com_m: [0.003308279553224485, -2.9671288206510944e-05, 0.1768506041568948]
+  sole_x_range_m: [-0.027648418742800378, 0.03426497784924904]
+  heel_margin_m: 0.030956698296024862
+  toe_margin_m: 0.030956698296024557
   total_mass_kg: 1.1360058800000001

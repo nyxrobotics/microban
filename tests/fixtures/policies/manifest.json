@@ -1,39 +1,39 @@
 {
  "checkpoints": {
-  "getup": "model_15.pt",
+  "getup": "model_17.pt",
   "pico": "model_8.pt",
-  "walk": "model_19.pt"
+  "walk": "model_7.pt"
  },
  "contract": "microban-policy-1",
- "created": "2026-10-07 03:41:24",
+ "created": "2026-10-08 20:13:47",
  "dry_run": true,
  "home_joint_hash": "481503d292",
  "home_tag": "forward_lean_home",
- "home_yaml_sha256": "f9d80d8dff9b7926cd3e9e8a4aa1b2172b1c8a9ea90c1cb6df29605a07017ce3",
+ "home_yaml_sha256": "db382ae3596ecdff473bcd1be183df09c3e8e6210a7491a57e59280977073c68",
  "judgments": {
   "getup": {
    "failures": [
     "fallen-start standing 0.00 < 0.85",
-    "standing tremble 0.66 rad/s > 0.3",
+    "standing tremble 0.68 rad/s > 0.3",
     "posture standing 0.00 < 0.8"
    ],
    "passed": false,
    "summary": {
-    "final_tilt_deg": 95.26459503173828,
+    "final_tilt_deg": 94.99654388427734,
     "min_fallen_standing_fraction": 0.0,
     "posture_standing_fraction": 0.0,
     "push_fall_fraction": 0.0,
-    "standing_joint_abs_vel_rad_s": 0.6594148874282837,
-    "standing_targets_beyond_1p57": 0.0
+    "standing_joint_abs_vel_rad_s": 0.6770336627960205,
+    "standing_targets_beyond_1p57": 0.0,
+    "standing_targets_on_clip": 0.0
    }
   },
   "pico": {
    "failures": [
-    "9x300:actual_soft_limits",
     "9x300:all_scenarios_completed",
     "9x300:directional_signs",
-    "9x300:minimum_directional_response",
     "9x300:no_falls",
+    "9x300:twist_beats_standing",
     "tracking:all_scenarios_completed",
     "tracking:foot_tracking_p95",
     "tracking:foot_tracking_rms",
@@ -41,7 +41,7 @@
     "tracking:hand_tracking_p95",
     "tracking:hand_tracking_rms",
     "tracking:no_falls",
-    "tracking:twist_directional_response"
+    "tracking:twist_beats_standing"
    ],
    "passed": false
   },
@@ -55,41 +55,108 @@
     "yaw_right_0p5"
    ],
    "falls": 9,
-   "ok": false,
-   "receipt": "/tmp/claude-1000/-home-rtx-server-Git-projects-microban/d1f0f65a-ee88-4c31-b554-95f79532c226/scratchpad/contract_fix/runs/c3_lean/train/artifacts/legacy_teleop_probe/velocity_87485ddc834efcd1_teleop83_raw_9x300.json",
-   "receipt_sha256": "5d21c1bba36cdd2f464e70d1fd7c50a97846d091880faefe5fb8e491b8033e57",
-   "responses": {
-    "backward_0p1": -0.13650368256768322,
-    "backward_0p2": -0.12825621405823362,
-    "forward_0p1": 0.14823544498974994,
-    "forward_0p2": 0.15880921236904605,
-    "lateral_left_0p1": -0.008019637684247712,
-    "lateral_right_0p1": 0.012977107096678363,
-    "yaw_left_0p5": -0.04930311786010862,
-    "yaw_right_0p5": 0.1347654340788722
+   "margins": {
+    "backward_0p1": -0.11521654198276035,
+    "backward_0p2": -0.1365842369630042,
+    "forward_0p1": 0.04279088682951932,
+    "forward_0p2": 0.00022818619169161225,
+    "lateral_left_0p1": -0.023114714490948245,
+    "lateral_right_0p1": -0.017242860303837614,
+    "yaw_left_0p5": -0.1656799699430569,
+    "yaw_right_0p5": -0.18121611372782634
    },
-   "worst": "yaw_left_0p5",
-   "worst_margin": -0.24930311786010861
+   "minimums": {
+    "backward_0p1": 0.02,
+    "backward_0p2": 0.04,
+    "forward_0p1": 0.04,
+    "forward_0p2": 0.08,
+    "lateral_left_0p1": 0.02,
+    "lateral_right_0p1": 0.02,
+    "yaw_left_0p5": 0.2,
+    "yaw_right_0p5": 0.2
+   },
+   "ok": false,
+   "receipt": "/tmp/claude-1000/-home-rtx-server-Git-projects-microban/d1f0f65a-ee88-4c31-b554-95f79532c226/scratchpad/dryfix/train_dry/artifacts/legacy_teleop_probe/velocity_67a6f2789db3ef12_teleop83_raw_9x300.json",
+   "receipt_sha256": "ca638a3349bf9daaeb2a81c87e90334186a5190acf7bc35c25e376865b13a5d5",
+   "responses": {
+    "backward_0p1": -0.09521654198276035,
+    "backward_0p2": -0.0965842369630042,
+    "forward_0p1": 0.08279088682951932,
+    "forward_0p2": 0.08022818619169161,
+    "lateral_left_0p1": -0.003114714490948245,
+    "lateral_right_0p1": 0.002757139696162388,
+    "yaw_left_0p5": 0.03432003005694311,
+    "yaw_right_0p5": 0.01878388627217366
+   },
+   "soft_limit_overshoot_rad": 0.004792734980583191,
+   "twists": {
+    "backward_0p1": [
+     0.09521654198276035,
+     -0.003790839932662493,
+     0.016745740790308144
+    ],
+    "backward_0p2": [
+     0.0965842369630042,
+     -0.004773925344520451,
+     0.022758858895901103
+    ],
+    "forward_0p1": [
+     0.08279088682951932,
+     -0.0014512513170868843,
+     0.0031937756355992467
+    ],
+    "forward_0p2": [
+     0.08022818619169161,
+     -0.00025496784350512565,
+     -0.0029845439244776833
+    ],
+    "lateral_left_0p1": [
+     0.08340254578118524,
+     -0.003114714490948245,
+     0.017055993549348343
+    ],
+    "lateral_right_0p1": [
+     0.0966952747257892,
+     -0.002757139696162388,
+     0.0037659194252531356
+    ],
+    "neutral": [
+     0.08853738321922719,
+     -0.0026658741521532647,
+     0.0070803644834086295
+    ],
+    "yaw_left_0p5": [
+     0.08905527751462963,
+     -0.005739580275425956,
+     0.03432003005694311
+    ],
+    "yaw_right_0p5": [
+     0.08582343245731093,
+     0.00034279344086266623,
+     -0.01878388627217366
+    ]
+   },
+   "worst": "yaw_right_0p5",
+   "worst_margin": -0.18121611372782634
   }
  },
  "policies": {
   "getup": {
-   "checkpoint_sha256": "6e18fa04bd3ef359c311884f4053b93c8febcbd29ed81b56e8cf4ce2ecadb5e8",
+   "checkpoint_sha256": "a6358e16165d48076169aeeb6ba81c67b981ee43e222a44cfd741d3167699869",
    "file": "getup.onnx",
-   "sha256": "2a9729dbc1661d6625f3d803161bb054387b0256f043fefad63bc2f84d4807ca"
+   "sha256": "955cba602f3e30c484b34cb5223c899a60a9592292e79825556d3e2d807c86ab"
   },
   "pico": {
-   "checkpoint_sha256": "44c550219bca2616b4fc553f33d37fba60f34a9618e22233644bd411a7c6d4a8",
+   "checkpoint_sha256": "7c2fa660f8ba5249d6bf52791b25bff827edac92fd512032ec38f01b20ae5d42",
    "file": "pico_teleop.onnx",
-   "sha256": "0cf3d5ebc3ae0af44b948c7ec68d14096d7cf4bba998d20a4aff4a57a51536d5"
+   "sha256": "5491bf6d48d1ba4974a918000ba2e6a4bf70156d360f4f28cda79a1605195741"
   },
   "walk": {
-   "checkpoint_sha256": "87485ddc834efcd1ecc14c9029f6c94ba92781a1ec6db9f992c9e86358157840",
+   "checkpoint_sha256": "67a6f2789db3ef120d10bb9218f3f1fbfb635f6d85927e37234da38672ce2804",
    "file": "walk.onnx",
-   "sha256": "f96597290c5e8d1bfd1a8d117b9fcd7b52a801ae9d10f047a245699afcd5a077"
+   "sha256": "f09f70aea517ed5a1b6b6da0a43a3d9a47300422709857f40a7843bec6ec6a85"
   }
  },
- "release": "test fixture: mjlab_microban home-config 0d811f4, retrain_all_for_home.py --dry-run (64 envs), forward-lean HOME",
- "training_branch": "dryrun-base",
- "training_commit": "0d811f4a483ea4b20b528b2ec633459ccf5e0900"
+ "training_branch": "tmp/cleanup",
+ "training_commit": "8aefeb2e1a5dc69843ea55173a7acdf671b24931"
 }
