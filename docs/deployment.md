@@ -40,59 +40,72 @@ advise using a new card, as corrupted cards can cause issues.
 
 ## Step 2: Headless Wi-Fi Configuration
 
-Once the flashing process is complete, unplug and plug back the micro-SD card into your Ubuntu PC.
-
-Open your terminal and open the network configuration file using nano:
-
-```bash
-sudo nano /media/$USER/bootfs/network-config
-```
-
-You should see a YAML file with the following content:
-
-```yaml
-network:
-  version: 2
-  ethernets:
-    eth0:
-      dhcp4: true
-      dhcp6: true
-      optional: true
-  wifis:
-    wlan0:
-      dhcp4: true
-      regulatory-domain: "<YOUR_COUNTRY_CODE>"
-      access-points:
-        "<YOUR_WIFI_NAME>":
-          password: "<YOUR_WIFI_PASSWORD>"
-      optional: true
-```
-
-⚠️ CRITICAL: DO NOT modify the YAML format. It is strictly space-sensitive and should not be changed. 
+Once the flashing process is complete, unplug and plug back the micro-SD card into your Ubuntu PC. Both the `bootfs` and `rootfs` partitions get mounted.
 
 📶 CRITICAL: the network **must be 2.4 GHz**. The Raspberry Pi Zero 2 W has a 2.4 GHz-only
 Wi-Fi chip and **cannot see or join a 5 GHz network** — it will silently never connect. If
 you use a phone hotspot, force it to 2.4 GHz.
 
-🛜 Replace <YOUR_WIFI_NAME> and <YOUR_WIFI_PASSWORD> with your local network credentials. In addition, you can set other networks, such as your phone hotspot to use your robot everywhere. To do so, add an entry to the access-points section:
+Wi-Fi is configured by writing a NetworkManager connection profile directly onto
+`rootfs` (**not** by editing `network-config` — see why below). Generate a UUID and
+write the profile:
 
-```yaml
-      access-points:
-        "<YOUR_WIFI_NAME>":
-          password: "<YOUR_WIFI_PASSWORD>"
-        "<YOUR_SECOND_WIFI_NAME>":
-          password: "<YOUR_SECOND_WIFI_PASSWORD>"
+```bash
+UUID=$(uuidgen)
+sudo tee /media/$USER/rootfs/etc/NetworkManager/system-connections/home.nmconnection >/dev/null <<EOF
+[connection]
+id=<YOUR_WIFI_NAME>
+uuid=$UUID
+type=wifi
+autoconnect=true
+
+[wifi]
+mode=infrastructure
+ssid=<YOUR_WIFI_NAME>
+
+[wifi-security]
+key-mgmt=wpa-psk
+psk=<YOUR_WIFI_PASSWORD>
+
+[ipv4]
+method=auto
+
+[ipv6]
+method=auto
+addr-gen-mode=default
+
+[proxy]
+EOF
+sudo chown root:root /media/$USER/rootfs/etc/NetworkManager/system-connections/home.nmconnection
+sudo chmod 600 /media/$USER/rootfs/etc/NetworkManager/system-connections/home.nmconnection
 ```
 
-🌍 Don't forget to replace <YOUR_COUNTRY_CODE> with your local two-letter country code (ISO 3166-1 alpha-2). For example, use "US" for the United States, "GB" for the United Kingdom, "FR" for France, "DE" for Germany, etc. This ensures the Raspberry Pi uses the correct Wi-Fi channels allowed in your country.
+⚠️ CRITICAL: the file must be owned by `root:root` with `600` permissions, or
+NetworkManager silently ignores it.
 
-Save and exit (Ctrl + O, then Enter, then Ctrl + X).
+🛜 Replace both `<YOUR_WIFI_NAME>` and `<YOUR_WIFI_PASSWORD>` with your local network
+credentials. To also reach the robot on a second network (e.g. a phone hotspot), repeat
+the block above with a different file name (e.g. `hotspot.nmconnection`) — the robot
+tries every profile it has and connects to whichever is in range.
 
 Safely eject the card from your Ubuntu PC, insert it into the Raspberry Pi Zero 2W, and power it up.
 
-> **Changing the Wi-Fi networks later:** just edit `network-config` again — on the Pi,
-> or offline with the SD card in your PC — and reboot. The robot detects the change at
-> boot and re-applies it automatically (it resets cloud-init and reboots once). 
+> **Why not `network-config`?** That file still exists on `bootfs`, and it looks like the
+> obvious place to set Wi-Fi — but on this image, cloud-init's Wi-Fi config never gets
+> turned into an actual NetworkManager connection (a cloud-init module it depends on,
+> `cc_netplan_nm_patch`, is missing from this image). It validates with no error and
+> silently does nothing, so the robot never joins your network. Leave `network-config` at
+> its placeholder values and use the `.nmconnection` method above instead.
+
+> **Changing the Wi-Fi network later:** with the SD card back in your PC, add, replace, or
+> delete `.nmconnection` files under `rootfs/etc/NetworkManager/system-connections/` the
+> same way, then reboot the Pi. If you already have SSH access, you can instead run
+> `sudo nmcli device wifi connect "<SSID>" password "<PASSWORD>"` directly on the Pi.
+
+> **Country / regulatory domain:** this method does not set the Wi-Fi regulatory domain,
+> so channels 12–13 stay unavailable. Most routers default to channel 1, 6, or 11, so this
+> rarely matters; if you need those channels, run
+> `sudo raspi-config nonint do_wifi_country <CC>` once you have SSH access.
 
 ## Step 3: First SSH Connection
 
