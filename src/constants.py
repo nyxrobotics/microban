@@ -23,6 +23,8 @@ MOTOR_TO_ID = {
     "right_shoulder_roll": 42,
     "right_elbow": 43,
     "head": 51,
+    "neck_roll": 52,
+    "neck_pitch": 53,
 }
 
 ID_TO_MOTOR = {v: k for k, v in MOTOR_TO_ID.items()}
@@ -47,6 +49,8 @@ NEUTRAL_POSE = {
     "right_shoulder_roll": float(np.deg2rad(-10.0)),
     "right_elbow": float(np.deg2rad(-20.0)),
     "head": float(np.deg2rad(0.0)),
+    "neck_roll": float(np.deg2rad(0.0)),
+    "neck_pitch": float(np.deg2rad(0.0)),
 }
 
 MOTOR_SIGN = {
@@ -69,6 +73,15 @@ MOTOR_SIGN = {
     "right_shoulder_roll": -1.0,
     "right_elbow": -1.0,
     "head": 1.0,
+    # neck_roll / neck_pitch signs are CAD-inferred, not yet measured on real
+    # hardware: on both servos, the idler-horn/idle-cap hardware sits at the low end of the
+    # joint's rotation axis (x for roll, y for pitch), so the driven/output face was taken to
+    # be the high end, matching the +X / +Y directions already used as the joint axes in the
+    # URDF. Combined with DYNAMIXEL's positive-direction convention (CCW viewed from the horn
+    # side), that gives +1.0 for both. Verify with a small test motion before trusting this for
+    # full-range moves.
+    "neck_roll": 1.0,
+    "neck_pitch": 1.0,
 }
 
 # Position P Gain (Dynamixel register value)
@@ -76,11 +89,15 @@ KP_DEFAULT: int = 400        # ~0.886 Nm/rad in MuJoCo
 KP_RL: int = 125             # ~0.277 Nm/rad in MuJoCo
 KP_GAIN_PRM: float = 0.0022  # Nm/rad per register unit (for Xl330)
 
-# BAM motor model (bam package, XL330 m6)
-BAM_VIN: float = 7.5
-BAM_VIN_MIN: float = 6.0
-BAM_VOLTAGE_DROP_GAIN: float = 0.2
-BAM_MAX_CURRENT: float = 1.75 # XL330 firmware current limit [A]: clips motor torque to ±BAM_MAX_CURRENT * kt
+# BAM motor model (bam package) of the XC330-T288-T servos on a 3S pack. bam has
+# no published XC330-T288-T identification: tools/actuator_id/ defines the
+# actuator and records and fits a pendulum identification (xc330_params.json).
+# PROXY_KT / PROXY_R below are that fit (m6 model, 30 logs, score 0.064 rad).
+# BAM_MAX_CURRENT is the Robotis datasheet current limit.
+BAM_VIN: float = 11.1        # 3S nominal (3x3.7V); matches XC330-T288-T's own rated voltage
+BAM_VIN_MIN: float = 9.0     # 3S practical minimum (3x3.0V/cell)
+BAM_VOLTAGE_DROP_GAIN: float = 0.2  # bam fit for XL330, kept for XC330
+BAM_MAX_CURRENT: float = 0.91 # XC330-T288-T firmware current limit [A] (Robotis control table: 910 mA)
 
 # Overcurrent safety: emergency torque-off when the summed |present_current| of all
 # motors stays above OVERCURRENT_CUTOFF_A for OVERCURRENT_DEBOUNCE_TICKS consecutive ticks.
@@ -94,8 +111,8 @@ OVERCURRENT_DEBOUNCE_TICKS: int = 2     # consecutive over-threshold ticks befor
 # data already read (present_position, present_velocity) and the command target:
 #   duty = clip(PROXY_KP * PROXY_ERROR_GAIN * (target - q), ±PROXY_MAX_PWM)
 #   I    = (PROXY_VIN * duty - PROXY_KT * dq) / PROXY_R      then |I| capped at BAM_MAX_CURRENT
-PROXY_KT: float = 0.366                  # XL330 m6 torque constant [Nm/A]
-PROXY_R: float = 2.811                   # XL330 m6 motor resistance [Ohm]
+PROXY_KT: float = 1.043                  # XC330-T288-T torque constant [Nm/A] (tools/actuator_id fit)
+PROXY_R: float = 10.007                  # XC330-T288-T coil resistance [Ohm] (tools/actuator_id fit)
 PROXY_VIN: float = BAM_VIN               # supply voltage [V]
 PROXY_ERROR_GAIN: float = 0.0028773775   # duty cycle per (kp * rad), XL330 encoder/gain scaling
 PROXY_MAX_PWM: float = 1.0               # max duty cycle magnitude

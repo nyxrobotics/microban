@@ -10,6 +10,12 @@ http://www.apache.org/licenses/LICENSE-2.0
 
 <!-- Generated using onshape-to-robot -->
 <!-- Onshape https://cad.onshape.com/documents/d424992a192a8ce34ffce163/v/d1df625a85f2de984257464b/e/b34620a03cc3a684006c5867 -->
+<!-- Mass / inertia: per-part CAD mass properties (parallel axis theorem), identical in -->
+<!-- robot.xml and robot.urdf. -->
+<!--   * printed parts and electronics envelopes: CAD volume x 1.25 g/cm3 (PETG-CF, 100% infill) -->
+<!--   * servos: 23 g each (XC330-T288-T, ROBOTIS e-manual) -->
+<!--   * battery: 145 g (3x 18650 pack, 61.0 x 76.3 x 21.0 mm envelope) -->
+<!--   * screws, shims, washers and the DC15 idler dummies carry no mass (about 95 g robot-wide) -->
 <mujoco model="microban">
   <compiler angle="radian" meshdir="assets" autolimits="true"/>
   <default>
@@ -40,7 +46,7 @@ http://www.apache.org/licenses/LICENSE-2.0
     <!-- Link trunk -->
     <body name="trunk" pos="0 0 0" quat="1 0 0 0" childclass="microban">
       <freejoint name="trunk_freejoint"/>
-      <inertial pos="-0.00454781 -0.000104579 0.053896" mass="0.347283" fullinertia="0.000608722 0.000477224 0.000357224 -5.1387e-07 -1.16287e-05 1.9299e-06"/>
+      <inertial pos="-0.00632399 -0.000119739 0.0527636" mass="0.435626" fullinertia="0.000795351 0.000594437 0.000457518 1.28286e-06 -8.71511e-06 1.35427e-07"/>
       <!-- Part stp39__configuration__2_2x8 -->
       <!-- Part stp39__configuration__2_2x8_2 -->
       <!-- Part arm_bearing_support__configuration_right -->
@@ -55,8 +61,8 @@ http://www.apache.org/licenses/LICENSE-2.0
       <!-- Part stp39__configuration__2_2x8_3 -->
       <!-- Part arm_bearing_support__configuration_right_2 -->
       <geom type="mesh" class="visual" pos="-0.00575 0.036 -0.0484" quat="0.707107 -0 0 -0.707107" mesh="arm_bearing_support__configuration_right" material="arm_bearing_support__configuration_right_material"/>
-      <!-- Part xl330_without_horn_2 -->
-      <geom type="mesh" class="visual" pos="-0.00204165 -0 0.1195" quat="0.707107 0 0 0.707107" mesh="xl330_without_horn" material="xl330_without_horn_material"/>
+      <!-- Part xl330_without_horn_2: head yaw servo -->
+      <geom type="mesh" class="visual" pos="0.01295835 0 0.1195" quat="0.707107 0 0 -0.707107" mesh="xl330_without_horn" material="xl330_without_horn_material"/>
       <!-- Part stp39__configuration__2_2x8_4 -->
       <!-- Part hat -->
       <!-- Part xl330_without_horn_3 -->
@@ -110,22 +116,59 @@ http://www.apache.org/licenses/LICENSE-2.0
       <!-- Frame imu -->
       <site group="3" name="imu" pos="0.01483 -0.002 0.0675" quat="0.5 -0.5 -0.5 0.5"/>
       <!-- Link head -->
-      <body name="head" pos="-0.00204165 -0 0.126" quat="0.707107 0 0 0.707107">
+      <!-- Neck: yaw through the head joint, roll and pitch through the bodies nested in it; -->
+      <!-- the stereo camera rides on camera_cover. Screws, idler hardware (dc15_a01_*) and the -->
+      <!-- camera PCB have no visual geoms. -->
+      <body name="head" pos="0.01295835 0 0.126" quat="0.707107 0 0 0.707107">
         <!-- Joint from trunk to head -->
         <joint axis="0 0 1" name="head" type="hinge" range="-1.5707963267949783 1.5707963267948148" class="xl330"/>
-        <inertial pos="5.1303e-08 -0.0074561 0.0161837" mass="0.0166215" fullinertia="2.92963e-06 3.58354e-06 4.24694e-06 -1.6e-11 4e-12 2.61187e-07"/>
-        <!-- Part stp39__configuration__2x6 -->
-        <!-- Part stp39__configuration__2x6_2 -->
-        <!-- Part head__configuration_right -->
-        <geom type="mesh" class="visual" pos="-0.036 -0.00779165 -0.1744" quat="1 -0 -0 0" mesh="head__configuration_right" material="head__configuration_right_material"/>
-        <!-- Part stp39__configuration__2x6_3 -->
-        <!-- Part stp39__configuration__2x6_4 -->
+        <inertial pos="2.7845e-06 0.0365054 0.0116475" mass="0.0318353" fullinertia="1.04883e-05 4.65868e-06 8.45675e-06 -2.52545e-10 2.90295e-10 -1.82954e-06"/>
+        <!-- Part roll_servo_cradle -->
+        <geom type="mesh" class="visual" pos="0 0.01295835 -0.126" quat="0.707107 0 0 -0.707107" mesh="roll_servo_cradle" material="roll_servo_cradle_material"/>
+        <!-- Part xl330_without_horn: neck roll servo -->
+        <geom type="mesh" class="visual" pos="0 0.0355004 0.0225" quat="0.707107 0.707107 0 0" mesh="xl330_without_horn" material="xl330_without_horn_material"/>
+        <!-- Link roll_pitch_link -->
+        <body name="roll_pitch_link" pos="0 0.0574 0.0225" quat="0.707107 0 0 -0.707107">
+          <!-- Joint from head to roll_pitch_link -->
+          <joint axis="1 0 0" name="neck_roll" type="hinge" range="-0.436332 0.436332" class="xl330"/>
+          <inertial pos="0.0388655 0.000480036 0.000773406" mass="0.036182" fullinertia="3.91484e-06 1.46342e-05 1.5668e-05 -2.70928e-07 8.1584e-07 1.28618e-08"/>
+          <!-- Part roll_pitch_link -->
+          <geom type="mesh" class="visual" pos="0.0444416 0 -0.1435" quat="1 0 0 0" mesh="roll_pitch_link" material="roll_pitch_link_material"/>
+          <!-- Part xl330_without_horn_neck_pitch: neck pitch servo -->
+          <geom type="mesh" class="visual" pos="0.0574 0.008 0" quat="-0.5 0.5 0.5 0.5" mesh="xl330_without_horn" material="xl330_without_horn_material"/>
+          <!-- Part dc15_a01_horn_idle2_dummy_neck_roll (idler hardware, intentionally not shown) -->
+          <!-- Part dc15_a01_idle_cap_dummy_neck_roll (idler hardware, intentionally not shown) -->
+          <!-- Part bts2_m2_6x8_neck_roll (screw, intentionally not shown) -->
+          <!-- Part shcs_m2.5x5_neck_1 (screw, intentionally not shown) -->
+          <!-- Part shcs_m2.5x5_neck_2 (screw, intentionally not shown) -->
+          <!-- Part shcs_m2.5x5_neck_3 (screw, intentionally not shown) -->
+          <!-- Part shcs_m2.5x5_neck_4 (screw, intentionally not shown) -->
+          <!-- Link camera_cover -->
+          <body name="camera_cover" pos="0.0574 0.0125 0" quat="1 0 0 0">
+            <!-- Joint from roll_pitch_link to camera_cover -->
+            <!-- range: down 25deg, up 90deg (negative = up: Ry(+) tilts local +X toward -Z) -->
+            <joint axis="0 1 0" name="neck_pitch" type="hinge" range="-1.570796 0.436332" class="xl330"/>
+            <inertial pos="0.0228923 -0.0124774 -9.01111e-06" mass="0.0360838" fullinertia="2.43676e-05 6.25347e-06 2.78637e-05 3.98036e-09 -9.31931e-10 -3.83045e-10"/>
+            <!-- Part pitch_servo_cradle (the CAD's camera_yoke: it carries the camera board and pitches with it) -->
+            <geom type="mesh" class="visual" pos="-0.01295835 -0.0125 -0.1435" quat="1 0 0 0" mesh="pitch_servo_cradle" material="pitch_servo_cradle_material"/>
+            <!-- Part camera_cover -->
+            <geom type="mesh" class="visual" pos="-0.0129584 -0.0124998 -0.1485" quat="1 0 0 0" mesh="camera_cover" material="camera_cover_material"/>
+            <!-- Part elp-3dgs1200p01-h120 (stereo camera PCB, intentionally not shown) -->
+            <!-- Part dc15_a01_horn_idle2_dummy_neck_pitch (idler hardware, intentionally not shown) -->
+            <!-- Part dc15_a01_idle_cap_dummy_neck_pitch (idler hardware, intentionally not shown) -->
+            <!-- Part bts2_m2_6x8_neck_pitch (screw, intentionally not shown) -->
+            <!-- Frame camera_left -->
+            <site group="3" name="camera_left" pos="0.040002 0.017008 0.00003" quat="1 0 0 0"/>
+            <!-- Frame camera_right -->
+            <site group="3" name="camera_right" pos="0.040002 -0.042008 -2.1e-05" quat="1 0 0 0"/>
+          </body>
+        </body>
       </body>
       <!-- Link shoulder -->
       <body name="shoulder" pos="0 -0.0505 0.081" quat="0.707107 -0.707107 -0 0">
         <!-- Joint from trunk to shoulder -->
         <joint axis="0 0 1" name="right_shoulder_pitch" type="hinge" range="-3.141592653589793 3.141592653589793" class="xl330"/>
-        <inertial pos="4.19e-10 2.814e-09 -0.00850029" mass="0.00898451" fullinertia="1.06003e-06 1.78233e-06 1.86739e-06 0 0 -0"/>
+        <inertial pos="0 2e-08 -0.00706356" mass="0.0109724" fullinertia="1.24848e-06 1.88675e-06 2.30754e-06 9.3949e-13 8.75796e-13 -5.10696e-12"/>
         <!-- Part stp39__configuration__2x6_5 -->
         <!-- Part stp39__configuration__2x6_6 -->
         <!-- Part stp39__configuration__2x6_7 -->
@@ -144,7 +187,7 @@ http://www.apache.org/licenses/LICENSE-2.0
         <body name="humerus__configuration_right" pos="0.0145 0 -0.0195" quat="0 0.707107 0 0.707107">
           <!-- Joint from shoulder to humerus__configuration_right -->
           <joint axis="0 0 1" name="right_shoulder_roll" type="hinge" range="-3.1415926535897922 8.881784197001252e-16" class="xl330"/>
-          <inertial pos="-0.000309872 -0.0252784 -0.0143918" mass="0.0416867" fullinertia="1.76899e-05 3.95132e-06 1.75854e-05 -3.03216e-07 -2.278e-09 -7.8184e-08"/>
+          <inertial pos="-0.000336107 -0.0256295 -0.014388" mass="0.0514058" fullinertia="2.27714e-05 4.54224e-06 2.26534e-05 -3.99353e-07 -3.07588e-09 -1.01984e-07"/>
           <!-- Part stp39__configuration__2_2x8_19 -->
           <!-- Part stp39__configuration__2_2x8_20 -->
           <!-- Part stp39__configuration__2_2x8_21 -->
@@ -163,7 +206,7 @@ http://www.apache.org/licenses/LICENSE-2.0
           <body name="radius" pos="-0.0145 -0.0515 -0.0145" quat="0.707107 0 0.707107 -0">
             <!-- Joint from humerus__configuration_right to radius -->
             <joint axis="0 0 1" name="right_elbow" type="hinge" range="-2.181661564992912 2.181661564992912" class="xl330"/>
-            <inertial pos="-4.0628e-08 -0.0310611 0.0130165" mass="0.0115415" fullinertia="5.26775e-06 1.21602e-06 4.45903e-06 -4e-12 -1.2e-11 1.7157e-07"/>
+            <inertial pos="-1.47596e-49 -0.0340122 0.013482" mass="0.0274072" fullinertia="1.04007e-05 2.61603e-06 8.7794e-06 -1.35741e-55 -4.61882e-21 1.23991e-08"/>
             <!-- Part stp39__configuration__2x6_17 -->
             <!-- Part stp39__configuration__2x6_18 -->
             <!-- Part radius -->
@@ -183,9 +226,9 @@ http://www.apache.org/licenses/LICENSE-2.0
       <body name="hip" pos="0 -0.036 0" quat="1 -0 -0 0">
         <!-- Joint from trunk to hip -->
         <joint axis="0 0 1" name="right_hip_yaw" type="hinge" range="-4.188790204786353 1.047197551196635" class="xl330"/>
-        <inertial pos="0.00421822 1.46909e-07 -0.00948697" mass="0.00884451" fullinertia="9.36719e-07 4.32505e-06 4.03697e-06 -3.3e-11 1.95496e-07 0"/>
+        <inertial pos="-0.00961017 -1e-08 -0.00765825" mass="0.00975549" fullinertia="8.75612e-07 4.32851e-06 4.26238e-06 3.1365e-12 -5.43397e-08 5.66659e-14"/>
         <!-- Part hip__configuration_right -->
-        <geom type="mesh" class="visual" pos="0.00575 -0 -0.0484" quat="0.707107 0 0 0.707107" mesh="hip__configuration_right" material="hip__configuration_right_material"/>
+        <geom type="mesh" class="visual" pos="-0.01175 0 -0.0484" quat="0.707107 0 0 0.707107" mesh="hip__configuration_right" material="hip__configuration_right_material"/>
         <!-- Part stp39__configuration__2x6_21 -->
         <!-- Part stp39__configuration__2x6_22 -->
         <!-- Part stp39__configuration__2x6_23 -->
@@ -199,10 +242,10 @@ http://www.apache.org/licenses/LICENSE-2.0
         <!-- Part stp39__configuration__2x6_31 -->
         <!-- Part stp39__configuration__2x6_32 -->
         <!-- Link hip_block__configuration_right -->
-        <body name="hip_block__configuration_right" pos="-0.02 0 -0.0214" quat="0.5 -0.5 0.5 -0.5">
+        <body name="hip_block__configuration_right" pos="-0.0375 0 -0.0214" quat="0.5 -0.5 0.5 -0.5">
           <!-- Joint from hip to hip_block__configuration_right -->
-          <joint axis="0 0 1" name="right_hip_roll" type="hinge" range="-0.610865238197994 0.6108652381980366" class="xl330"/>
-          <inertial pos="-5.75932e-05 0.00982795 0.0271518" mass="0.04763" fullinertia="1.64064e-05 1.33088e-05 7.85889e-06 -9.153e-09 7.8745e-08 6.63067e-07"/>
+          <joint axis="0 0 1" name="right_hip_roll" type="hinge" range="-0.436332 0.436332" class="xl330"/>
+          <inertial pos="-6.14702e-05 0.00950161 0.0264325" mass="0.0583697" fullinertia="1.9229e-05 1.54487e-05 9.4077e-06 -1.04246e-08 1.01993e-07 4.97642e-07"/>
           <!-- Part stp39__configuration__2_2x8_27 -->
           <!-- Part xl330_2 -->
           <geom type="mesh" class="visual" pos="-0.008 -0 0.0385" quat="0 0.707107 0 -0.707107" mesh="xl330" material="xl330_material"/>
@@ -228,7 +271,7 @@ http://www.apache.org/licenses/LICENSE-2.0
           <body name="femur__configuration_right" pos="-0.0145 -0 0.0385" quat="0 0.707107 0 -0.707107">
             <!-- Joint from hip_block__configuration_right to femur__configuration_right -->
             <joint axis="0 0 1" name="right_hip_pitch" type="hinge" range="-1.5707963267948974 1.5707963267948957" class="xl330"/>
-            <inertial pos="-0.0109472 -0.0366847 -0.0147025" mass="0.014726" fullinertia="1.12665e-05 4.38335e-06 8.95932e-06 -1.12592e-06 1.333e-09 -4.521e-09"/>
+            <inertial pos="-0.0108175 -0.0387251 -0.0147455" mass="0.017273" fullinertia="1.07363e-05 5.15428e-06 8.2932e-06 -1.74349e-06 1.34774e-09 2.21702e-09"/>
             <!-- Part stp39__configuration__2x6_33 -->
             <!-- Part femur__configuration_right -->
             <geom class="collision" pos="-0.015 -0.0335001 0.00275" quat="0.5 -0.5 0.5 0.5" type="box" size="0.00125 0.009 0.022228"/>
@@ -254,7 +297,7 @@ http://www.apache.org/licenses/LICENSE-2.0
             <body name="tibia__configuration_right" pos="-0.005 -0.062 -0" quat="1 -0 0 -0">
               <!-- Joint from femur__configuration_right to tibia__configuration_right -->
               <joint axis="0 0 1" name="right_knee" type="hinge" range="-0.7853981633977201 2.356194490192073" class="xl330"/>
-              <inertial pos="0.00276278 -0.0196679 -0.0144621" mass="0.0300463" fullinertia="1.53882e-05 5.3311e-06 1.38581e-05 2.25674e-06 7.6682e-08 -1.37001e-07"/>
+              <inertial pos="0.00255695 -0.017402 -0.014454" mass="0.0350657" fullinertia="1.56776e-05 5.89266e-06 1.42103e-05 2.45892e-06 9.47282e-08 -1.67523e-07"/>
               <!-- Part stp39__configuration__2x6_49 -->
               <!-- Part stp39__configuration__2x6_50 -->
               <!-- Part stp39__configuration__2x6_51 -->
@@ -279,7 +322,7 @@ http://www.apache.org/licenses/LICENSE-2.0
               <body name="ankle_block__configuration_left" pos="0.008 -0.0612131 -0" quat="0 -0 -0 1">
                 <!-- Joint from tibia__configuration_right to ankle_block__configuration_left -->
                 <joint axis="0 0 1" name="right_ankle_pitch" type="hinge" range="-1.5707963267948077 0.6108652381981041" class="xl330"/>
-                <inertial pos="-0.0110676 -0.00979852 -0.0144015" mass="0.04722" fullinertia="7.83993e-06 1.29837e-05 1.60971e-05 -6.00742e-07 -4.9782e-08 -6.127e-09"/>
+                <inertial pos="-0.0117978 -0.00944623 -0.014397" mass="0.0577288" fullinertia="9.35052e-06 1.50215e-05 1.88085e-05 -4.11424e-07 -6.78719e-08 -5.72456e-09"/>
                 <!-- Part stp39__configuration__2_2x8_37 -->
                 <!-- Part xl330_4 -->
                 <geom type="mesh" class="visual" pos="0 0 -0.0065" quat="1 0 -0 0" mesh="xl330" material="xl330_material"/>
@@ -305,19 +348,22 @@ http://www.apache.org/licenses/LICENSE-2.0
                 <body name="foot" pos="-0.0385 0 -0.0145" quat="0 -0.707107 0 -0.707107">
                   <!-- Joint from ankle_block__configuration_left to foot -->
                   <joint axis="0 0 1" name="right_ankle_roll" type="hinge" range="-0.610865238197748 0.6108652381982826" class="xl330"/>
-                  <inertial pos="-0 -0.0168869 0.0347422" mass="0.016823" fullinertia="1.15605e-05 1.2167e-05 2.53496e-06 0 -0 5.67932e-07"/>
+                  <inertial pos="4e-08 -0.0200677 0.033616" mass="0.0301613" fullinertia="1.301e-05 1.45047e-05 3.78583e-06 2.39016e-11 4.01609e-11 6.0526e-07"/>
                   <!-- Part stp39__configuration__2x6_57 -->
                   <!-- Part stp39__configuration__2x6_58 -->
                   <!-- Part stp39__configuration__2x6_59 -->
                   <!-- Part stp39__configuration__2x6_60 -->
                   <!-- Part stp39__configuration__2x6_61 -->
                   <!-- Part foot__configuration_right -->
-                  <geom name="right_foot_collision_1" class="collision" pos="-0 -0.02175 0.042" quat="0 0 0.707107 0.707107" type="box" size="0.0225 0.04 0.00125"/>
-                  <geom name="right_foot_collision_2" class="collision" pos="-0 -0.02175 0.042" quat="0 0 0.707107 0.707107" type="box" size="0.0175 0.045 0.00125"/>
-                  <geom name="right_foot_collision_3" class="collision" pos="-0.0175 -0.02175 0.002" quat="0.270598 -0.270598 -0.653281 -0.653281" type="box" size="0.00353553 0.00353553 0.00125"/>
-                  <geom name="right_foot_collision_4" class="collision" pos="0.0175 -0.02175 0.002" quat="0.270598 -0.270598 -0.653281 -0.653281" type="box" size="0.00353553 0.00353553 0.00125"/>
-                  <geom name="right_foot_collision_5" class="collision" pos="-0.0175 -0.02175 0.082" quat="0.270598 -0.270598 -0.653281 -0.653281" type="box" size="0.00353553 0.00353553 0.00125"/>
-                  <geom name="right_foot_collision_6" class="collision" pos="0.0175 -0.02175 0.082" quat="0.270598 -0.270598 -0.653281 -0.653281" type="box" size="0.00353553 0.00353553 0.00125"/>
+                  <!-- Sole contact: the sole is one flat 64 x 40 mm face (a 32 mm radius circle cut by two chords); -->
+                  <!-- the six nested boxes below are an inscribed staircase of it (97.7% of its area), each box -->
+                  <!-- bottom on the sole plane. -->
+                  <geom name="right_foot_collision_1" class="collision" pos="0 -0.02525 0.0385" quat="0.5 -0.5 -0.5 -0.5" type="box" size="0.03083 0.00857387 0.00125"/>
+                  <geom name="right_foot_collision_2" class="collision" pos="0 -0.02525 0.0385" quat="0.5 -0.5 -0.5 -0.5" type="box" size="0.02966 0.0120119 0.00125"/>
+                  <geom name="right_foot_collision_3" class="collision" pos="0 -0.02525 0.0385" quat="0.5 -0.5 -0.5 -0.5" type="box" size="0.02849 0.0145712 0.00125"/>
+                  <geom name="right_foot_collision_4" class="collision" pos="0 -0.02525 0.0385" quat="0.5 -0.5 -0.5 -0.5" type="box" size="0.02732 0.0166619 0.00125"/>
+                  <geom name="right_foot_collision_5" class="collision" pos="0 -0.02525 0.0385" quat="0.5 -0.5 -0.5 -0.5" type="box" size="0.02615 0.0184439 0.00125"/>
+                  <geom name="right_foot_collision_6" class="collision" pos="0 -0.02525 0.0385" quat="0.5 -0.5 -0.5 -0.5" type="box" size="0.02498 0.02 0.00125"/>
                   <geom type="mesh" class="visual" pos="-0 -0.0095 0.0385" quat="0 0 0.707107 0.707107" mesh="foot__configuration_right" material="foot__configuration_right_material"/>
                   <!-- Part stp39__configuration__2x6_62 -->
                   <!-- Part stp39__configuration__2x6_63 -->
@@ -334,7 +380,7 @@ http://www.apache.org/licenses/LICENSE-2.0
       <body name="shoulder_2" pos="-0 0.0505 0.081" quat="0 0 -0.707107 -0.707107">
         <!-- Joint from trunk to shoulder_2 -->
         <joint axis="0 0 1" name="left_shoulder_pitch" type="hinge" range="-3.141592653589793 3.141592653589793" class="xl330"/>
-        <inertial pos="-4.19e-10 2.814e-09 0.00850029" mass="0.00898451" fullinertia="1.06003e-06 1.78233e-06 1.86739e-06 -0 0 0"/>
+        <inertial pos="0 2e-08 0.00706356" mass="0.0109724" fullinertia="1.24846e-06 1.88675e-06 2.30752e-06 1.13057e-12 8.75796e-13 -2.69282e-12"/>
         <!-- Part stp39__configuration__2x6_65 -->
         <!-- Part stp39__configuration__2x6_66 -->
         <!-- Part stp39__configuration__2x6_67 -->
@@ -353,7 +399,7 @@ http://www.apache.org/licenses/LICENSE-2.0
         <body name="humerus__configuration_left" pos="-0.0145 0 0.0195" quat="0 -0.707107 -0 0.707107">
           <!-- Joint from shoulder_2 to humerus__configuration_left -->
           <joint axis="0 0 1" name="left_shoulder_roll" type="hinge" range="0.0 3.141592653589793" class="xl330"/>
-          <inertial pos="-0.000313281 0.0252784 -0.0143884" mass="0.0416867" fullinertia="1.76899e-05 3.9512e-06 1.75853e-05 3.01684e-07 -5.77e-10 7.6531e-08"/>
+          <inertial pos="-0.000339641 0.0256295 -0.0143843" mass="0.0514058" fullinertia="2.27714e-05 4.54204e-06 2.26533e-05 3.97343e-07 -8.65028e-10 9.9835e-08"/>
           <!-- Part stp39__configuration__2_2x8_43 -->
           <!-- Part stp39__configuration__2_2x8_44 -->
           <!-- Part stp39__configuration__2_2x8_45 -->
@@ -372,7 +418,7 @@ http://www.apache.org/licenses/LICENSE-2.0
           <body name="radius_2" pos="-0.0145 0.0515 -0.0145" quat="0.707107 0 -0.707107 0">
             <!-- Joint from humerus__configuration_left to radius_2 -->
             <joint axis="0 0 1" name="left_elbow" type="hinge" range="-2.1816615649929156 2.1816615649929085" class="xl330"/>
-            <inertial pos="-4.0628e-08 0.0310611 -0.0130165" mass="0.0115415" fullinertia="5.26775e-06 1.21602e-06 4.45903e-06 4e-12 1.2e-11 1.7157e-07"/>
+            <inertial pos="-5.20417e-18 0.0340122 -0.013482" mass="0.0274072" fullinertia="1.04007e-05 2.61603e-06 8.7794e-06 1.35741e-55 4.61882e-21 1.23991e-08"/>
             <!-- Part stp39__configuration__2x6_77 -->
             <!-- Part stp39__configuration__2x6_78 -->
             <!-- Part radius_2 -->
@@ -392,9 +438,9 @@ http://www.apache.org/licenses/LICENSE-2.0
       <body name="hip_2" pos="-0 0.036 0" quat="0 -0 0 -1">
         <!-- Joint from trunk to hip_2 -->
         <joint axis="0 0 1" name="left_hip_yaw" type="hinge" range="-1.0471975511965976 4.1887902047863905" class="xl330"/>
-        <inertial pos="-0.00421822 -1.46909e-07 -0.00948697" mass="0.00884451" fullinertia="9.36719e-07 4.32505e-06 4.03697e-06 -3.3e-11 -1.95496e-07 -0"/>
+        <inertial pos="0.00961017 1e-08 -0.00765825" mass="0.00975549" fullinertia="8.75616e-07 4.32851e-06 4.26238e-06 8.24528e-13 5.43397e-08 -3.62598e-14"/>
         <!-- Part hip__configuration_right_2 -->
-        <geom type="mesh" class="visual" pos="-0.00575 -0 -0.0484" quat="0.707107 -0 -0 -0.707107" mesh="hip__configuration_right" material="hip__configuration_right_material"/>
+        <geom type="mesh" class="visual" pos="0.01175 0 -0.0484" quat="0.707107 -0 -0 -0.707107" mesh="hip__configuration_right" material="hip__configuration_right_material"/>
         <!-- Part stp39__configuration__2x6_81 -->
         <!-- Part stp39__configuration__2x6_82 -->
         <!-- Part stp39__configuration__2x6_83 -->
@@ -408,10 +454,10 @@ http://www.apache.org/licenses/LICENSE-2.0
         <!-- Part stp39__configuration__2x6_91 -->
         <!-- Part stp39__configuration__2x6_92 -->
         <!-- Link hip_block__configuration_left -->
-        <body name="hip_block__configuration_left" pos="0.02 0 -0.0214" quat="0.5 -0.5 -0.5 0.5">
+        <body name="hip_block__configuration_left" pos="0.0375 0 -0.0214" quat="0.5 -0.5 -0.5 0.5">
           <!-- Joint from hip_2 to hip_block__configuration_left -->
-          <joint axis="0 0 1" name="left_hip_roll" type="hinge" range="-0.6108652381980162 0.6108652381980144" class="xl330"/>
-          <inertial pos="6.0554e-05 0.00982795 0.0271548" mass="0.04763" fullinertia="1.64096e-05 1.3312e-05 7.85888e-06 8.495e-09 -7.6959e-08 6.62404e-07"/>
+          <joint axis="0 0 1" name="left_hip_roll" type="hinge" range="-0.436332 0.436332" class="xl330"/>
+          <inertial pos="6.47013e-05 0.00950161 0.0264357" mass="0.0583697" fullinertia="1.92333e-05 1.5453e-05 9.40768e-06 9.48547e-09 -9.96958e-08 4.96742e-07"/>
           <!-- Part stp39__configuration__2_2x8_51 -->
           <!-- Part xl330_6 -->
           <geom type="mesh" class="visual" pos="0.008 -0 0.0385" quat="0 0.707107 0 0.707107" mesh="xl330" material="xl330_material"/>
@@ -437,7 +483,7 @@ http://www.apache.org/licenses/LICENSE-2.0
           <body name="femur__configuration_left" pos="-0.0145 -0 0.0385" quat="0.707107 -0 -0.707107 0">
             <!-- Joint from hip_block__configuration_left to femur__configuration_left -->
             <joint axis="0 0 1" name="left_hip_pitch" type="hinge" range="-1.5707963267948974 1.5707963267948957" class="xl330"/>
-            <inertial pos="0.0109472 0.0366847 -0.0142975" mass="0.014726" fullinertia="1.12665e-05 4.38335e-06 8.95932e-06 -1.12592e-06 1.333e-09 -4.521e-09"/>
+            <inertial pos="0.0108175 0.0387251 -0.0142545" mass="0.017273" fullinertia="1.07363e-05 5.15428e-06 8.2932e-06 -1.74349e-06 1.34774e-09 2.21702e-09"/>
             <!-- Part stp39__configuration__2x6_93 -->
             <!-- Part femur__configuration_left -->
             <geom class="collision" pos="0.015 0.0335001 -0.03175" quat="0.5 0.5 0.5 -0.5" type="box" size="0.00125 0.009 0.022228"/>
@@ -463,7 +509,7 @@ http://www.apache.org/licenses/LICENSE-2.0
             <body name="tibia__configuration_left" pos="0.005 0.062 0" quat="1 -0 -0 -0">
               <!-- Joint from femur__configuration_left to tibia__configuration_left -->
               <joint axis="0 0 1" name="left_knee" type="hinge" range="-0.7853981633974314 2.3561944901923617" class="xl330"/>
-              <inertial pos="-0.00275805 0.0196679 -0.0145379" mass="0.0300463" fullinertia="1.53882e-05 5.33188e-06 1.38589e-05 2.25747e-06 7.7561e-08 -1.37001e-07"/>
+              <inertial pos="-0.00255176 0.017402 -0.014546" mass="0.0350657" fullinertia="1.56776e-05 5.89359e-06 1.42112e-05 2.45947e-06 9.58554e-08 -1.67523e-07"/>
               <!-- Part stp39__configuration__2x6_109 -->
               <!-- Part stp39__configuration__2x6_110 -->
               <!-- Part stp39__configuration__2x6_111 -->
@@ -488,7 +534,7 @@ http://www.apache.org/licenses/LICENSE-2.0
               <body name="ankle_block__configuration_right" pos="-0.008 0.0612131 -0" quat="0 0 -0 1">
                 <!-- Joint from tibia__configuration_left to ankle_block__configuration_right -->
                 <joint axis="0 0 1" name="left_ankle_pitch" type="hinge" range="-1.5707963267948744 0.6108652381980375" class="xl330"/>
-                <inertial pos="0.0110706 0.00979852 -0.0145955" mass="0.04722" fullinertia="7.83996e-06 1.29805e-05 1.6094e-05 -6.01409e-07 -5.1613e-08 -6.789e-09"/>
+                <inertial pos="0.0118009 0.00944623 -0.0145997" mass="0.0577288" fullinertia="9.35056e-06 1.50172e-05 1.88042e-05 -4.12367e-07 -7.0226e-08 -6.68688e-09"/>
                 <!-- Part stp39__configuration__2_2x8_61 -->
                 <!-- Part xl330_8 -->
                 <geom type="mesh" class="visual" pos="0 0 -0.0225" quat="0 1 0 0" mesh="xl330" material="xl330_material"/>
@@ -514,19 +560,22 @@ http://www.apache.org/licenses/LICENSE-2.0
                 <body name="foot_2" pos="0.0385 0 -0.0145" quat="0.707107 -0 -0.707107 0">
                   <!-- Joint from ankle_block__configuration_right to foot_2 -->
                   <joint axis="0 0 1" name="left_ankle_roll" type="hinge" range="-0.6108652381980109 0.6108652381980197" class="xl330"/>
-                  <inertial pos="-0 -0.0168869 0.0347422" mass="0.016823" fullinertia="1.15605e-05 1.2167e-05 2.53496e-06 0 -0 5.67932e-07"/>
+                  <inertial pos="4e-08 -0.0200677 0.033616" mass="0.0301613" fullinertia="1.301e-05 1.45047e-05 3.78585e-06 1.40894e-11 3.70503e-11 6.0526e-07"/>
                   <!-- Part stp39__configuration__2x6_117 -->
                   <!-- Part stp39__configuration__2x6_118 -->
                   <!-- Part stp39__configuration__2x6_119 -->
                   <!-- Part stp39__configuration__2x6_120 -->
                   <!-- Part stp39__configuration__2x6_121 -->
                   <!-- Part foot__configuration_right_2 -->
-                  <geom name="left_foot_collision_1" class="collision" pos="-0 -0.02175 0.042" quat="0 0 0.707107 0.707107" type="box" size="0.0225 0.04 0.00125"/>
-                  <geom name="left_foot_collision_2" class="collision" pos="-0 -0.02175 0.042" quat="0 0 0.707107 0.707107" type="box" size="0.0175 0.045 0.00125"/>
-                  <geom name="left_foot_collision_3" class="collision" pos="-0.0175 -0.02175 0.002" quat="0.270598 -0.270598 -0.653281 -0.653281" type="box" size="0.00353553 0.00353553 0.00125"/>
-                  <geom name="left_foot_collision_4" class="collision" pos="0.0175 -0.02175 0.002" quat="0.270598 -0.270598 -0.653281 -0.653281" type="box" size="0.00353553 0.00353553 0.00125"/>
-                  <geom name="left_foot_collision_5" class="collision" pos="-0.0175 -0.02175 0.082" quat="0.270598 -0.270598 -0.653281 -0.653281" type="box" size="0.00353553 0.00353553 0.00125"/>
-                  <geom name="left_foot_collision_6" class="collision" pos="0.0175 -0.02175 0.082" quat="0.270598 -0.270598 -0.653281 -0.653281" type="box" size="0.00353553 0.00353553 0.00125"/>
+                  <!-- Sole contact: the sole is one flat 64 x 40 mm face (a 32 mm radius circle cut by two chords); -->
+                  <!-- the six nested boxes below are an inscribed staircase of it (97.7% of its area), each box -->
+                  <!-- bottom on the sole plane. -->
+                  <geom name="left_foot_collision_1" class="collision" pos="0 -0.02525 0.0385" quat="-0.5 0.5 0.5 0.5" type="box" size="0.03083 0.00857387 0.00125"/>
+                  <geom name="left_foot_collision_2" class="collision" pos="0 -0.02525 0.0385" quat="-0.5 0.5 0.5 0.5" type="box" size="0.02966 0.0120119 0.00125"/>
+                  <geom name="left_foot_collision_3" class="collision" pos="0 -0.02525 0.0385" quat="-0.5 0.5 0.5 0.5" type="box" size="0.02849 0.0145712 0.00125"/>
+                  <geom name="left_foot_collision_4" class="collision" pos="0 -0.02525 0.0385" quat="-0.5 0.5 0.5 0.5" type="box" size="0.02732 0.0166619 0.00125"/>
+                  <geom name="left_foot_collision_5" class="collision" pos="0 -0.02525 0.0385" quat="-0.5 0.5 0.5 0.5" type="box" size="0.02615 0.0184439 0.00125"/>
+                  <geom name="left_foot_collision_6" class="collision" pos="0 -0.02525 0.0385" quat="-0.5 0.5 0.5 0.5" type="box" size="0.02498 0.02 0.00125"/>
                   <geom type="mesh" class="visual" pos="-0 -0.0095 0.0385" quat="0 0 0.707107 0.707107" mesh="foot__configuration_right" material="foot__configuration_right_material"/>
                   <!-- Part stp39__configuration__2x6_122 -->
                   <!-- Part stp39__configuration__2x6_123 -->
@@ -546,11 +595,11 @@ http://www.apache.org/licenses/LICENSE-2.0
     <mesh file="ankle_dbl_block__configuration_right.stl"/>
     <mesh file="arm_bearing_support__configuration_right.stl"/>
     <mesh file="dc15_a01_idle_cap_dummy.stl"/>
-    <mesh file="head__configuration_right.stl"/>
     <mesh file="shoulder.stl"/>
     <mesh file="xl330_without_horn.stl"/>
     <mesh file="humerus.stl"/>
-    <mesh file="pelvis__configuration_right.stl"/>
+    <!-- Meshes with scale=0.001 are raw Fusion STL exports in millimetres. -->
+    <mesh file="pelvis__configuration_right.stl" scale="0.001 0.001 0.001"/>
     <mesh file="dc15_a01_horn_idle2_dummy.stl"/>
     <mesh file="spacer__configuration_right.stl"/>
     <mesh file="battery.stl"/>
@@ -559,14 +608,19 @@ http://www.apache.org/licenses/LICENSE-2.0
     <mesh file="bts2_m2_6x8.stl"/>
     <mesh file="radius.stl"/>
     <mesh file="xl330.stl"/>
-    <mesh file="hip__configuration_right.stl"/>
-    <mesh file="femur__configuration_left.stl"/>
-    <mesh file="femur__configuration_right.stl"/>
+    <mesh file="hip__configuration_right.stl" scale="0.001 0.001 0.001"/>
+    <mesh file="femur__configuration_left.stl" scale="0.001 0.001 0.001"/>
+    <mesh file="femur__configuration_right.stl" scale="0.001 0.001 0.001"/>
     <mesh file="switch.stl"/>
     <mesh file="hip_dbl_block__configuration_left.stl"/>
     <mesh file="chest__configuration_right.stl"/>
-    <mesh file="foot__configuration_right.stl"/>
+    <mesh file="foot__configuration_right.stl" scale="0.001 0.001 0.001"/>
     <mesh file="trunk_top__configuration_right.stl"/>
+    <!-- Neck parts -->
+    <mesh file="roll_servo_cradle.stl" scale="0.001 0.001 0.001"/>
+    <mesh file="pitch_servo_cradle.stl" scale="0.001 0.001 0.001"/>
+    <mesh file="roll_pitch_link.stl" scale="0.001 0.001 0.001"/>
+    <mesh file="camera_cover.stl" scale="0.001 0.001 0.001"/>
     <material name="arm_bearing_support__configuration_right_material" rgba="0.501961 0.501961 0.501961 1"/>
     <material name="xl330_without_horn_material" rgba="0.301961 0.301961 0.301961 1"/>
     <material name="pelvis__configuration_right_material" rgba="0.501961 0.501961 0.501961 1"/>
@@ -574,7 +628,6 @@ http://www.apache.org/licenses/LICENSE-2.0
     <material name="trunk_top__configuration_right_material" rgba="0.501961 0.501961 0.501961 1"/>
     <material name="battery_material" rgba="0.647059 0.647059 0.647059 1"/>
     <material name="switch_material" rgba="0.498039 0.498039 0.498039 1"/>
-    <material name="head__configuration_right_material" rgba="0.501961 0.501961 0.501961 1"/>
     <material name="shoulder_material" rgba="0.501961 0.501961 0.501961 1"/>
     <material name="xl330_material" rgba="0.301961 0.301961 0.301961 1"/>
     <material name="humerus_material" rgba="0.501961 0.501961 0.501961 1"/>
@@ -592,9 +645,15 @@ http://www.apache.org/licenses/LICENSE-2.0
     <material name="hip_dbl_block__configuration_left_material" rgba="0.501961 0.501961 0.501961 1"/>
     <material name="femur__configuration_left_material" rgba="0.501961 0.501961 0.501961 1"/>
     <material name="tibia__configuration_left_material" rgba="0.501961 0.501961 0.501961 1"/>
+    <material name="roll_servo_cradle_material" rgba="0.501961 0.501961 0.501961 1"/>
+    <material name="pitch_servo_cradle_material" rgba="0.501961 0.501961 0.501961 1"/>
+    <material name="roll_pitch_link_material" rgba="0.501961 0.501961 0.501961 1"/>
+    <material name="camera_cover_material" rgba="0.501961 0.501961 0.501961 1"/>
   </asset>
   <actuator>
     <motor class="xl330" name="head" joint="head"/>
+    <motor class="xl330" name="neck_roll" joint="neck_roll"/>
+    <motor class="xl330" name="neck_pitch" joint="neck_pitch"/>
     <motor class="xl330" name="right_shoulder_pitch" joint="right_shoulder_pitch"/>
     <motor class="xl330" name="right_shoulder_roll" joint="right_shoulder_roll"/>
     <motor class="xl330" name="right_elbow" joint="right_elbow"/>

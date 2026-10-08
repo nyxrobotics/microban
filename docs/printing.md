@@ -5,7 +5,7 @@ This guide provides detailed instructions on how to print the parts for the Micr
 
 ## Recommended Settings
 
-The parts are available in the `cad/stl/` directory of this repository, and they are designed to be printed using a standard desktop 3D printer with PLA filament, 0.12mm layer height, and 15% infill. The next table summarizes the number of parts to print for each component of the robot. Please note that some parts may require specific orientations for printing, please refer to the [Part Orientation](#part-orientation) section for more details.
+The parts are available in the `cad/stl/` directory of this repository, and they are designed to be printed using a standard desktop 3D printer with PETG-CF (carbon-fiber-filled PETG) filament, 0.12mm layer height, and 100% infill. PETG-CF is abrasive, so use a hardened steel (or similarly wear-resistant) nozzle rather than plain brass. The next table summarizes the number of parts to print for each component of the robot. Please note that some parts may require specific orientations for printing, please refer to the [Part Orientation](#part-orientation) section for more details.
 
 | Part | Quantity | Image | Description / Notes |
 | :--- | :---: | :--- | :--- |
