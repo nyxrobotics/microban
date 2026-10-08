@@ -110,6 +110,16 @@ def main() -> None:
                 "MICROBAN_START_TORQUE_OFF requires an input source with the "
                 "B/A/R3 hardware-power gate (use MICROBAN_INPUT=gamepad)"
             )
+        serial_hold_value = os.environ.get(
+            "MICROBAN_SERIAL_HOLD_LAST_ON_ERROR", "0"
+        ).strip().lower()
+        if serial_hold_value not in {"0", "1", "false", "true", "no", "yes"}:
+            raise ValueError(
+                "MICROBAN_SERIAL_HOLD_LAST_ON_ERROR must be 0/1, "
+                "false/true, or no/yes"
+            )
+        serial_hold_on_error = serial_hold_value in {"1", "true", "yes"}
+
         controller = RobotController()
         motor_ids = list(MOTOR_TO_ID.values())
         start_limp = controls_motor_power or force_start_off
@@ -141,6 +151,7 @@ def main() -> None:
             controller=controller,
             input_source=input_source,
             hardware_power_control=controls_motor_power,
+            serial_hold_on_error=serial_hold_on_error,
             moves={
                 "head": RotateHeadMove(),
                 "squat": SquatMove(),

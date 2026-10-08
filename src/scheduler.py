@@ -80,6 +80,7 @@ class Scheduler:
         # Other input modes stop the control loop after this interval.
         imu_shutdown_after_s: float = 0.75,
         hardware_power_control: bool | None = None,
+        serial_hold_on_error: bool = False,
     ):
         if not math.isfinite(imu_max_age_s) or imu_max_age_s <= 0.0:
             raise ValueError("imu_max_age_s must be finite and positive")
@@ -95,6 +96,7 @@ class Scheduler:
             if hardware_power_control is None
             else bool(hardware_power_control)
         )
+        self._serial_hold_on_error = serial_hold_on_error
         self.observer = Observer(self.controller)
 
         # All moves are registered here. They only run when activated via user_input.active_moves.
@@ -106,7 +108,12 @@ class Scheduler:
 
         self.loop_start_time = time.perf_counter()
         self._serial_errors = 0
+        self._last_serial_warn_s = 0.0
+        self._serial_hold_since_s: float | None = None
+        self._serial_hold_extended = False
         self._last_sent_targets: dict[str, float] | None = None
+        self._serial_write_hold_pending = False
+        self._serial_write_hold_since_s: float | None = None
         self._last_goal_write_ms = 0.0
         self._timing_window_start = time.perf_counter()
         self._timing_ticks = 0
@@ -210,11 +217,53 @@ class Scheduler:
                     robot_state = self.observer.read_state(self.dt)
                 except RuntimeError as e:
                     self._serial_errors += 1
+                    if self._serial_hold_on_error:
+                        if self._serial_hold_since_s is None:
+                            self._serial_hold_since_s = start_time
+                        held_for_s = start_time - self._serial_hold_since_s
+                        if start_time - self._last_serial_warn_s >= 1.0:
+                            print(
+                                f"Warning: serial read error ({self._serial_errors} "
+                                f"missed ticks); holding the previous motor goals: {e}",
+                                end="\r\n",
+                                flush=True,
+                            )
+                            self._last_serial_warn_s = start_time
+                        # Keep the operator's B button and the network deadman
+                        # effective even while all feedback reads are failing.
+                        if self.input_source is not None:
+                            if held_for_s >= 0.3:
+                                self.input_source.set_motion_inhibited(True)
+                                self._serial_hold_extended = True
+                            snapshot = self.input_source.read()
+                            if (
+                                self._hardware_power_control
+                                and snapshot.torque_enabled is False
+                            ):
+                                try:
+                                    self._disable_hardware_torque()
+                                except RuntimeError as off_error:
+                                    # Leave the gate armed to retry the OFF write
+                                    # on the next tick; do not claim it succeeded.
+                                    print(
+                                        f"Warning: torque-off retry needed: {off_error}",
+                                        end="\r\n",
+                                        flush=True,
+                                    )
+                        if self._last_sent_targets is not None:
+                            self._cmd_history.append(dict(self._last_sent_targets))
+                        self._pace_tick(start_time)
+                        continue
                     if self._serial_errors >= 3:
                         print(f"Serial communication error: {e}", end="\r\n", flush=True)
                         break
                     print(f"Warning: serial read error (attempt {self._serial_errors}/3): {e}", end="\r\n", flush=True)
                     continue
+                if self._serial_hold_on_error and self._serial_errors:
+                    if self._serial_hold_extended:
+                        self._safety_hold_active = True
+                    self._serial_hold_since_s = None
+                    self._serial_hold_extended = False
                 self._serial_errors = 0
 
                 robot_state.time_s = start_time - self.loop_start_time
@@ -240,10 +289,39 @@ class Scheduler:
                     self._imu_unsafe_since_s = None
                     self._imu_extended_hold_warned = False
 
-                hardware_mode, hardware_command = self._apply_hardware_gate(
-                    obs,
-                    allow_initial_enable=imu_safe,
-                )
+                try:
+                    hardware_mode, hardware_command = self._apply_hardware_gate(
+                        obs,
+                        allow_initial_enable=imu_safe,
+                    )
+                except RuntimeError as e:
+                    if not self._serial_hold_on_error:
+                        raise
+                    if self._serial_write_hold_since_s is None:
+                        self._serial_write_hold_since_s = start_time
+                    if start_time - self._last_serial_warn_s >= 1.0:
+                        print(
+                            f"Warning: serial hardware-gate write error; holding "
+                            f"previous motor goals and retrying: {e}",
+                            end="\r\n",
+                            flush=True,
+                        )
+                        self._last_serial_warn_s = start_time
+                    if (
+                        self.input_source is not None
+                        and start_time - self._serial_write_hold_since_s >= 0.3
+                    ):
+                        self.input_source.set_motion_inhibited(True)
+                        self._serial_hold_extended = True
+                    if self._last_sent_targets is not None:
+                        self._cmd_history.append(dict(self._last_sent_targets))
+                    self._pace_tick(start_time)
+                    continue
+                if self._serial_write_hold_since_s is not None and not self._serial_write_hold_pending:
+                    if self._serial_hold_extended:
+                        self._safety_hold_active = True
+                    self._serial_write_hold_since_s = None
+                    self._serial_hold_extended = False
 
                 # R3-off hands control to the A neutral gate and explicitly
                 # clears a latched get-up fault. Otherwise keep the fault
@@ -391,6 +469,7 @@ class Scheduler:
                     or fall_pending
                     or (self._getup_active_override and not self._getup_balancing)
                     or hardware_mode != "policy"
+                    or (self._serial_write_hold_pending and self._serial_hold_extended)
                 )
                 if self.input_source:
                     self.input_source.set_motion_inhibited(motion_inhibited)
@@ -427,6 +506,8 @@ class Scheduler:
                     # and no goal position is written.
                     command = MotorCommand(target_angles={})
                     self._safety_hold_active = False
+                    self._serial_write_hold_pending = False
+                    self._serial_write_hold_since_s = None
                 elif hold_for_safety:
                     # A transient IMU outage must not turn the joints into a
                     # compliant follower or end the hardware control process.
@@ -468,6 +549,10 @@ class Scheduler:
                         )
                         break
                     self._safety_hold_active = True
+                elif self._serial_write_hold_pending:
+                    # A failed sync write has an uncertain bus outcome. Reissue
+                    # the last successful write and keep policy state frozen.
+                    command = MotorCommand(target_angles=dict(self._last_sent_targets or {}))
                 elif hardware_mode == "neutral":
                     # A, or R3 toggled back off: the global gate already built
                     # a bounded all-joint neutral-return command.
@@ -581,13 +666,46 @@ class Scheduler:
                         break
 
                     # Send command to motors
-                    self._send_to_motors(
-                        command, neutral_return=hardware_mode == "neutral"
-                    )
-                    if command.target_angles:
-                        self._remember_goal_write(command.target_angles)
-                    if self._last_sent_targets is not None:
-                        self._cmd_history.append(dict(self._last_sent_targets))
+                    try:
+                        self._send_to_motors(
+                            command, neutral_return=hardware_mode == "neutral"
+                        )
+                    except RuntimeError as e:
+                        if not self._serial_hold_on_error:
+                            raise
+                        self._serial_write_hold_pending = True
+                        if hardware_mode == "neutral" and self._last_sent_targets is not None:
+                            # The neutral slew must not advance past a failed
+                            # goal write while a previous goal is held.
+                            self._hardware_neutral_targets = dict(self._last_sent_targets)
+                            self._hardware_neutral_last_time_s = robot_state.time_s
+                        if self._serial_write_hold_since_s is None:
+                            self._serial_write_hold_since_s = start_time
+                        if start_time - self._serial_write_hold_since_s >= 0.3:
+                            self._serial_hold_extended = True
+                            if self.input_source is not None:
+                                self.input_source.set_motion_inhibited(True)
+                        if start_time - self._last_serial_warn_s >= 1.0:
+                            print(
+                                f"Warning: serial goal write error; holding the "
+                                f"previous motor goals: {e}",
+                                end="\r\n",
+                                flush=True,
+                            )
+                            self._last_serial_warn_s = start_time
+                        if self._last_sent_targets is not None:
+                            self._cmd_history.append(dict(self._last_sent_targets))
+                    else:
+                        if command.target_angles:
+                            self._remember_goal_write(command.target_angles)
+                        if self._last_sent_targets is not None:
+                            self._cmd_history.append(dict(self._last_sent_targets))
+                        if self._serial_write_hold_pending:
+                            self._serial_write_hold_pending = False
+                            self._serial_write_hold_since_s = None
+                            if self._serial_hold_extended:
+                                self._safety_hold_active = True
+                            self._serial_hold_extended = False
 
                 # IMU / gyro terminal display
                 if obs.user_input.show_imu and (start_time - self._last_imu_print_s) >= 0.5:
@@ -771,7 +889,11 @@ class Scheduler:
 
         self._hardware_policy_enabled = False
         self._reset_moves_for_hardware_gate()
-        command = self._step_hardware_neutral(obs.robot_state)
+        command = (
+            MotorCommand(target_angles=dict(self._last_sent_targets or {}))
+            if self._serial_write_hold_pending
+            else self._step_hardware_neutral(obs.robot_state)
+        )
         if command is None:
             self._disable_hardware_torque()
             return "limp", MotorCommand(target_angles={})
@@ -855,6 +977,8 @@ class Scheduler:
         self._getup_cutoff_tail_ticks = 0
         self._getup_balance_tail_ticks = 0
         self._last_sent_targets = None
+        self._serial_write_hold_pending = False
+        self._serial_write_hold_since_s = None
         self._overcurrent_ticks = 0
 
     def _remember_goal_write(self, targets: dict[str, float]) -> None:
