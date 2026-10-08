@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING
 
 import mujoco
 import mujoco.viewer
+import numpy as np
 
 if TYPE_CHECKING:
     from sim.mujoco_input import MuJoCoInputSource
@@ -27,7 +28,7 @@ from xc330_actuator import XC330Actuator  # noqa: E402
 
 bam.actuators.actuators["xc330"] = lambda: XC330Actuator(Pendulum)
 
-from constants import MOTOR_TO_ID, ID_TO_MOTOR, NEUTRAL_POSE, HOME_ROOT_POS_Z_M, HOME_ROOT_QUAT_WXYZ, KP_DEFAULT, BAM_VIN, BAM_VOLTAGE_DROP_GAIN, BAM_VIN_MIN
+from constants import MOTOR_TO_ID, ID_TO_MOTOR, NEUTRAL_POSE, HOME_ROOT_POS_Z_M, HOME_ROOT_QUAT_WXYZ, KP_HARDWARE_NEUTRAL, BAM_VIN, BAM_VOLTAGE_DROP_GAIN, BAM_VIN_MIN
 
 
 class _DelayBuffer:
@@ -125,7 +126,7 @@ class MuJoCoController:
         # BAM motor model — XC330-T288-T m6 (DC motor + Stribeck + load-dependent friction),
         # identified against a real servo (see tools/actuator_id/).
         bam_model = bam_load_model(json_file="tools/actuator_id/xc330_params.json")
-        bam_model.actuator.kp = KP_DEFAULT
+        bam_model.actuator.kp = KP_HARDWARE_NEUTRAL
         bam_model.actuator.vin = BAM_VIN
         self._bam = BamController(
             bam_model,
@@ -140,6 +141,12 @@ class MuJoCoController:
         # with qpos0 (z=0, every joint 0): re-apply the upright neutral spawn.
         self._set_home_qpos()
         mujoco.mj_forward(self._model, self._data)
+        # Per-servo P gain, in the BAM controller's actuator order, so that
+        # sync_write_kp has the hardware's per-ID semantics.  The startup value
+        # is the static holding gain main.py also writes first.
+        self._kp_names = list(MOTOR_TO_ID.keys())
+        self._kp = np.full(len(self._kp_names), float(KP_HARDWARE_NEUTRAL))
+        self._bam.model.actuator.kp = self._kp
 
         self._viewer = mujoco.viewer.launch_passive(
             self._model, self._data, key_callback=key_callback
@@ -157,14 +164,14 @@ class MuJoCoController:
         return self._viewer.opt
 
     def set_kp(self, kp: float) -> None:
-        self._bam.model.actuator.kp = kp
+        self._kp[:] = kp
 
     def sync_read_kp(self, ids: list[int]) -> list[int]:
-        kp = int(self._bam.model.actuator.kp)
-        return [kp] * len(ids)
+        return [int(self._kp[self._kp_names.index(ID_TO_MOTOR[mid])]) for mid in ids]
 
     def sync_write_kp(self, ids: list[int], gains: list[int]) -> None:
-        self._bam.model.actuator.kp = gains[0]
+        for mid, gain in zip(ids, gains):
+            self._kp[self._kp_names.index(ID_TO_MOTOR[mid])] = float(gain)
 
     def sync_write_torque_enable(self, ids: list[int], values: list[bool]) -> None:
         pass

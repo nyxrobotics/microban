@@ -10,7 +10,6 @@ from constants import (
     HARDWARE_JOINT_OFFSET_MAX_RAD,
     HARDWARE_JOINT_OFFSET_RAD,
     IMU_I2C_BUS,
-    KP_DEFAULT,
     MOTOR_SIGN,
     MOTOR_TO_ID,
     NEUTRAL_POSE,
@@ -198,8 +197,12 @@ class RobotController:
         self._last_currents = {motor_id: 0.0 for motor_id in MOTOR_TO_ID.values()}
         self._last_voltages = {motor_id: 0.0 for motor_id in MOTOR_TO_ID.values()}
         self._last_goals = dict(self._last_positions)
-        # The P gain each servo was last told, sent again when it rejoins.
-        self._last_kp = {motor_id: KP_DEFAULT for motor_id in MOTOR_TO_ID.values()}
+        # The P gain each servo was last sent; None until the first write after
+        # startup (main.py writes every servo once), so that write always goes
+        # out.  sync_write_kp then sends only gains that change.
+        self._last_kp: dict[int, int | None] = {
+            motor_id: None for motor_id in MOTOR_TO_ID.values()
+        }
         self._proxy_ignore_until: dict[int, float] = {}
         self._head_last_read_s: dict[int, float] = {}
         # Per-servo goal bounds (servo rad); refuses to start on a servo that
@@ -1183,12 +1186,24 @@ class RobotController:
         return [int(self._scalar(v)) for v in self._controller.sync_read_position_p_gain(ids)]
 
     def sync_write_kp(self, ids: list[int], gains: list[int]) -> None:
-        self._controller.sync_write_position_p_gain(ids, gains)
-        self._last_kp.update(zip(ids, gains))
+        """Send only the gains that differ from what each servo was last sent."""
+        changed = [
+            (motor_id, int(gain))
+            for motor_id, gain in zip(ids, gains, strict=True)
+            if self._last_kp.get(motor_id) != int(gain)
+        ]
+        if not changed:
+            return
+        changed_ids = [motor_id for motor_id, _ in changed]
+        changed_gains = [gain for _, gain in changed]
+        self._controller.sync_write_position_p_gain(changed_ids, changed_gains)
+        self._last_kp.update(changed)
 
     def _resend_kp(self, motor_id: int) -> None:
         """Re-send a servo's last requested gain (it may have rebooted)."""
-        self._controller.sync_write_position_p_gain([motor_id], [self._last_kp[motor_id]])
+        gain = self._last_kp.get(motor_id)
+        if gain is not None:
+            self._controller.sync_write_position_p_gain([motor_id], [gain])
 
     def read_acc(self) -> tuple[float, float, float]:
         """Return raw accelerometer (ax, ay, az) in g."""

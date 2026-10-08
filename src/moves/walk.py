@@ -4,7 +4,7 @@
 import onnxruntime as ort
 import numpy as np
 
-from constants import MOTOR_TO_ID, KP_DEFAULT, KP_RL, OBSERVATION_DOF_ORDER
+from constants import MOTOR_TO_ID, KP_HARDWARE_NEUTRAL, KP_RL, OBSERVATION_DOF_ORDER
 from controller import ControllerProtocol
 from observer import Observation
 from moves.move import MotorCommand, Move, MoveState
@@ -163,7 +163,7 @@ class WalkMove(Move):
     def on_stop(self, obs: Observation, command: MotorCommand) -> None:
         if self._controller is not None:
             ids = list(MOTOR_TO_ID.values())
-            self._controller.sync_write_kp(ids, [KP_DEFAULT] * len(ids))
+            self._controller.sync_write_kp(ids, [KP_HARDWARE_NEUTRAL] * len(ids))
         self.state = MoveState.INACTIVE
 
         # Save json logs

@@ -126,8 +126,14 @@ HARDWARE_JOINT_OFFSET_MAX_RAD = 0.2
 SERVO_GOAL_MIN_RAD = -float(np.pi)
 SERVO_GOAL_MAX_RAD = float(np.pi) - 2.0 * float(np.pi) / 4096.0
 
-# Position P Gain (Dynamixel register value)
-KP_DEFAULT: int = 400        # ~0.886 Nm/rad in MuJoCo
+# Position P Gain (Dynamixel register value).  Two values only:
+# - KP_RL on all 21 joints (head and neck included) while a learned policy
+#   (walk, get-up, PICO) runs: the gain every policy is trained with
+#   (mjlab_microban BAM kp_fw);
+# - KP_HARDWARE_NEUTRAL on all joints for every static hold without a learned
+#   policy (A neutral return, standing after get-up with no locomotion owner,
+#   get-up model unavailable, back at HOME after a learned move).
+KP_HARDWARE_NEUTRAL: int = 900  # XC330-T288-T factory P gain
 KP_RL: int = 125             # ~0.277 Nm/rad in MuJoCo
 KP_GAIN_PRM: float = 0.0022  # Nm/rad per register unit (for Xl330)
 

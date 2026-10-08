@@ -9,7 +9,7 @@ import numpy as np
 import placo
 from placo_utils.visualization import robot_viz
 
-from constants import ID_TO_MOTOR, NEUTRAL_POSE, KP_DEFAULT
+from constants import ID_TO_MOTOR, NEUTRAL_POSE, KP_HARDWARE_NEUTRAL
 
 
 class PlacoViewerController:
@@ -70,7 +70,7 @@ class PlacoViewerController:
         return 80.0
 
     def sync_read_kp(self, ids: list[int]) -> list[int]:
-        return [KP_DEFAULT] * len(ids)
+        return [KP_HARDWARE_NEUTRAL] * len(ids)
 
     def sync_write_kp(self, ids: list[int], gains: list[int]) -> None:
         pass
