@@ -3,10 +3,14 @@
 
 """Runtime for the Microban PICO hybrid teleoperation policy.
 
-The PICO policy observes all 21 encoders, the locomotion command and the PICO
-foot/hand targets (83 values) and drives the 18 body joints with the raw-action
-rule every Microban policy shares: target = clip(HOME + raw, -pi, +pi), the
-raw output fed back as the previous action.  Its contract (src/policy_contract.py)
+The PICO policy observes all 21 encoders, the locomotion command, the PICO
+foot targets and the six arm servo targets of the direct-arm overlay (81
+values).  It drives the 12 leg joints with the raw-action rule every Microban
+policy shares: target = clip(HOME + raw, -pi, +pi), the raw output of all 18
+body joints fed back as the previous action.  The arms are never driven by the
+policy: they hold the overlay's last targets (``PicoArmTargetHold``), which the
+overlay then overwrites in the same cycle while it runs, exactly as in
+training.  Its contract (src/policy_contract.py)
 is checked before any torque is used; an unusable output raises
 ``PicoHybridPolicyRuntimeError`` before any target is written so the selector
 can hold the body in the same control cycle.
@@ -31,6 +35,7 @@ from constants import (
 )
 from controller import ControllerProtocol
 from moves.move import MotorCommand, Move, MoveState
+from moves.pico_arms import PICO_ARM_JOINT_ORDER, PicoArmTargetHold
 from observer import Observation
 from policy_contract import (
     ACTION_WIDTH,
@@ -39,7 +44,8 @@ from policy_contract import (
 )
 
 AGENT_NAME = "pico_teleop.onnx"
-OBSERVATION_WIDTH = 83
+OBSERVATION_WIDTH = 81
+ARM_TARGET_COLUMNS = slice(75, 81)
 # Live simultaneous-both-feet targets must stay inside this fraction of the
 # (conservative, stationary) training support.
 LIVE_BODY_TARGET_SAFETY_MARGIN = 0.8
@@ -76,11 +82,12 @@ def _raw_imu_gyro(gyro_sensor_xyz: Sequence[float]) -> Sequence[float]:
 
 
 class PicoHybridMove(Move):
-    """Run the 83-observation PICO policy.
+    """Run the 81-observation PICO policy.
 
     The ``hmd_head`` move continues to own the head/neck targets.  This move
-    owns exactly ``OBSERVATION_DOF_ORDER`` and uses the same smooth return and
-    get-up hand-off behavior as ``WalkMove``.
+    owns exactly ``OBSERVATION_DOF_ORDER`` (the arms at the held overlay
+    targets) and uses the same smooth return and get-up hand-off behavior as
+    ``WalkMove``.
     """
 
     def __init__(
@@ -91,9 +98,13 @@ class PicoHybridMove(Move):
         *,
         session: Any | None = None,
         gyro_transform: Callable[[Sequence[float]], Sequence[float]] | None = None,
+        arm_target_hold: PicoArmTargetHold | None = None,
     ) -> None:
         super().__init__()
         self._controller = controller
+        self._arm_target_hold = (
+            arm_target_hold if arm_target_hold is not None else PicoArmTargetHold()
+        )
         self._neutral_return_duration_s = neutral_return_duration_s
         if session is None:
             loaded = load_installed_policy("pico", policy_path)
@@ -174,7 +185,7 @@ class PicoHybridMove(Move):
         self._stop_start_angles = {}
         self.state = MoveState.ACTIVE
 
-    def _body_targets(self, obs: Observation) -> tuple[list[float], list[float]]:
+    def _foot_targets(self, obs: Observation) -> list[float]:
         foot_mapping: Mapping[str, Sequence[float]] = obs.user_input.foot_target or {}
         foot_values: list[float] = []
         for side in ("left", "right"):
@@ -212,24 +223,19 @@ class PicoHybridMove(Move):
                 raise PicoHybridPolicyRuntimeError(
                     "simultaneous foot targets require zero locomotion command"
                 )
-        feet = _bounded_targets(
+        return _bounded_targets(
             foot_values, self._targets.foot_lower, self._targets.foot_upper
         )
 
-        hand_mapping: Mapping[str, Sequence[float] | None] = (
-            obs.user_input.hand_target or {}
+    def _arm_targets(self) -> list[float]:
+        """The overlay's last arm servo targets minus HOME, inside the trained box."""
+
+        held = self._arm_target_hold.targets()
+        return _bounded_targets(
+            [held[name] - float(NEUTRAL_POSE[name]) for name in PICO_ARM_JOINT_ORDER],
+            self._targets.arm_lower,
+            self._targets.arm_upper,
         )
-        hand_values: list[float] = []
-        active: list[float] = []
-        for side in ("left", "right"):
-            target = hand_mapping.get(side)
-            active.append(0.0 if target is None else 1.0)
-            hand_values.extend((0.0, 0.0, 0.0) if target is None else target)
-        hands = _bounded_targets(
-            hand_values, self._targets.hand_lower, self._targets.hand_upper
-        )
-        hands.extend(active)
-        return feet, hands
 
     def build_observation(self, obs: Observation) -> list[float]:
         try:
@@ -257,9 +263,8 @@ class PicoHybridMove(Move):
         values.extend(
             float(obs.user_input.velocity[axis]) for axis in ("vx", "vy", "vtheta")
         )
-        feet, hands = self._body_targets(obs)
-        values.extend(feet)
-        values.extend(hands)
+        values.extend(self._foot_targets(obs))
+        values.extend(self._arm_targets())
         if len(values) != OBSERVATION_WIDTH or not all(
             math.isfinite(value) for value in values
         ):
@@ -284,8 +289,10 @@ class PicoHybridMove(Move):
                 )
             return
 
+        observation = self.build_observation(obs)
+        arm_targets = observation[ARM_TARGET_COLUMNS]
         with np.errstate(over="ignore", invalid="ignore"):
-            policy_input = np.asarray([self.build_observation(obs)], dtype=np.float32)
+            policy_input = np.asarray([observation], dtype=np.float32)
         if not np.isfinite(policy_input).all():
             raise PicoHybridPolicyRuntimeError(
                 "policy observation is not finite in float32"
@@ -333,6 +340,12 @@ class PicoHybridMove(Move):
         for name, target in zip(OBSERVATION_DOF_ORDER, targets, strict=True):
             command.target_angles[name] = self._physical_target(
                 max(-SERVO_TARGET_RANGE_RAD, min(SERVO_TARGET_RANGE_RAD, target))
+            )
+        # The arm outputs only recur in the next observation; the arms hold the
+        # overlay targets the policy observed (as in training).
+        for name, value in zip(PICO_ARM_JOINT_ORDER, arm_targets, strict=True):
+            command.target_angles[name] = self._physical_target(
+                float(NEUTRAL_POSE[name]) + value
             )
         self._last_action = raw_action.copy()
 

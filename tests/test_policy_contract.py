@@ -34,6 +34,7 @@ from policy_fixtures import (
     csv,
     fake_session,
     home_observation,
+    self_test_rows,
 )
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -57,7 +58,7 @@ class ContractMetadataTest(unittest.TestCase):
     def test_one_contract_and_recipe_per_kind(self):
         self.assertEqual(pc.POLICY_CONTRACT, "microban-policy-1")
         self.assertEqual(set(pc.RECIPES), {"walk", "getup", "pico"})
-        self.assertEqual({WIDTHS[kind] for kind in ("walk", "getup", "pico")}, {63, 60, 83})
+        self.assertEqual({WIDTHS[kind] for kind in ("walk", "getup", "pico")}, {63, 60, 81})
 
     def test_missing_fields_fail_closed(self):
         for kind in pc.KINDS:
@@ -117,12 +118,34 @@ class ContractMetadataTest(unittest.TestCase):
 
     def test_pico_fields_fail_closed(self):
         curriculum = json.loads(contract_metadata("pico")["pico_curriculum_json"])
+        arm = json.loads(contract_metadata("pico")["pico_arm_target_json"])
+
+        def arm_change(**change):
+            return {"pico_arm_target_json": json.dumps({**arm, **change})}
+
         cases = {
             "frame": {"pico_target_frame": "robot_imu_xyz"},
-            "hand_fk": {"pico_hand_target_fk_json": json.dumps({"revision": "other"})},
             "wide_foot": {"pico_foot_target_upper_json": json.dumps([0.03, 0.03, 0.06] * 2)},
             "wide_both_feet": {"pico_both_feet_target_upper_json": json.dumps([0.02, 0.01, 0.02] * 2)},
-            "wide_hands": {"pico_hand_target_upper_json": json.dumps([0.1] * 6)},
+            "arm_contract": arm_change(contract="microban_pico_arm_target_rel_home_v0"),
+            "arm_order": arm_change(joint_names=list(reversed(arm["joint_names"]))),
+            "arm_wide_box": arm_change(upper_rad=[value + 0.1 for value in arm["upper_rad"]]),
+            "arm_short_box": arm_change(lower_rad=arm["lower_rad"][:5]),
+            "arm_slew": arm_change(slew_rad_s=3.0),
+            "arm_slew_bool": arm_change(slew_rad_s=True),
+            "arm_extra_key": arm_change(home_rad=[0.0] * 6),
+            "v12_curriculum": {
+                "pico_curriculum_json": json.dumps(
+                    {
+                        "critic_warmup": 1000,
+                        "hand_start": 1000,
+                        "hand_tighten": 2500,
+                        "foot_start": 4000,
+                        "foot_tighten": 6000,
+                        "total": 9000,
+                    }
+                )
+            },
             "guard_zero": {"pico_raw_action_guard_json": json.dumps([0.0] * 18)},
             "guard_short": {"pico_raw_action_guard_json": json.dumps([1.0] * 17)},
             "guard_overflow": {"pico_raw_action_guard_json": json.dumps([1.0e40] * 18)},
@@ -138,11 +161,31 @@ class ContractMetadataTest(unittest.TestCase):
                 "checkpoint_iteration": "14999",
             },
             "adapter_columns": {"pico_active_adapter_columns_json": json.dumps([6, 7, 8])},
+            "v12_adapter_columns": {
+                "pico_active_adapter_columns_json": json.dumps([6, 7, 8, 27, 28, 29, *range(69, 83)])
+            },
             "walker_sha": {"pico_walk_checkpoint_sha256": "x" * 64},
         }
         for case, change in cases.items():
             with self.subTest(case=case), self.assertRaises(pc.PolicyContractError):
                 parse("pico", {**contract_metadata("pico"), **change})
+
+    def test_v12_hand_target_policy_is_refused(self):
+        """The 83-wide hand-target PICO policy cannot run on this contract."""
+        v12_schema = [list(term) for term in pc.OBSERVATION_SCHEMAS["pico"][:-1]]
+        v12_schema.append(["hand_target", 8])
+        v12 = {
+            **contract_metadata("pico"),
+            "microban_recipe": "microban-pico-pose-release-track-velocity-1",
+            "observation_schema_json": json.dumps(v12_schema),
+        }
+        for case, metadata, width in (
+            ("recipe_and_layout", v12, 83),
+            ("layout_only", {**v12, "microban_recipe": pc.RECIPES["pico"]}, 83),
+            ("width_only", contract_metadata("pico"), 83),
+        ):
+            with self.subTest(case=case), self.assertRaises(pc.PolicyContractError):
+                parse("pico", metadata, input_width=width)
 
     def test_dry_run_package_needs_the_pipeline_switch(self):
         metadata = {**contract_metadata("getup"), pc.DRY_RUN_METADATA_KEY: "true"}
@@ -154,10 +197,26 @@ class ContractMetadataTest(unittest.TestCase):
 
 
 class SelfTestTest(unittest.TestCase):
-    def rows(self, kind, mutate):
-        row = home_observation(kind)
-        mutate(row)
-        return json.dumps([row] * 8)
+    def rows(self, kind, mutate, base=None):
+        rows = self_test_rows(kind) if base is None else [list(base) for _ in range(8)]
+        for row in rows:
+            mutate(row)
+        return json.dumps(rows)
+
+    def test_pico_rows_with_targets_inside_the_box_pass(self):
+        offsets = pc._term_offsets("pico")
+        lower = pc.PICO_ARM_OBSERVATION_LOWER
+        upper = pc.PICO_ARM_OBSERVATION_UPPER
+        self.assertEqual(lower[1], 0.0)  # left roll: HOME is the box edge
+        self.assertEqual(upper[4], 0.0)  # right roll: HOME is the box edge
+        rows = self_test_rows("pico")
+        rows[1][slice(*offsets["arm_target"])] = list(lower)
+        rows[2][slice(*offsets["arm_target"])] = list(upper)
+        contract = parse(
+            "pico", {**contract_metadata("pico"), "self_test_observations_json": json.dumps(rows)}
+        )
+        self.assertEqual(contract.pico.arm_lower, lower)
+        self.assertEqual(contract.pico.arm_upper, upper)
 
     def test_recorded_observations_must_be_physical(self):
         offsets = pc._term_offsets("pico")
@@ -170,7 +229,24 @@ class SelfTestTest(unittest.TestCase):
             "gravity": self.rows("pico", lambda row: row.__setitem__(5, -0.5)),
             "joint_range": self.rows("pico", lambda row: row.__setitem__(position, 4.0)),
             "joint_speed": self.rows("pico", lambda row: row.__setitem__(velocity, 13.0)),
-            "nan": json.dumps([[math.nan] * 83] * 8),
+            "nan": json.dumps([[math.nan] * 81] * 8),
+            "arm_outside_box": self.rows(
+                "pico", lambda row: row.__setitem__(offsets["arm_target"][0], 1.8)
+            ),
+            "roll_beyond_home_edge": self.rows(
+                "pico", lambda row: row.__setitem__(offsets["arm_target"][0] + 1, -0.01)
+            ),
+            "only_home_rows": json.dumps([home_observation("pico")] * 8),
+            "no_foot_rows": self.rows(
+                "pico",
+                lambda row: row.__setitem__(offsets["arm_target"][0], 0.5),
+                home_observation("pico"),
+            ),
+            "no_arm_rows": self.rows(
+                "pico",
+                lambda row: row.__setitem__(offsets["foot_target"][0] + 2, 0.03),
+                home_observation("pico"),
+            ),
         }
         for case, rows in cases.items():
             metadata = {**contract_metadata("pico"), "self_test_observations_json": rows}

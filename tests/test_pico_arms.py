@@ -4,13 +4,14 @@ import unittest
 from constants import KP_HARDWARE_NEUTRAL, KP_RL, MOTOR_TO_ID, NEUTRAL_POSE
 from input.input_source import UserInput
 from moves.move import MotorCommand, MoveState
-from moves.pico_arms import PICO_ARM_JOINT_ORDER, PicoArmTrackingMove
+from moves.pico_arms import PICO_ARM_JOINT_ORDER, PicoArmTargetHold, PicoArmTrackingMove
 from observer import Observation, RobotState
 from pico_arm_contract import (
     PICO_ARM_HOME_RAD,
     PICO_ARM_JOINT_NAMES,
     PICO_ARM_LOWER_RAD,
     PICO_ARM_SIDES,
+    PICO_ARM_SLEW_RATE_RAD_S,
     PICO_ARM_UPPER_RAD,
 )
 
@@ -61,16 +62,9 @@ class FakeController:
 
 
 class PicoArmContractTest(unittest.TestCase):
-    def test_direct_contract_is_expanded_and_distinct_from_policy_fk_box(self):
-        from home_pose import hand_target_fk_contract
-
-        EXPECTED_POLICY_HAND_TARGET_FK = hand_target_fk_contract()
-
-        self.assertEqual(EXPECTED_POLICY_HAND_TARGET_FK["side_order"], ["left", "right"])
-        self.assertEqual(
-            EXPECTED_POLICY_HAND_TARGET_FK["joint_order"],
-            ["shoulder_pitch", "shoulder_roll", "elbow"],
-        )
+    def test_direct_contract_box_home_and_slew(self):
+        self.assertEqual(PICO_ARM_SLEW_RATE_RAD_S, 4.0)
+        self.assertEqual(PicoArmTrackingMove()._slew_rate_rad_s, PICO_ARM_SLEW_RATE_RAD_S)
         expected_lower_deg = {
             "left": (-100.0, 10.0, -110.0),
             "right": (-100.0, -120.0, -110.0),
@@ -94,22 +88,12 @@ class PicoArmContractTest(unittest.TestCase):
                 ):
                     self.assertAlmostEqual(math.degrees(actual), expected)
 
-        # Release HOME is the same although the direct tracking envelope is
-        # wider than the learned policy's narrow FK metadata.
         self.assertEqual(
             {
                 side: tuple(round(math.degrees(value), 10) for value in values)
                 for side, values in PICO_ARM_HOME_RAD.items()
             },
             {"left": (0.0, 10.0, -20.0), "right": (0.0, -10.0, -20.0)},
-        )
-        self.assertEqual(
-            EXPECTED_POLICY_HAND_TARGET_FK["joint_lower_deg"],
-            [[-25.0, 10.0, -50.0], [-25.0, -30.0, -50.0]],
-        )
-        self.assertEqual(
-            EXPECTED_POLICY_HAND_TARGET_FK["joint_upper_deg"],
-            [[25.0, 30.0, -10.0], [25.0, -10.0, -10.0]],
         )
 
 
@@ -228,6 +212,54 @@ class PicoArmTrackingMoveTest(unittest.TestCase):
         move.on_stop(obs, command)
         self.assertEqual(move.state, MoveState.INACTIVE)
         self.assertEqual(move._last_targets, {})
+
+    def test_every_written_arm_target_is_held_for_the_policy(self):
+        hold = PicoArmTargetHold()
+        home = {name: NEUTRAL_POSE[name] for name in PICO_ARM_JOINT_ORDER}
+        self.assertEqual(hold.targets(), home)
+        move = PicoArmTrackingMove(arm_target_hold=hold, neutral_return_duration_s=0.1)
+        positions = dict(NEUTRAL_POSE, left_elbow=-0.5)
+        obs = observation(0.0, enabled=True, positions=positions)
+        command = MotorCommand()
+        move.on_start(obs, command)
+        self.assertEqual(hold.targets(), {name: command.target_angles[name] for name in PICO_ARM_JOINT_ORDER})
+        self.assertEqual(hold.targets()["left_elbow"], -0.5)
+        for tick in range(1, 30):
+            obs.robot_state.time_s = 0.02 * tick
+            command = MotorCommand()
+            move.step(obs, command)
+            self.assertEqual(
+                hold.targets(), {name: command.target_angles[name] for name in PICO_ARM_JOINT_ORDER}
+            )
+        # Slewing at 4 rad/s: one 20 ms cycle moves each joint at most 0.08 rad.
+        self.assertAlmostEqual(
+            hold.targets()["left_shoulder_pitch"], min(TARGET["left"][0], 0.08 * 29), places=9
+        )
+        obs.user_input = UserInput()
+        move.state = MoveState.STOPPING
+        for time_s in (1.0, 1.05, 1.2):
+            obs.robot_state.time_s = time_s
+            command = MotorCommand()
+            move.on_stop(obs, command)
+            self.assertEqual(
+                hold.targets(), {name: command.target_angles[name] for name in PICO_ARM_JOINT_ORDER}
+            )
+        self.assertEqual(move.state, MoveState.INACTIVE)
+        self.assertEqual(hold.targets(), home)
+
+    def test_getup_resets_the_hold_to_home(self):
+        hold = PicoArmTargetHold()
+        move = PicoArmTrackingMove(arm_target_hold=hold, slew_rate_rad_s=1000.0)
+        obs = observation(0.0, enabled=True)
+        move.on_start(obs, MotorCommand())
+        obs.robot_state.time_s = 0.1
+        move.step(obs, MotorCommand())
+        self.assertNotEqual(hold.targets(), PicoArmTargetHold().targets())
+        obs.user_input.active_moves.add("getup")
+        move.step(obs, MotorCommand())
+        move.state = MoveState.STOPPING
+        move.on_stop(obs, MotorCommand())
+        self.assertEqual(hold.targets(), PicoArmTargetHold().targets())
 
     def test_safety_resume_discards_pre_fault_target_origin(self):
         move = PicoArmTrackingMove(slew_rate_rad_s=1.0)

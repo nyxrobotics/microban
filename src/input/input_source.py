@@ -74,16 +74,9 @@ class UserInput:
     # velocity grows, so this and `velocity` are never in real conflict).
     foot_target: dict[str, tuple[float, float, float]] | None = None
 
-    # Hand tracking target using the same fixed policy-session calibration origin,
-    # robot-trunk axes and metre units as foot_target, per hand independently:
-    # {"left": (dx,dy,dz) | None, "right": (dx,dy,dz) | None}. A hand entry of
-    # None (or the whole dict being None) means that hand has no active target —
-    # the policy is free to move that arm naturally (see HandTargetCommand.is_active).
-    hand_target: dict[str, tuple[float, float, float] | None] | None = None
-
-    # Independent direct-arm overlay driven by the right controller trigger.
+    # Direct-arm overlay driven by the right controller trigger.
     # ``pico_arms`` in active_moves means a live, validated PICO session owns
-    # the six arm joints.  While enabled, this is a paired bounded IK joint
+    # the six arm joints (the PICO policy observes the targets it writes).  While enabled, this is a paired bounded IK joint
     # target in (shoulder_pitch, shoulder_roll, elbow) order.  While released,
     # the wire target must be the exact robot-local PICO home; the overlay also
     # derives that home locally instead of trusting the sender to define it.

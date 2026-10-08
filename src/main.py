@@ -13,7 +13,7 @@ from input.input_source import InputSource
 from input.keyboard_input import KeyboardInputSource
 from moves.hmd_head import HmdHeadTrackingMove
 from moves.getup import GetupMove
-from moves.pico_arms import PicoArmTrackingMove
+from moves.pico_arms import PicoArmTargetHold, PicoArmTrackingMove
 from moves.policy_selector import PolicySelectableWalkMove
 from moves.rotate_head import RotateHeadMove
 from moves.squat import SquatMove
@@ -161,6 +161,7 @@ def main() -> None:
             )
             ramp_to_neutral(controller)
 
+        arm_target_hold = PicoArmTargetHold()
         scheduler = Scheduler(
             frequency_hz=50.0,
             controller=controller,
@@ -170,10 +171,15 @@ def main() -> None:
             moves={
                 "head": RotateHeadMove(),
                 "squat": SquatMove(),
-                "walk": PolicySelectableWalkMove(controller=controller),
+                "walk": PolicySelectableWalkMove(
+                    controller=controller, arm_target_hold=arm_target_hold
+                ),
                 # Ordered after walk so the right-trigger direct IK path owns
                 # only the six arm joints in both standing and walking modes.
-                "pico_arms": PicoArmTrackingMove(controller=controller),
+                # The PICO policy observes the targets it writes, one cycle late.
+                "pico_arms": PicoArmTrackingMove(
+                    controller=controller, arm_target_hold=arm_target_hold
+                ),
                 "hmd_head": HmdHeadTrackingMove(),
                 "getup": GetupMove(controller=controller),
             },

@@ -14,7 +14,7 @@ from input.gamepad_input import GamepadInputSource
 from input.network_input import NetworkInputSource
 from moves.getup import GetupMove
 from moves.hmd_head import HmdHeadTrackingMove
-from moves.pico_arms import PicoArmTrackingMove
+from moves.pico_arms import PicoArmTargetHold, PicoArmTrackingMove
 from moves.policy_selector import PolicySelectableWalkMove
 from moves.rotate_head import RotateHeadMove
 from moves.squat import SquatMove
@@ -72,6 +72,7 @@ def main() -> None:
     if isinstance(input_source, MuJoCoInputSource):
         input_source.set_viewer_opt(controller.viewer_opt)
 
+    arm_target_hold = PicoArmTargetHold()
     scheduler = Scheduler(
         frequency_hz=args.hz,
         controller=controller,
@@ -79,10 +80,14 @@ def main() -> None:
         moves={
             "head": RotateHeadMove(),
             "squat": SquatMove(),
-            "walk": PolicySelectableWalkMove(controller=controller),
+            "walk": PolicySelectableWalkMove(
+                controller=controller, arm_target_hold=arm_target_hold
+            ),
             # Match production ordering: direct controller arms overwrite only
-            # the six arm joints emitted by the locomotion actor.
-            "pico_arms": PicoArmTrackingMove(controller=controller),
+            # the six arm joints, and the PICO policy observes their targets.
+            "pico_arms": PicoArmTrackingMove(
+                controller=controller, arm_target_hold=arm_target_hold
+            ),
             "hmd_head": HmdHeadTrackingMove(),
             "getup": GetupMove(controller=controller),
         },

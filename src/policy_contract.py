@@ -40,8 +40,14 @@ from home_pose import (
     HOME_POSE,
     HOME_TAG,
     HOME_TRUNK_PITCH_RAD,
-    hand_target_fk_contract,
     home_pose_stamp_matches,
+)
+from pico_arm_contract import (
+    PICO_ARM_JOINT_NAMES,
+    PICO_ARM_LOWER_RAD,
+    PICO_ARM_SIDES,
+    PICO_ARM_SLEW_RATE_RAD_S,
+    PICO_ARM_UPPER_RAD,
 )
 
 POLICY_CONTRACT = "microban-policy-1"
@@ -51,7 +57,7 @@ POLICY_CONTRACT = "microban-policy-1"
 RECIPES: Mapping[str, str] = {
     "walk": "microban-walk-track-velocity-1",
     "getup": "microban-getup-single-run-1",
-    "pico": "microban-pico-pose-release-track-velocity-1",
+    "pico": "microban-pico-arm-overlay-track-velocity-1",
 }
 KINDS = tuple(RECIPES)
 
@@ -95,7 +101,7 @@ OBSERVATION_SCHEMAS: Mapping[str, tuple[tuple[str, int], ...]] = {
         ("actions", ACTION_WIDTH),
         ("command", 3),
         ("foot_target", 6),
-        ("hand_target", 8),
+        ("arm_target", 6),
     ),
 }
 OBSERVATION_JOINT_NAMES: Mapping[str, tuple[str, ...]] = {
@@ -151,13 +157,35 @@ PICO_FOOT_TARGET_LOWER = (-0.03, -0.03, 0.0) * 2
 PICO_FOOT_TARGET_UPPER = (0.03, 0.03, 0.05) * 2
 PICO_BOTH_FEET_TARGET_LOWER = (-0.01, -0.01, 0.0) * 2
 PICO_BOTH_FEET_TARGET_UPPER = (0.01, 0.01, 0.02) * 2
-PICO_HAND_TARGET_LOWER = (-0.08,) * 6
-PICO_HAND_TARGET_UPPER = (0.08,) * 6
+# PICO arm targets: the six arm servo targets of the direct-arm overlay
+# (moves/pico_arms.py) minus HOME, left then right, each pitch, roll, elbow.
+# The policy's arm outputs never reach the servos; it is trained with its arms
+# driven inside the same box at the same slew rate.
+PICO_ARM_TARGET_CONTRACT = "microban_pico_arm_target_rel_home_v1"
+PICO_ARM_TARGET_JOINTS = tuple(
+    name for side in PICO_ARM_SIDES for name in PICO_ARM_JOINT_NAMES[side]
+)
+PICO_ARM_TARGET_LOWER_RAD = tuple(
+    value for side in PICO_ARM_SIDES for value in PICO_ARM_LOWER_RAD[side]
+)
+PICO_ARM_TARGET_UPPER_RAD = tuple(
+    value for side in PICO_ARM_SIDES for value in PICO_ARM_UPPER_RAD[side]
+)
+PICO_ARM_OBSERVATION_LOWER = tuple(
+    lower - float(NEUTRAL_POSE[name])
+    for name, lower in zip(PICO_ARM_TARGET_JOINTS, PICO_ARM_TARGET_LOWER_RAD, strict=True)
+)
+PICO_ARM_OBSERVATION_UPPER = tuple(
+    upper - float(NEUTRAL_POSE[name])
+    for name, upper in zip(PICO_ARM_TARGET_JOINTS, PICO_ARM_TARGET_UPPER_RAD, strict=True)
+)
+SELF_TEST_ARM_TARGET_TOLERANCE_RAD = 1.0e-6
 # Observation columns the PICO adapter learns on top of the frozen walker
-# (head/neck joint_pos and joint_vel, foot and hand targets); all of them must
+# (head/neck joint_pos and joint_vel, foot and arm targets); all of them must
 # have been trainable when the deployed checkpoint was saved.
-PICO_ADAPTER_COLUMNS = (6, 7, 8, 27, 28, 29, *range(69, 83))
-# Frame of the PICO hand/foot target columns: the trunk frame with HOME's
+PICO_ADAPTER_COLUMNS = (6, 7, 8, 27, 28, 29, *range(69, 81))
+PICO_CURRICULUM_KEYS = ("critic_warmup", "arm_start", "foot_start", "foot_tighten", "total")
+# Frame of the PICO foot target columns: the trunk frame with HOME's
 # forward lean rotated out (gravity-levelled at HOME), which is what the PICO
 # bridge sends.  With a vertical trunk it is the trunk frame itself.
 PICO_TARGET_FRAME = (
@@ -187,8 +215,9 @@ class PicoTargets:
     foot_upper: tuple[float, ...]
     both_feet_lower: tuple[float, ...]
     both_feet_upper: tuple[float, ...]
-    hand_lower: tuple[float, ...]
-    hand_upper: tuple[float, ...]
+    # Arm target observation range (box minus HOME, PICO_ARM_TARGET_JOINTS).
+    arm_lower: tuple[float, ...]
+    arm_upper: tuple[float, ...]
     raw_action_guard: tuple[float, ...]
     curriculum: Mapping[str, int]
 
@@ -456,40 +485,49 @@ def _parse_self_test(
         np.abs(np.linalg.norm(gravity, axis=1) - 1.0) > SELF_TEST_GRAVITY_NORM_TOLERANCE
     ) or np.any(np.abs(velocities) > SELF_TEST_MAX_JOINT_SPEED_RAD_S):
         raise PolicyContractError("self-test observations are not physically possible")
+    if kind == "pico":
+        arm = observations[:, slice(*offsets["arm_target"])]
+        feet = observations[:, slice(*offsets["foot_target"])]
+        if np.any(
+            arm < np.asarray(PICO_ARM_OBSERVATION_LOWER) - SELF_TEST_ARM_TARGET_TOLERANCE_RAD
+        ) or np.any(
+            arm > np.asarray(PICO_ARM_OBSERVATION_UPPER) + SELF_TEST_ARM_TARGET_TOLERANCE_RAD
+        ):
+            raise PolicyContractError("self-test arm targets leave the PICO arm box")
+        # The self-test must exercise the target columns, not only HOME rows.
+        if not np.any(arm != 0.0) or not np.any(feet != 0.0):
+            raise PolicyContractError(
+                "PICO self-test must record rows with arm targets and with foot targets"
+            )
     return observations.astype(np.float32).reshape(-1, 1, width), actions
 
 
 def _parse_pico(metadata: Mapping[str, str], checkpoint_iteration: int) -> PicoTargets:
     _exact(metadata, "pico_target_frame", PICO_TARGET_FRAME)
-    if not _same_json(_json(metadata, "pico_hand_target_fk_json"), hand_target_fk_contract()):
-        raise PolicyContractError(
-            "pico_hand_target_fk_json differs from config/home_pose.yaml hand_target_fk"
-        )
     bounds = {}
     for key, expected in (
         ("pico_foot_target_lower_json", PICO_FOOT_TARGET_LOWER),
         ("pico_foot_target_upper_json", PICO_FOOT_TARGET_UPPER),
         ("pico_both_feet_target_lower_json", PICO_BOTH_FEET_TARGET_LOWER),
         ("pico_both_feet_target_upper_json", PICO_BOTH_FEET_TARGET_UPPER),
-        ("pico_hand_target_lower_json", PICO_HAND_TARGET_LOWER),
-        ("pico_hand_target_upper_json", PICO_HAND_TARGET_UPPER),
     ):
         values = _numbers(_json(metadata, key), key, 6)
         if not np.allclose(values, expected, rtol=0.0, atol=1.0e-9):
             raise PolicyContractError(f"{key} differs from the trained command support")
         bounds[key] = tuple(float(value) for value in expected)
+    _check_pico_arm_target(_json(metadata, "pico_arm_target_json"))
     guard = _numbers(_json(metadata, "pico_raw_action_guard_json"), "pico_raw_action_guard_json", ACTION_WIDTH)
     with np.errstate(over="ignore"):
         guard_float32 = np.asarray(guard, dtype=np.float32)
     if any(value <= 0.0 for value in guard) or not np.isfinite(guard_float32).all():
         raise PolicyContractError("pico_raw_action_guard_json must be positive finite float32 values")
     curriculum = _json(metadata, "pico_curriculum_json")
-    keys = ("critic_warmup", "hand_start", "hand_tighten", "foot_start", "foot_tighten", "total")
+    keys = PICO_CURRICULUM_KEYS
     if (
         not isinstance(curriculum, dict)
         or set(curriculum) != set(keys)
         or any(isinstance(curriculum[key], bool) or not isinstance(curriculum[key], int) for key in keys)
-        or not 0 < curriculum["hand_start"] <= curriculum["foot_start"]
+        or not 0 < curriculum["arm_start"] <= curriculum["foot_start"]
         <= curriculum["foot_tighten"] <= curriculum["total"]
     ):
         raise PolicyContractError("pico_curriculum_json is malformed")
@@ -503,27 +541,41 @@ def _parse_pico(metadata: Mapping[str, str], checkpoint_iteration: int) -> PicoT
         foot_upper=bounds["pico_foot_target_upper_json"],
         both_feet_lower=bounds["pico_both_feet_target_lower_json"],
         both_feet_upper=bounds["pico_both_feet_target_upper_json"],
-        hand_lower=bounds["pico_hand_target_lower_json"],
-        hand_upper=bounds["pico_hand_target_upper_json"],
+        arm_lower=PICO_ARM_OBSERVATION_LOWER,
+        arm_upper=PICO_ARM_OBSERVATION_UPPER,
         raw_action_guard=guard,
         curriculum=dict(curriculum),
     )
 
 
-def _same_json(actual: Any, expected: Any) -> bool:
-    """JSON equality without Python's bool/int/float coercions."""
+def _check_pico_arm_target(value: Any) -> None:
+    """The policy was trained with this robot's direct-arm box and slew rate."""
 
-    if type(actual) is not type(expected):
-        return False
-    if isinstance(expected, dict):
-        return actual.keys() == expected.keys() and all(
-            _same_json(actual[key], value) for key, value in expected.items()
+    key = "pico_arm_target_json"
+    if not isinstance(value, dict) or set(value) != {
+        "contract",
+        "joint_names",
+        "lower_rad",
+        "upper_rad",
+        "slew_rad_s",
+    }:
+        raise PolicyContractError(f"{key} is malformed")
+    if value["contract"] != PICO_ARM_TARGET_CONTRACT:
+        raise PolicyContractError(f"{key} contract is not {PICO_ARM_TARGET_CONTRACT!r}")
+    if value["joint_names"] != list(PICO_ARM_TARGET_JOINTS):
+        raise PolicyContractError(f"{key} joint_names drifted")
+    for field, expected in (
+        ("lower_rad", PICO_ARM_TARGET_LOWER_RAD),
+        ("upper_rad", PICO_ARM_TARGET_UPPER_RAD),
+    ):
+        values = _numbers(value[field], f"{key}.{field}", len(expected))
+        if not np.allclose(values, expected, rtol=0.0, atol=1.0e-9):
+            raise PolicyContractError(f"{key}.{field} differs from the robot's arm box")
+    slew = value["slew_rad_s"]
+    if isinstance(slew, bool) or slew != PICO_ARM_SLEW_RATE_RAD_S:
+        raise PolicyContractError(
+            f"{key}.slew_rad_s must be the overlay's {PICO_ARM_SLEW_RATE_RAD_S!r} rad/s"
         )
-    if isinstance(expected, list):
-        return len(actual) == len(expected) and all(
-            _same_json(a, e) for a, e in zip(actual, expected, strict=True)
-        )
-    return bool(actual == expected)
 
 
 # ---------------------------------------------------------------- self-test

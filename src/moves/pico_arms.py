@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import math
+from collections.abc import Mapping
 
 from constants import KP_HARDWARE_NEUTRAL, KP_RL, MOTOR_TO_ID, NEUTRAL_POSE
 from controller import ControllerProtocol
@@ -15,12 +16,36 @@ from pico_arm_contract import (
     PICO_ARM_HOME_RAD,
     PICO_ARM_JOINT_NAMES,
     PICO_ARM_SIDES,
+    PICO_ARM_SLEW_RATE_RAD_S,
     parse_pico_arm_joint_target,
 )
 
 PICO_ARM_JOINT_ORDER = tuple(
     name for side in PICO_ARM_SIDES for name in PICO_ARM_JOINT_NAMES[side]
 )
+
+
+class PicoArmTargetHold:
+    """The six arm servo targets the overlay wrote last (absolute rad).
+
+    One instance is shared by ``PicoArmTrackingMove`` (the writer) and the PICO
+    policy (the reader): the policy observes these targets and holds the arms
+    at them instead of using its own arm outputs, as in training.  The hold
+    starts at HOME and keeps its value when the overlay stops.
+    """
+
+    def __init__(self) -> None:
+        self._targets: dict[str, float] = {}
+        self.reset()
+
+    def write(self, targets: Mapping[str, float]) -> None:
+        self._targets = {name: float(targets[name]) for name in PICO_ARM_JOINT_ORDER}
+
+    def reset(self) -> None:
+        self.write(NEUTRAL_POSE)
+
+    def targets(self) -> dict[str, float]:
+        return dict(self._targets)
 
 
 class PicoArmTrackingMove(Move):
@@ -31,14 +56,16 @@ class PicoArmTrackingMove(Move):
     to own all leg joints in both standing and walking states.  A live released
     right trigger keeps this move active and slews to the exact PICO FK home;
     losing the PICO session stops the move and returns to the robot's global
-    neutral pose.
+    neutral pose.  Every target it writes is also stored in ``arm_target_hold``
+    for the PICO policy's observation.
     """
 
     def __init__(
         self,
         controller: ControllerProtocol | None = None,
         *,
-        slew_rate_rad_s: float = 4.0,
+        arm_target_hold: PicoArmTargetHold | None = None,
+        slew_rate_rad_s: float = PICO_ARM_SLEW_RATE_RAD_S,
         neutral_return_duration_s: float = 0.8,
     ) -> None:
         super().__init__()
@@ -52,6 +79,7 @@ class PicoArmTrackingMove(Move):
                 "neutral_return_duration_s must be finite and positive"
             )
         self._controller = controller
+        self._hold = arm_target_hold if arm_target_hold is not None else PicoArmTargetHold()
         self._slew_rate_rad_s = float(slew_rate_rad_s)
         self._neutral_return_duration_s = float(neutral_return_duration_s)
         self._last_targets: dict[str, float] = {}
@@ -103,6 +131,7 @@ class PicoArmTrackingMove(Move):
             ids = [MOTOR_TO_ID[name] for name in PICO_ARM_JOINT_ORDER]
             self._controller.sync_write_kp(ids, [KP_RL] * len(ids))
         command.target_angles.update(self._last_targets)
+        self._hold.write(self._last_targets)
         self._stop_start_time_s = None
         self._stop_start_angles = {}
         self._suspended_for_getup = False
@@ -152,6 +181,7 @@ class PicoArmTrackingMove(Move):
             )
             self._last_targets[name] = current
             command.target_angles[name] = current
+        self._hold.write(self._last_targets)
         self._last_time_s = now
 
     def _handle_getup_ownership(self, obs: Observation) -> bool:
@@ -172,6 +202,8 @@ class PicoArmTrackingMove(Move):
         if "getup" in obs.user_input.active_moves:
             # Get-up is registered after this overlay and owns all 18 body
             # joints.  Do not change its commands or gains during the hand-off.
+            # Get-up ends at HOME, so the PICO policy resumes from HOME arms.
+            self._hold.reset()
             self._last_targets = {}
             self._last_time_s = None
             self._stop_start_time_s = None
@@ -203,6 +235,7 @@ class PicoArmTrackingMove(Move):
             )
             self._last_targets[name] = target
             command.target_angles[name] = target
+        self._hold.write(self._last_targets)
         self._last_time_s = now
 
         if fraction >= 1.0:

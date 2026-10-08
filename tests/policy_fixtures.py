@@ -24,7 +24,6 @@ from constants import (
     OBSERVATION_DOF_ORDER,
     SERVO_TARGET_RANGE_RAD,
 )
-from home_pose import hand_target_fk_contract
 import policy_contract as pc
 
 FIXTURES = Path(__file__).resolve().parent / "fixtures"
@@ -80,6 +79,19 @@ def home_observation(kind: str) -> list[float]:
     return row
 
 
+# A PICO self-test row with a lifted left foot and moved arms (inside the box).
+PICO_TARGET_ROW_FOOT = [0.01, 0.0, 0.03, 0.0, 0.0, 0.0]
+PICO_TARGET_ROW_ARMS = [-0.8, 0.3, -0.5, 0.4, -0.2, 0.1]
+
+
+def self_test_rows(kind: str) -> list[list[float]]:
+    """HOME rows; a PICO self-test also records a row with foot and arm targets."""
+    rows = [home_observation(kind) for _ in range(pc.SELF_TEST_MIN_ROWS)]
+    if kind == "pico":
+        rows[0][69:81] = PICO_TARGET_ROW_FOOT + PICO_TARGET_ROW_ARMS
+    return rows
+
+
 def contract_metadata(
     kind: str,
     home: dict[str, float] | None = None,
@@ -88,7 +100,7 @@ def contract_metadata(
 ) -> dict[str, str]:
     """Contract microban-policy-1 metadata of a ``kind`` policy at ``home``."""
     home = NEUTRAL_POSE if home is None else home
-    rows = [home_observation(kind)] * pc.SELF_TEST_MIN_ROWS
+    rows = self_test_rows(kind)
     actions = self_test_actions or [[0.0] * ACTION_COUNT] * len(rows)
     metadata = {
         "microban_policy_contract": pc.POLICY_CONTRACT,
@@ -119,19 +131,25 @@ def contract_metadata(
             {
                 "pico_walk_checkpoint_sha256": WALK_CHECKPOINT_SHA256,
                 "pico_target_frame": pc.PICO_TARGET_FRAME,
-                "pico_hand_target_fk_json": json.dumps(hand_target_fk_contract()),
                 "pico_foot_target_lower_json": json.dumps(list(pc.PICO_FOOT_TARGET_LOWER)),
                 "pico_foot_target_upper_json": json.dumps(list(pc.PICO_FOOT_TARGET_UPPER)),
                 "pico_both_feet_target_lower_json": json.dumps(list(pc.PICO_BOTH_FEET_TARGET_LOWER)),
                 "pico_both_feet_target_upper_json": json.dumps(list(pc.PICO_BOTH_FEET_TARGET_UPPER)),
-                "pico_hand_target_lower_json": json.dumps(list(pc.PICO_HAND_TARGET_LOWER)),
-                "pico_hand_target_upper_json": json.dumps(list(pc.PICO_HAND_TARGET_UPPER)),
+                "pico_arm_target_json": json.dumps(
+                    {
+                        "contract": pc.PICO_ARM_TARGET_CONTRACT,
+                        "joint_names": list(pc.PICO_ARM_TARGET_JOINTS),
+                        "lower_rad": list(pc.PICO_ARM_TARGET_LOWER_RAD),
+                        "upper_rad": list(pc.PICO_ARM_TARGET_UPPER_RAD),
+                        "slew_rad_s": 4.0,
+                    },
+                    separators=(",", ":"),
+                ),
                 "pico_raw_action_guard_json": json.dumps([PICO_RAW_ACTION_GUARD] * ACTION_COUNT),
                 "pico_curriculum_json": json.dumps(
                     {
                         "critic_warmup": 1000,
-                        "hand_start": 1000,
-                        "hand_tighten": 2500,
+                        "arm_start": 1000,
                         "foot_start": 4000,
                         "foot_tighten": 6000,
                         "total": 9000,

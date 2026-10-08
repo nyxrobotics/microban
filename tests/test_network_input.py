@@ -14,15 +14,12 @@ from observer import RobotState
 from pico_arm_contract import PICO_ARM_HOME_RAD
 from scheduler import Scheduler
 
-BODY_TARGET_CONTRACT = "microban_pico_offsets_v2_both_feet_stationary"
+BODY_TARGET_CONTRACT = "microban_pico_offsets_v3_feet_arm_overlay"
+V2_BODY_TARGET_CONTRACT = "microban_pico_offsets_v2_both_feet_stationary"
 BODY_TARGET_SAFETY_MARGIN = 0.8
 COMPLETE_FEET = {
     "left": [0.01, 0.0, 0.02],
     "right": [0.0, 0.0, 0.0],
-}
-COMPLETE_HANDS = {
-    "left": [0.01, -0.02, 0.03],
-    "right": [-0.01, 0.02, -0.03],
 }
 _DEFAULT_TARGET = object()
 
@@ -32,7 +29,6 @@ def _as_target_tuples(target):
 
 
 COMPLETE_FEET_TUPLES = _as_target_tuples(COMPLETE_FEET)
-COMPLETE_HANDS_TUPLES = _as_target_tuples(COMPLETE_HANDS)
 ARM_HOME = {side: list(values) for side, values in PICO_ARM_HOME_RAD.items()}
 ARM_TARGET = {
     "left": [math.radians(12.0), math.radians(18.0), math.radians(-32.0)],
@@ -47,7 +43,6 @@ def packet(
     session="test",
     policy="walk",
     foot_target=None,
-    hand_target=None,
     body_target_contract=None,
     body_target_safety_margin=None,
     arm_tracking_enabled=False,
@@ -68,7 +63,6 @@ def packet(
         "body_target_contract": body_target_contract,
         "body_target_safety_margin": body_target_safety_margin,
         "foot_target": foot_target,
-        "hand_target": hand_target,
         "arm_tracking_enabled": arm_tracking_enabled,
         "arm_joint_target": arm_joint_target,
         "torque_enabled": torque_enabled,
@@ -82,14 +76,11 @@ def pico_walk_packet(
     velocity=None,
     session="test",
     foot_target=_DEFAULT_TARGET,
-    hand_target=_DEFAULT_TARGET,
     body_target_contract=BODY_TARGET_CONTRACT,
     body_target_safety_margin=BODY_TARGET_SAFETY_MARGIN,
 ):
     if foot_target is _DEFAULT_TARGET:
         foot_target = COMPLETE_FEET
-    if hand_target is _DEFAULT_TARGET:
-        hand_target = COMPLETE_HANDS
     return packet(
         seq,
         ["walk"],
@@ -97,7 +88,6 @@ def pico_walk_packet(
         session=session,
         policy="pico_teleop",
         foot_target=foot_target,
-        hand_target=hand_target,
         body_target_contract=body_target_contract,
         body_target_safety_margin=body_target_safety_margin,
     )
@@ -107,7 +97,6 @@ def pico_release_packet(
     seq,
     session="test",
     foot_target=None,
-    hand_target=None,
     body_target_contract=BODY_TARGET_CONTRACT,
     body_target_safety_margin=BODY_TARGET_SAFETY_MARGIN,
 ):
@@ -116,7 +105,6 @@ def pico_release_packet(
         session=session,
         policy="pico_teleop",
         foot_target=foot_target,
-        hand_target=hand_target,
         body_target_contract=body_target_contract,
         body_target_safety_margin=body_target_safety_margin,
     )
@@ -136,7 +124,6 @@ def pico_arm_packet(
     session="test",
     extra_moves=None,
     foot_target=None,
-    hand_target=None,
 ):
     if target is _DEFAULT_TARGET:
         target = ARM_TARGET if enabled else ARM_HOME
@@ -146,7 +133,6 @@ def pico_arm_packet(
         session=session,
         policy="pico_teleop",
         foot_target=foot_target,
-        hand_target=hand_target,
         body_target_contract=BODY_TARGET_CONTRACT,
         body_target_safety_margin=BODY_TARGET_SAFETY_MARGIN,
         arm_tracking_enabled=enabled,
@@ -161,7 +147,6 @@ class NetworkInputTest(unittest.TestCase):
         expected_velocity,
         *,
         expected_foot_target=None,
-        expected_hand_target=None,
     ):
         # Each optional target channel is independent (see network_input.py's
         # per-channel parsing): an invalid/incomplete one drops out on its
@@ -173,7 +158,6 @@ class NetworkInputTest(unittest.TestCase):
         self.assertEqual(state.locomotion_policy, "pico_teleop")
         self.assertFalse(state.learned_policy_degraded)
         self.assertEqual(state.foot_target, expected_foot_target)
-        self.assertEqual(state.hand_target, expected_hand_target)
 
     def test_complete_snapshots_do_not_retain_old_velocity(self):
         source = NetworkInputSource()
@@ -483,7 +467,7 @@ class NetworkInputTest(unittest.TestCase):
                 enabled=True,
                 target=ARM_TARGET,
                 extra_moves=["walk"],
-                # Missing optional hands/feet leave PICO locomotion and the
+                # Missing optional feet leave PICO locomotion and the
                 # separately authenticated direct arms active.
             )
         )
@@ -571,9 +555,6 @@ class NetworkInputTest(unittest.TestCase):
                 self.assertFalse(continued.learned_policy_degraded)
                 self.assertTrue(source._walk_armed)
                 self.assertIsNone(continued.foot_target)
-                # hand_target defaults to COMPLETE_HANDS here (only the foot
-                # channel is incomplete in this test) and is independent.
-                self.assertEqual(continued.hand_target, COMPLETE_HANDS_TUPLES)
 
                 # Recovery restores the optional targets without changing the
                 # selected actor or losing the joystick command.
@@ -591,25 +572,12 @@ class NetworkInputTest(unittest.TestCase):
             "left": [-0.024, 0.024, 0.01],
             "right": [0.0, 0.0, 0.0],
         }
-        hands = {
-            "left": [-0.064, 0.064, -0.064],
-            "right": [0.064, -0.064, 0.064],
-        }
-
-        source._apply(
-            pico_walk_packet(
-                2,
-                {"vx": 0.4},
-                foot_target=feet,
-                hand_target=hands,
-            )
-        )
+        source._apply(pico_walk_packet(2, {"vx": 0.4}, foot_target=feet))
         accepted = source.read()
 
         self.assertIn("walk", accepted.active_moves)
         self.assertEqual(accepted.velocity["vx"], 0.4)
         self.assertEqual(accepted.foot_target["left"], tuple(feet["left"]))
-        self.assertEqual(accepted.hand_target["right"], tuple(hands["right"]))
 
     def test_pico_contract_accepts_only_stationary_narrow_both_feet(self):
         source = NetworkInputSource()
@@ -645,9 +613,6 @@ class NetworkInputTest(unittest.TestCase):
                         "vy": velocity.get("vy", 0.0),
                         "vtheta": velocity.get("vtheta", 0.0),
                     },
-                    # hand_target defaults to COMPLETE_HANDS here (only the
-                    # foot channel is invalid in this test) and is independent.
-                    expected_hand_target=COMPLETE_HANDS_TUPLES,
                 )
                 self.assertTrue(source._walk_armed)
 
@@ -675,7 +640,6 @@ class NetworkInputTest(unittest.TestCase):
                 self.assert_pico_with_optional_targets_dropped(
                     continued,
                     {"vx": 0.0, "vy": 0.0, "vtheta": 0.0},
-                    expected_hand_target=COMPLETE_HANDS_TUPLES,
                 )
                 self.assertTrue(source._walk_armed)
 
@@ -684,23 +648,13 @@ class NetworkInputTest(unittest.TestCase):
             (
                 "foot_xy",
                 {"left": [0.024000001, 0.0, 0.02], "right": [0.0, 0.0, 0.02]},
-                COMPLETE_HANDS,
             ),
             (
                 "foot_z",
                 {"left": [0.0, 0.0, 0.040000001], "right": [0.0, 0.0, 0.02]},
-                COMPLETE_HANDS,
-            ),
-            (
-                "hand",
-                COMPLETE_FEET,
-                {
-                    "left": [-0.064000001, 0.0, 0.0],
-                    "right": [0.0, 0.0, 0.0],
-                },
             ),
         )
-        for name, feet, hands in invalid_targets:
+        for name, feet in invalid_targets:
             with self.subTest(name=name):
                 source = NetworkInputSource()
                 arm_pico(source)
@@ -712,25 +666,12 @@ class NetworkInputTest(unittest.TestCase):
                         3,
                         {"vx": 0.8},
                         foot_target=feet,
-                        hand_target=hands,
                     )
                 )
                 continued = source.read()
-                # Only the invalid channel drops; the other, still valid one
-                # (feet for "hand", hands for "foot_xy"/"foot_z") is retained.
-                # For "hand" specifically, only the out-of-bounds left side
-                # drops -- the in-bounds right side is independent per-side.
                 self.assert_pico_with_optional_targets_dropped(
                     continued,
                     {"vx": 0.8, "vy": 0.0, "vtheta": 0.0},
-                    expected_foot_target=(
-                        COMPLETE_FEET_TUPLES if name == "hand" else None
-                    ),
-                    expected_hand_target=(
-                        COMPLETE_HANDS_TUPLES
-                        if name != "hand"
-                        else {"left": None, "right": (0.0, 0.0, 0.0)}
-                    ),
                 )
                 self.assertTrue(source._walk_armed)
 
@@ -782,49 +723,35 @@ class NetworkInputTest(unittest.TestCase):
                 )
                 self.assertTrue(source._walk_armed)
 
-    def test_pico_contract_hand_target_drops_or_goes_one_sided_independently(self):
-        # Unlike feet (which must form a complete pair), either hand may be
-        # inactive on its own: a one-sided hand_target is retained with the
-        # other side None, while a structurally wrong shape (a whole key
-        # missing, or an unexpected extra key) drops the whole channel.
-        cases = (
-            ("absent", None, None),
-            ("missing_right_key", {"left": COMPLETE_HANDS["left"]}, None),
-            ("missing_left_key", {"right": COMPLETE_HANDS["right"]}, None),
-            (
-                "right_only",
-                {"left": None, "right": COMPLETE_HANDS["right"]},
-                {"left": None, "right": COMPLETE_HANDS_TUPLES["right"]},
-            ),
-            (
-                "left_only",
-                {"left": COMPLETE_HANDS["left"], "right": None},
-                {"left": COMPLETE_HANDS_TUPLES["left"], "right": None},
-            ),
-            (
-                "unexpected_extra_key",
-                {
-                    "left": COMPLETE_HANDS["left"],
-                    "right": COMPLETE_HANDS["right"],
-                    "other": [0.0, 0.0, 0.0],
-                },
-                None,
-            ),
+    def test_wire_hand_target_is_ignored(self):
+        # The v12 policy hand target is gone: a stray field changes nothing.
+        source = NetworkInputSource()
+        arm_pico(source)
+        stray = pico_walk_packet(2, {"vx": 0.8})
+        stray["hand_target"] = {"left": [9.0, 9.0, 9.0], "right": None}
+        source._apply(stray)
+        state = source.read()
+        self.assert_pico_with_optional_targets_dropped(
+            state,
+            {"vx": 0.8, "vy": 0.0, "vtheta": 0.0},
+            expected_foot_target=COMPLETE_FEET_TUPLES,
         )
-        for name, hands, expected_hand_target in cases:
-            with self.subTest(name=name):
-                source = NetworkInputSource()
-                arm_pico(source)
-                source._apply(pico_walk_packet(2, {"vx": 0.8}))
-                source._apply(pico_walk_packet(3, {"vx": 0.8}, hand_target=hands))
-                continued = source.read()
-                self.assert_pico_with_optional_targets_dropped(
-                    continued,
-                    {"vx": 0.8, "vy": 0.0, "vtheta": 0.0},
-                    expected_foot_target=COMPLETE_FEET_TUPLES,
-                    expected_hand_target=expected_hand_target,
-                )
-                self.assertTrue(source._walk_armed)
+        self.assertFalse(hasattr(state, "hand_target"))
+
+    def test_v2_bridge_gets_zero_feet_and_home_arms(self):
+        # An old bridge (v2 contract name) fails safe: no feet, no arm overlay
+        # (pico_arms then returns the arms to HOME), walking continues.
+        source = NetworkInputSource()
+        source._apply(pico_arm_packet(0, enabled=False))
+        held = pico_arm_packet(1, enabled=True, extra_moves=["walk"], foot_target=COMPLETE_FEET)
+        held["body_target_contract"] = V2_BODY_TARGET_CONTRACT
+        source._apply(held)
+        state = source.read()
+        self.assertIn("walk", state.active_moves)
+        self.assertNotIn("pico_arms", state.active_moves)
+        self.assertFalse(state.arm_tracking_enabled)
+        self.assertIsNone(state.arm_joint_target)
+        self.assertIsNone(state.foot_target)
 
     def test_invalid_pico_release_remains_a_release_and_arms_next_press(self):
         invalid_releases = (
@@ -834,11 +761,7 @@ class NetworkInputTest(unittest.TestCase):
             ),
             (
                 "non_null_targets",
-                pico_release_packet(
-                    3,
-                    foot_target=COMPLETE_FEET,
-                    hand_target=COMPLETE_HANDS,
-                ),
+                pico_release_packet(3, foot_target=COMPLETE_FEET),
             ),
             ("missing_metadata", packet(3, policy="pico_teleop")),
         )
@@ -864,7 +787,6 @@ class NetworkInputTest(unittest.TestCase):
                 self.assertEqual(released.locomotion_policy, "pico_teleop")
                 self.assertFalse(released.learned_policy_degraded)
                 self.assertIsNone(released.foot_target)
-                self.assertIsNone(released.hand_target)
                 self.assertTrue(source._walk_armed)
 
                 source._apply(pico_walk_packet(4, {"vx": 0.8}))
@@ -880,8 +802,8 @@ class NetworkInputTest(unittest.TestCase):
                 invalid = pico_walk_packet(
                     3,
                     {"vx": 0.8},
-                    hand_target={
-                        "left": [component, 0.0, 0.0],
+                    foot_target={
+                        "left": [component, 0.0, 0.02],
                         "right": [0.0, 0.0, 0.0],
                     },
                 )
@@ -892,7 +814,6 @@ class NetworkInputTest(unittest.TestCase):
                 self.assert_pico_with_optional_targets_dropped(
                     continued,
                     {"vx": 0.8, "vy": 0.0, "vtheta": 0.0},
-                    expected_foot_target=COMPLETE_FEET_TUPLES,
                 )
                 self.assertTrue(source._walk_armed)
 
@@ -956,7 +877,6 @@ class NetworkInputTest(unittest.TestCase):
                 ["walk"],
                 {"vx": 0.7},
                 foot_target={"left": [9.0, 9.0, 9.0]},
-                hand_target=None,
             )
         )
         accepted = source.read()

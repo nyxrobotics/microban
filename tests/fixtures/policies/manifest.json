@@ -19,7 +19,7 @@
   "pico": {
    "checkpoint_sha256": "7c2fa660f8ba5249d6bf52791b25bff827edac92fd512032ec38f01b20ae5d42",
    "file": "pico_teleop.onnx",
-   "sha256": "5491bf6d48d1ba4974a918000ba2e6a4bf70156d360f4f28cda79a1605195741"
+   "sha256": "adf926b56955584c7e37162ade0037045b9946ce043ba32cdaef0ec3a20ff6a7"
   },
   "walk": {
    "checkpoint_sha256": "67a6f2789db3ef120d10bb9218f3f1fbfb635f6d85927e37234da38672ce2804",

@@ -11,12 +11,11 @@ Wire format: one complete JSON snapshot per UDP packet —
       "velocity": {"vx": 0.3, "vy": 0.0, "vtheta": 0.0},
       "active_moves": ["walk"],
       "locomotion_policy": "walk" | "pico_teleop",
-      "head_orientation": {"roll": 0.0, "pitch": -0.2, "yaw": 0.3} | null,  # gated by the right-trigger deadman below, same as hand_target/arm_joint_target
+      "head_orientation": {"roll": 0.0, "pitch": -0.2, "yaw": 0.3} | null,  # gated by the right-trigger deadman below, same as arm_joint_target
       "head_yaw_front": false,
-      "body_target_contract": "microban_pico_offsets_v2_both_feet_stationary",
+      "body_target_contract": "microban_pico_offsets_v3_feet_arm_overlay",
       "body_target_safety_margin": 0.8,
       "foot_target": {"left": [dx, dy, dz], "right": [dx, dy, dz]} | null,
-      "hand_target": {"left": [dx, dy, dz] | null, "right": [dx, dy, dz] | null} | null,
       "arm_tracking_enabled": false,
       "arm_joint_target": {"left": [pitch, roll, elbow], "right": [...]},
       "torque_enabled": false,
@@ -34,21 +33,19 @@ the allowed sender changes, read() holds the motor goals and torque state.
 A new bridge session still requires a released-trigger snapshot (``"walk"``
 absent) before walking can arm.
 Hybrid ``pico_teleop`` walk snapshots use fixed policy-session calibration
-offsets in the robot's HOME-levelled trunk frame, in metres: the trunk frame
-with HOME's forward lean rotated out, R_trunk * R_y(-HOME_TRUNK_PITCH_RAD),
+foot offsets in the robot's HOME-levelled trunk frame, in metres: the trunk
+frame with HOME's forward lean rotated out, R_trunk * R_y(-HOME_TRUNK_PITCH_RAD),
 which at HOME is gravity level (+X forward, +Y left, +Z up; the plain trunk
 frame for a vertical-trunk HOME). They
-must declare the exact contract and 0.8 safety margin above. Each hand offset
-component must lie within +-0.8 * 0.08 m (64 mm); the PICO policy's hand
-targets are trained inside that box. Supplied feet
-must form a complete pair; either hand may be inactive. Missing or invalid
-optional targets become inactive independently and do not stop walking.
+must declare the exact contract and 0.8 safety margin above, which also
+authenticate the direct-arm fields. Supplied feet must form a complete pair.
 After the bridge projects a support foot into its floor band, two active foot
 offsets use the narrower simultaneous-foot envelope and require an exactly zero
 twist command.
-An invalid optional target is dropped without clearing the other target or
-the ``pico_teleop`` policy, trigger and joystick command. Missing feet become
-zero offsets; missing hands are inactive.
+Invalid feet are dropped without clearing the ``pico_teleop`` policy, trigger,
+arms and joystick command; missing feet become zero offsets.  The PICO policy
+observes the arm targets the robot itself writes (``moves/pico_arms.py``), so
+no policy hand or arm target travels on the wire.
 
 A second, unrelated packet shape is a stateless bridge-side latency probe,
 handled before session/sequence validation and never touching UserInput:
@@ -81,7 +78,7 @@ from pico_arm_contract import (
 
 _NETWORK_MOVES = frozenset({"walk", "hmd_head", "pico_arms"})
 _LOCOMOTION_POLICIES = frozenset({"walk", "pico_teleop"})
-_PICO_BODY_TARGET_CONTRACT = "microban_pico_offsets_v2_both_feet_stationary"
+_PICO_BODY_TARGET_CONTRACT = "microban_pico_offsets_v3_feet_arm_overlay"
 _PICO_BODY_TARGET_SAFETY_MARGIN = 0.8
 _PICO_SUPPORT_FOOT_FLOOR_BAND_M = 0.0025
 _PICO_FOOT_TARGET_LOWER = tuple(
@@ -95,12 +92,6 @@ _PICO_SIMULTANEOUS_BOTH_FEET_LOWER = tuple(
 )
 _PICO_SIMULTANEOUS_BOTH_FEET_UPPER = tuple(
     value * _PICO_BODY_TARGET_SAFETY_MARGIN for value in (0.01, 0.01, 0.02)
-)
-_PICO_HAND_TARGET_LOWER = tuple(
-    value * _PICO_BODY_TARGET_SAFETY_MARGIN for value in (-0.08, -0.08, -0.08)
-)
-_PICO_HAND_TARGET_UPPER = tuple(
-    value * _PICO_BODY_TARGET_SAFETY_MARGIN for value in (0.08, 0.08, 0.08)
 )
 
 
@@ -323,9 +314,6 @@ class NetworkInputSource(InputSource):
                 head_yaw_front=self._state.head_yaw_front,
                 foot_target=dict(self._state.foot_target)
                 if self._state.foot_target
-                else None,
-                hand_target=dict(self._state.hand_target)
-                if self._state.hand_target
                 else None,
                 arm_tracking_enabled=self._state.arm_tracking_enabled,
                 arm_joint_target=dict(self._state.arm_joint_target)
@@ -633,8 +621,8 @@ class NetworkInputSource(InputSource):
             arm_tracking_enabled = False
             parsed_arm_joint_target = None
 
-        # Each optional tracking channel is parsed independently. A missing
-        # hand must not discard a valid foot target or the joystick command.
+        # The optional foot channel is parsed independently: an invalid foot
+        # target must not discard the arms or the joystick command.
         try:
             foot_target = packet.get("foot_target")
             if foot_target is not None:
@@ -661,26 +649,6 @@ class NetworkInputSource(InputSource):
                 raise
             parsed_foot_target = None
 
-        try:
-            hand_target = packet.get("hand_target")
-            if hand_target is not None:
-                if not isinstance(hand_target, dict) or (
-                    incoming_pico_packet
-                    and set(hand_target) != {"left", "right"}
-                ):
-                    # Same reasoning as foot_target above.
-                    raise TypeError("hand_target must be an object or null")
-                parsed_hand_target = {
-                    side: _tuple3(hand_target.get(side))
-                    for side in ("left", "right")
-                }
-            else:
-                parsed_hand_target = None
-        except (IndexError, TypeError, ValueError, OverflowError):
-            if not incoming_pico_packet:
-                raise
-            parsed_hand_target = None
-
         pico_metadata_valid = packet.get(
             "body_target_contract"
         ) == _PICO_BODY_TARGET_CONTRACT and _matches_pico_safety_margin(
@@ -697,7 +665,6 @@ class NetworkInputSource(InputSource):
         )
         if not pico_walk_requested or not pico_metadata_valid:
             parsed_foot_target = None
-            parsed_hand_target = None
         else:
             if parsed_foot_target is not None and not (
                 _target_pair_in_bounds(
@@ -712,14 +679,6 @@ class NetworkInputSource(InputSource):
                 )
             ):
                 parsed_foot_target = None
-            if parsed_hand_target is not None:
-                for side, vector in parsed_hand_target.items():
-                    if vector is not None and any(
-                        component < _PICO_HAND_TARGET_LOWER[index]
-                        or component > _PICO_HAND_TARGET_UPPER[index]
-                        for index, component in enumerate(vector)
-                    ):
-                        parsed_hand_target[side] = None
 
         if not policy_enabled:
             # Keep a disabled-policy snapshot completely inert even if a
@@ -728,7 +687,6 @@ class NetworkInputSource(InputSource):
             requested_moves.clear()
             parsed_velocity = {"vx": 0.0, "vy": 0.0, "vtheta": 0.0}
             parsed_foot_target = None
-            parsed_hand_target = None
             arm_tracking_enabled = False
             parsed_arm_joint_target = None
             pico_arm_requested = False
@@ -742,7 +700,6 @@ class NetworkInputSource(InputSource):
             requested_moves.add("walk")
             parsed_velocity = {"vx": 0.0, "vy": 0.0, "vtheta": 0.0}
             parsed_foot_target = None
-            parsed_hand_target = None
 
         with self._lock:
             if hold_last_targets and self._has_operator_state:
@@ -835,13 +792,12 @@ class NetworkInputSource(InputSource):
                 locomotion_policy=locomotion_policy,
                 learned_policy_degraded=learned_policy_degraded,
                 balance_only=balance_only,
-                # Head tracking shares the arm/hand deadman: both only take effect
+                # Head tracking shares the arm deadman: both only take effect
                 # while the right trigger is held (arm_tracking_enabled reflects its
                 # latched, re-arm-safe state at this point).
                 head_orientation=parsed_orientation if arm_tracking_enabled else None,
                 head_yaw_front=head_yaw_front,
                 foot_target=parsed_foot_target,
-                hand_target=parsed_hand_target,
                 arm_tracking_enabled=arm_tracking_enabled,
                 arm_joint_target=parsed_arm_joint_target,
                 torque_enabled=torque_enabled,

@@ -2,11 +2,13 @@ import math
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from constants import KP_HARDWARE_NEUTRAL, KP_RL, MOTOR_TO_ID, NEUTRAL_POSE, OBSERVATION_DOF_ORDER
 from input.input_source import UserInput
 from input.network_input import NetworkInputSource
 from moves.move import MotorCommand, Move, MoveState
+from moves.pico_arms import PicoArmTargetHold
 from moves.policy_selector import PolicySelectableWalkMove
 from moves.walk import WalkMove
 from observer import Observation, RobotState
@@ -94,15 +96,10 @@ def bridge_pico_packet(seq: int, *, trigger_held: bool) -> dict:
         "head_yaw_front": False,
         "torque_enabled": True,
         "policy_enabled": True,
-        "body_target_contract": "microban_pico_offsets_v2_both_feet_stationary",
+        "body_target_contract": "microban_pico_offsets_v3_feet_arm_overlay",
         "body_target_safety_margin": 0.8,
         "foot_target": (
             {"left": [0.01, 0.0, 0.02], "right": [0.0, 0.0, 0.0]}
-            if trigger_held
-            else None
-        ),
-        "hand_target": (
-            {"left": [0.01, 0.0, 0.0], "right": [-0.01, 0.0, 0.0]}
             if trigger_held
             else None
         ),
@@ -110,6 +107,13 @@ def bridge_pico_packet(seq: int, *, trigger_held: bool) -> dict:
 
 
 class PolicySelectorTest(unittest.TestCase):
+    def test_default_pico_move_shares_the_arm_target_hold(self):
+        hold = PicoArmTargetHold()
+        selector = PolicySelectableWalkMove(arm_target_hold=hold)
+        with mock.patch("moves.policy_selector.PicoHybridMove") as built:
+            selector._learned_move_factory(None, Path("pico_teleop.onnx"))
+        self.assertIs(built.call_args.kwargs["arm_target_hold"], hold)
+
     def test_bridge_packet_to_selector_is_trigger_only_without_x(self):
         source = NetworkInputSource()
         released_packet = bridge_pico_packet(0, trigger_held=False)
@@ -314,12 +318,6 @@ class PolicySelectorTest(unittest.TestCase):
         self.assertEqual(continued.locomotion_policy, "pico_teleop")
         self.assertFalse(continued.learned_policy_degraded)
         self.assertIsNone(continued.foot_target)
-        # hand_target is untouched here (only foot_target was cleared in this
-        # packet) and is independent of the foot channel.
-        self.assertEqual(
-            continued.hand_target,
-            {"left": (0.01, 0.0, 0.0), "right": (-0.01, 0.0, 0.0)},
-        )
         command = MotorCommand()
         selector.step(
             Observation(robot_state=RobotState(time_s=0.0), user_input=continued),
@@ -352,7 +350,6 @@ class PolicySelectorTest(unittest.TestCase):
         self.assertEqual(continued.locomotion_policy, "pico_teleop")
         self.assertFalse(continued.learned_policy_degraded)
         self.assertIsNone(continued.foot_target)
-        self.assertIsNone(continued.hand_target)
 
         walk = FakeMove(marker=10.0)
         pico = FakeMove(marker=20.0)

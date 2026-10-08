@@ -3,11 +3,12 @@
 
 """Robot-local direct-arm contract for PICO controller teleoperation.
 
-This is the expanded joint envelope used by the direct six-joint overlay for
-the absolute HMD-origin controller mapping.  It is deliberately independent of
-the narrower hand-target FK box embedded in the learned PICO policy.
-Keeping this contract on the robot means a wire sender cannot widen the arm
-range by supplying different limits or a different home pose.
+This is the joint envelope and slew rate of the direct six-joint overlay
+(``moves/pico_arms.py``).  The PICO policy is trained with its arms driven the
+same way and observes the overlay's targets, so the policy metadata must carry
+these exact values (``policy_contract``).  Keeping this contract on the robot
+means a wire sender cannot widen the arm range by supplying different limits
+or a different home pose.
 """
 
 from __future__ import annotations
@@ -31,6 +32,8 @@ PICO_ARM_UPPER_RAD = {
     "left": tuple(math.radians(value) for value in (100.0, 120.0, 0.0)),
     "right": tuple(math.radians(value) for value in (100.0, -10.0, 0.0)),
 }
+# Per-joint slew limit of the overlay's servo targets.
+PICO_ARM_SLEW_RATE_RAD_S = 4.0
 # The arm part of the one shared HOME (constants.NEUTRAL_POSE).
 PICO_ARM_HOME_RAD = {
     side: tuple(float(NEUTRAL_POSE[name]) for name in PICO_ARM_JOINT_NAMES[side])

@@ -14,6 +14,7 @@ from pathlib import Path
 from constants import KP_HARDWARE_NEUTRAL, MOTOR_TO_ID, NEUTRAL_POSE, OBSERVATION_DOF_ORDER
 from controller import ControllerProtocol
 from moves.move import MotorCommand, Move, MoveState
+from moves.pico_arms import PicoArmTargetHold
 from moves.pico_hybrid import AGENT_NAME as PICO_AGENT_NAME
 from moves.pico_hybrid import PicoHybridMove
 from observer import Observation
@@ -26,11 +27,15 @@ PolicyFingerprint = tuple[int, int, int, int]
 ALL_MOTOR_IDS = list(MOTOR_TO_ID.values())
 
 
-def _default_learned_move_factory(
-    controller: ControllerProtocol | None,
-    policy_path: Path,
-) -> Move:
-    return PicoHybridMove(controller=controller, policy_path=policy_path)
+def _pico_hybrid_factory(arm_target_hold: PicoArmTargetHold | None) -> LearnedMoveFactory:
+    def build(controller: ControllerProtocol | None, policy_path: Path) -> Move:
+        return PicoHybridMove(
+            controller=controller,
+            policy_path=policy_path,
+            arm_target_hold=arm_target_hold,
+        )
+
+    return build
 
 
 class _HoldPositionMove(Move):
@@ -162,12 +167,15 @@ class PolicySelectableWalkMove(Move):
         fallback_move: Move | None = None,
         pico_move: Move | None = None,
         learned_move_factory: LearnedMoveFactory | None = None,
+        arm_target_hold: PicoArmTargetHold | None = None,
     ) -> None:
         super().__init__()
         self._controller = controller
         self._pico_policy_path = Path(pico_policy_path)
-        self._learned_move_factory = (
-            learned_move_factory or _default_learned_move_factory
+        # The PICO policy observes and holds the arm targets the direct-arm
+        # overlay writes into ``arm_target_hold`` (shared with PicoArmTrackingMove).
+        self._learned_move_factory = learned_move_factory or _pico_hybrid_factory(
+            arm_target_hold
         )
         self._children: dict[str, Move] = {
             "walk": fallback_move or _HoldPositionMove(controller=controller),

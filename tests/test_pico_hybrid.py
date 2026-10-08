@@ -18,12 +18,17 @@ from constants import (
 )
 from input.input_source import UserInput
 from moves.move import MotorCommand, MoveState
+from moves.pico_arms import PICO_ARM_JOINT_ORDER, PicoArmTargetHold, PicoArmTrackingMove
 from moves.pico_hybrid import (
     PicoHybridMove,
     PicoHybridPolicyRuntimeError,
 )
 from observer import Observation, RobotState
-from policy_contract import PolicyContractError
+from policy_contract import (
+    PICO_ARM_OBSERVATION_LOWER,
+    PICO_ARM_OBSERVATION_UPPER,
+    PolicyContractError,
+)
 from policy_fixtures import (
     PICO_RAW_ACTION_GUARD,
     fake_session,
@@ -68,13 +73,15 @@ def observation(time_s=0.0):
                 "left": (9.0, -9.0, 0.04),
                 "right": (0.0, 0.0, 0.0),
             },
-            hand_target={"left": (0.02, 0.03, -0.04), "right": None},
         ),
     )
 
 
 def clipped_target(index, raw_value):
+    """Leg servo target from the raw output; the arms hold their overlay target."""
     name = OBSERVATION_DOF_ORDER[index]
+    if name in PICO_ARM_JOINT_ORDER:
+        return NEUTRAL_POSE[name]
     return max(
         -SERVO_TARGET_RANGE_RAD,
         min(SERVO_TARGET_RANGE_RAD, NEUTRAL_POSE[name] + float(np.float32(raw_value))),
@@ -98,17 +105,63 @@ class PicoHybridContractTest(unittest.TestCase):
 
 
 class PicoHybridStepTest(unittest.TestCase):
-    def test_observation_is_exact_83_ordered_values_and_clips_targets(self):
+    def test_observation_is_exact_81_ordered_values_and_clips_targets(self):
         move = PicoHybridMove(session=pico_session(), gyro_transform=lambda value: value)
         values = move.build_observation(observation())
-        self.assertEqual(len(values), 83)
+        self.assertEqual(len(values), 81)
         self.assertEqual(values[:6], [0.1, 0.2, 0.3, 0.0, 0.0, -1.0])
         self.assertEqual(values[6:27], [0.0] * 21)
         self.assertEqual(values[27:48], [0.0] * 21)
         self.assertEqual(values[48:66], [0.0] * 18)
         self.assertEqual(values[66:69], [0.2, -0.1, 0.3])
         self.assertEqual(values[69:75], [0.03, -0.03, 0.04, 0.0, 0.0, 0.0])
-        self.assertEqual(values[75:83], [0.02, 0.03, -0.04, 0.0, 0.0, 0.0, 1.0, 0.0])
+        # No overlay has written yet: the arms are at HOME.
+        self.assertEqual(values[75:81], [0.0] * 6)
+
+    def test_arm_target_is_the_held_overlay_target_inside_the_box(self):
+        hold = PicoArmTargetHold()
+        move = PicoHybridMove(session=pico_session(), arm_target_hold=hold)
+        targets = {name: NEUTRAL_POSE[name] for name in PICO_ARM_JOINT_ORDER}
+        targets.update(left_shoulder_pitch=1.2, left_elbow=-1.0, right_shoulder_roll=-1.5)
+        hold.write(targets)
+        values = move.build_observation(observation())
+        expected = [targets[name] - NEUTRAL_POSE[name] for name in PICO_ARM_JOINT_ORDER]
+        self.assertEqual(values[75:81], expected)
+        # Measured start angles can sit just outside the box where HOME is its
+        # edge (shoulder roll): the observation is clipped to the trained range.
+        targets.update(left_shoulder_roll=NEUTRAL_POSE["left_shoulder_roll"] - 0.01,
+                       right_shoulder_pitch=3.0)
+        hold.write(targets)
+        values = move.build_observation(observation())
+        self.assertEqual(values[76], 0.0)
+        self.assertEqual(values[78], PICO_ARM_OBSERVATION_UPPER[3])
+        for value, lower, upper in zip(
+            values[75:81], PICO_ARM_OBSERVATION_LOWER, PICO_ARM_OBSERVATION_UPPER, strict=True
+        ):
+            self.assertTrue(lower <= value <= upper)
+
+    def test_arm_servos_hold_the_observed_target_not_the_policy_output(self):
+        hold = PicoArmTargetHold()
+        raw = np.full((1, 18), 1.5, dtype=np.float32)
+        move = PicoHybridMove(session=pico_session(raw), arm_target_hold=hold)
+        offsets = (0.3, 0.3, -0.3, 0.3, -0.3, -0.3)  # inside the box
+        targets = {
+            name: NEUTRAL_POSE[name] + offset
+            for name, offset in zip(PICO_ARM_JOINT_ORDER, offsets, strict=True)
+        }
+        hold.write(targets)
+        obs = observation()
+        command = MotorCommand()
+        move.on_start(obs, command)
+        move.step(obs, command)
+        for name in PICO_ARM_JOINT_ORDER:
+            self.assertAlmostEqual(command.target_angles[name], targets[name], places=12)
+        for name in set(OBSERVATION_DOF_ORDER) - set(PICO_ARM_JOINT_ORDER):
+            self.assertAlmostEqual(command.target_angles[name], NEUTRAL_POSE[name] + 1.5, places=6)
+        # All 18 raw outputs, the arms included, recur as the previous action.
+        np.testing.assert_array_equal(
+            np.asarray(move.build_observation(obs)[48:66], dtype=np.float32), raw[0]
+        )
 
     def test_gyro_is_the_raw_imu_site_reading(self):
         move = PicoHybridMove(session=pico_session())
@@ -148,7 +201,8 @@ class PicoHybridStepTest(unittest.TestCase):
         self.assertEqual(move.state, MoveState.ACTIVE)
         for index, name in enumerate(OBSERVATION_DOF_ORDER):
             self.assertEqual(command.target_angles[name], clipped_target(index, raw[0, index]))
-            self.assertEqual(abs(command.target_angles[name]), SERVO_TARGET_RANGE_RAD)
+            if name not in PICO_ARM_JOINT_ORDER:
+                self.assertEqual(abs(command.target_angles[name]), SERVO_TARGET_RANGE_RAD)
         np.testing.assert_array_equal(move._last_action, raw[0])
 
     def test_guard_escape_is_rejected_before_any_target_write(self):
@@ -227,30 +281,78 @@ class PicoHybridStepTest(unittest.TestCase):
             "left": (0.008, -0.008, 0.016),
             "right": (-0.008, 0.008, 0.016),
         }
-        feet, _hands = move._body_targets(obs)
+        feet = move._foot_targets(obs)
         np.testing.assert_allclose(
             feet, [*obs.user_input.foot_target["left"], *obs.user_input.foot_target["right"]]
         )
         obs.user_input.foot_target["left"] = (0.0080001, 0.0, 0.01)
         with self.assertRaisesRegex(PicoHybridPolicyRuntimeError, "live bound"):
-            move._body_targets(obs)
+            move._foot_targets(obs)
         obs.user_input.foot_target["left"] = (0.005, 0.0, 0.01)
         obs.user_input.velocity["vx"] = 0.01
         with self.assertRaisesRegex(PicoHybridPolicyRuntimeError, "zero locomotion command"):
-            move._body_targets(obs)
+            move._foot_targets(obs)
 
     def test_support_floor_band_must_arrive_as_exact_zero(self):
         move = PicoHybridMove(session=pico_session(), gyro_transform=lambda value: value)
         obs = observation()
         obs.user_input.foot_target = {"left": (0.001, 0.0, 0.0), "right": (0.0, 0.0, 0.0)}
         with self.assertRaisesRegex(PicoHybridPolicyRuntimeError, "floor-band"):
-            move._body_targets(obs)
+            move._foot_targets(obs)
         obs.user_input.foot_target["left"] = (0.0, 0.0, 0.0025)
         with self.assertRaisesRegex(PicoHybridPolicyRuntimeError, "floor-band"):
-            move._body_targets(obs)
+            move._foot_targets(obs)
         obs.user_input.foot_target["left"] = (0.0, 0.0, 0.0)
-        feet, _hands = move._body_targets(obs)
-        self.assertEqual(feet, [0.0] * 6)
+        self.assertEqual(move._foot_targets(obs), [0.0] * 6)
+
+
+class PicoArmOverlayLoopTest(unittest.TestCase):
+    """The scheduler order: the policy (walk) steps before the arm overlay."""
+
+    def test_policy_observes_the_arm_targets_sent_one_cycle_earlier(self):
+        hold = PicoArmTargetHold()
+        session = pico_session(np.full((1, 18), 2.0, dtype=np.float32))
+        policy = PicoHybridMove(session=session, arm_target_hold=hold)
+        arms = PicoArmTrackingMove(arm_target_hold=hold, neutral_return_duration_s=0.2)
+        far = {  # an extended reach, left at the pitch box edge
+            "left": (math.radians(100.0), math.radians(90.0), 0.0),
+            "right": (math.radians(-60.0), math.radians(-40.0), math.radians(-90.0)),
+        }
+        obs = observation()
+        obs.user_input.active_moves = {"walk", "pico_arms"}
+        command = MotorCommand()
+        policy.on_start(obs, command)
+        arms.on_start(obs, command)
+        sent = [{name: command.target_angles[name] for name in PICO_ARM_JOINT_ORDER}]
+        phases = [(True, far)] * 60 + [(False, None)] * 40  # press, then release
+        for tick, (enabled, target) in enumerate(phases, start=1):
+            obs.robot_state.time_s = 0.02 * tick
+            obs.user_input.arm_tracking_enabled = enabled
+            obs.user_input.arm_joint_target = target
+            command = MotorCommand()
+            policy.step(obs, command)
+            observed = session.calls[-1][75:81]
+            expected = [sent[-1][name] - NEUTRAL_POSE[name] for name in PICO_ARM_JOINT_ORDER]
+            np.testing.assert_allclose(observed, expected, rtol=0.0, atol=1.0e-6)
+            arms.step(obs, command)
+            sent.append({name: command.target_angles[name] for name in PICO_ARM_JOINT_ORDER})
+        self.assertAlmostEqual(sent[60]["left_shoulder_pitch"], math.radians(100.0), places=9)
+        # 0.8 s after the release the arms are back at HOME and observed as exact 0.
+        self.assertEqual(session.calls[-1][75:81], [0.0] * 6)
+
+        # The overlay stops (session lost): the policy keeps the arms at the held
+        # HOME and never sends its own arm outputs (2.0 rad off HOME here).
+        obs.user_input.active_moves = {"walk"}
+        arms.state = MoveState.STOPPING
+        for tick in range(101, 130):
+            obs.robot_state.time_s = 0.02 * tick
+            command = MotorCommand()
+            policy.step(obs, command)
+            if arms.state == MoveState.STOPPING:
+                arms.on_stop(obs, command)
+            for name in PICO_ARM_JOINT_ORDER:
+                self.assertAlmostEqual(command.target_angles[name], NEUTRAL_POSE[name], places=12)
+        self.assertEqual(arms.state, MoveState.INACTIVE)
 
 
 class PicoHybridStartStopTest(unittest.TestCase):
