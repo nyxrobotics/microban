@@ -29,6 +29,8 @@ by default; add `HOST=microban-ext` to operate over the secondary network (see t
 | `make voltage ID=<id>` | Read the voltage of motor `<id>`. |
 | `make sim` | Run the MuJoCo simulation locally (no robot needed). |
 | `make viewer` | Open the MuJoCo viewer locally (no robot needed). |
+| `make teleop-run` | Run the robot with the PICO UDP input from the `microban_teleop` PC bridge (see [Teleoperation](teleop.md)). |
+| `make teleop-sim` | Run MuJoCo with the same UDP input, for testing before hardware. |
 
 ## Running the robot
 
@@ -60,9 +62,9 @@ Using a gamepad allows to drive the robot through two different modes: with a te
 
 Moves are toggled independently and run on top of the neutral pose:
 
-- **Walk** (`v` / gamepad **X**) — a reinforcement-learning policy. Once active, the
-  velocity command drives it: `vx` (forward/back), `vy` (lateral), `vtheta` (turn),
-  set from the arrow keys or the gamepad sticks.
+- **Walk** (`v` / gamepad **X**) — the move that owns the legs. With the keyboard or a
+  gamepad it holds the current pose; walking runs from the PICO controller
+  ([Teleoperation](teleop.md)).
 - **Head** (`h`) — oscillates the head.
 - **Squat** (`s`) — squat motion computed with inverse kinematics.
 
@@ -94,9 +96,9 @@ joints and every value is `0.0` by default.
 - Convention: `servo command = MOTOR_SIGN * (logical target + offset)` and
   `logical measurement = MOTOR_SIGN * servo reading - offset`.
 - Scope: applied only inside `RobotController` (the real servo bus), on every goal
-  write and every position read. Every move (walk, get-up, the A /
+  write and every position read. Every move (walk, PICO tracking, get-up, the A /
   policy-off neutral pose, arms, head and neck) and every input source (keyboard,
-  gamepad) gets it automatically, and the policies keep observing
+  gamepad, PICO) gets it automatically, and the policies keep observing
   training coordinates. Velocities and currents are unchanged. MuJoCo / placo
   simulation (`make sim`, `make viewer`) and training ignore it.
 - Measuring: with all offsets `0.0`, hold the joint at a known true angle (in the
@@ -157,8 +159,9 @@ To add a move:
 
 The walk move runs an ONNX policy trained in simulation. 
 
-The contract, installation and validation of every learned policy are
-documented in [learned policies](policies.md).
+PICO 4 Ultra network control is documented in [Teleoperation](teleop.md). The
+left-trigger-held PICO policy and the contract, installation and validation of
+every learned policy are documented in [learned policies](policies.md).
 You can train your own walking — or other learned skills — and drop the resulting `.onnx` file into [src/agents/](../src/agents/) to use it on the robot. Check the repository [MarcDcls/mjlab_microban](https://github.com/MarcDcls/mjlab_microban) for the training pipeline. 
 
 If you achieve some interesting results, don't hesitate to make a pull request to the repository as it is also a community-driven project!

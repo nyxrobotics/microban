@@ -33,15 +33,62 @@ class UserInput:
     # current hardware gate, used when network input is unavailable.
     torque_enabled: bool | None = True
     policy_enabled: bool | None = True
+    hold_last_targets: bool = False
 
     # Manual get-up-policy testing remains separate from the PICO hardware
     # gate.  It is intentionally not accepted over the PICO/network protocol.
     getup_armed: bool = False
 
+    # Locomotion selected by the PICO controller: "pico_teleop" runs the PICO
+    # policy; "walk" is the move registered as walk (a position hold in main.py,
+    # the walking policy in gc300_main.py).  The network receiver accepts only
+    # these named modes; invalid optional body tracking is downgraded to "walk"
+    # without dropping joystick input.  Other input sources always send "walk".
+    locomotion_policy: str = "walk"
+
+    # Receiver-only degradation signal. True means ``pico_teleop`` was requested
+    # but its optional body/tracker payload was unusable, so the selector must hold
+    # position for the rest of this trigger activation. Ordinary policy
+    # button changes leave this false and are deferred until the next activation.
+    learned_policy_degraded: bool = False
+
+    # R3 keeps the standing actor active while the left trigger is released.
+    # This also marks the release boundary for retrying a learned policy.
+    balance_only: bool = False
+
     # Desired camera orientation in radians. Roll/pitch are gravity-aligned; yaw is
     # relative to the trunk (the IMU has no stable absolute-yaw reference). None means
     # "level and forward". VR teleop sends all three axes.
     head_orientation: dict[str, float] | None = None
+
+    # Hold the physical head-yaw joint at the trunk's forward direction. Kept as an
+    # explicit command instead of rewriting head_orientation["yaw"] at the PC so the
+    # robot-side safety/slew limiter owns every discontinuity.
+    head_yaw_front: bool = False
+
+    # Whole-body leg tracking target: a fixed policy-session calibration offset in
+    # robot-trunk coordinates (+X forward, +Y left, +Z up), in metres.  It is not
+    # an absolute pose. Shape: {"left": (dx,dy,dz), "right": (dx,dy,dz)}.
+    # None means no target — the walking policy just walks/stands (see
+    # FootTargetCommand in mjlab_microban: the tracking reward fades to zero as
+    # velocity grows, so this and `velocity` are never in real conflict).
+    foot_target: dict[str, tuple[float, float, float]] | None = None
+
+    # Hand tracking target using the same fixed policy-session calibration origin,
+    # robot-trunk axes and metre units as foot_target, per hand independently:
+    # {"left": (dx,dy,dz) | None, "right": (dx,dy,dz) | None}. A hand entry of
+    # None (or the whole dict being None) means that hand has no active target —
+    # the policy is free to move that arm naturally (see HandTargetCommand.is_active).
+    hand_target: dict[str, tuple[float, float, float] | None] | None = None
+
+    # Independent direct-arm overlay driven by the right controller trigger.
+    # ``pico_arms`` in active_moves means a live, validated PICO session owns
+    # the six arm joints.  While enabled, this is a paired bounded IK joint
+    # target in (shoulder_pitch, shoulder_roll, elbow) order.  While released,
+    # the wire target must be the exact robot-local PICO home; the overlay also
+    # derives that home locally instead of trusting the sender to define it.
+    arm_tracking_enabled: bool = False
+    arm_joint_target: dict[str, tuple[float, float, float]] | None = None
 
 
 def scale_velocity(velocity: dict[str, float]) -> dict[str, float]:

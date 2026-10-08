@@ -26,7 +26,7 @@ from constants import (
 )
 from controller import ControllerProtocol
 from home_pose import tilt_from_home_rad
-from imu_reader import imu_quat_to_body
+from imu_reader import imu_quat_to_body, trunk_roll_pitch
 from observer import Observer, Observation
 from input.input_source import InputSource, UserInput, scale_velocity
 from moves.getup import (
@@ -114,6 +114,7 @@ class Scheduler:
         self._last_sent_targets: dict[str, float] | None = None
         self._serial_write_hold_pending = False
         self._serial_write_hold_since_s: float | None = None
+        self._network_hold_active = False
         self._last_goal_write_ms = 0.0
         self._timing_window_start = time.perf_counter()
         self._timing_ticks = 0
@@ -269,6 +270,36 @@ class Scheduler:
                 robot_state.time_s = start_time - self.loop_start_time
                 user_input = self.input_source.read() if self.input_source else UserInput()
                 user_input.velocity = scale_velocity(user_input.velocity)
+                if self.input_source:
+                    set_head_telemetry = getattr(
+                        self.input_source, "set_head_telemetry", None
+                    )
+                    if callable(set_head_telemetry):
+                        trunk_angles = trunk_roll_pitch(robot_state.body_quat)
+                        if trunk_angles is not None:
+                            positions = robot_state.motor_positions
+                            set_head_telemetry(
+                                head=float(positions.get("head", 0.0)),
+                                neck_roll=float(positions.get("neck_roll", 0.0)),
+                                neck_pitch=float(positions.get("neck_pitch", 0.0)),
+                                trunk_roll=trunk_angles[0],
+                                trunk_pitch=trunk_angles[1],
+                            )
+                if user_input.hold_last_targets:
+                    if not self._network_hold_active:
+                        print(
+                            "Network input unavailable; holding last motor goals and torque",
+                            end="\r\n",
+                            flush=True,
+                        )
+                        self._network_hold_active = True
+                    if self._last_sent_targets is not None:
+                        self._cmd_history.append(dict(self._last_sent_targets))
+                    self._pace_tick(start_time)
+                    continue
+                if self._network_hold_active:
+                    print("Network input resumed", end="\r\n", flush=True)
+                    self._network_hold_active = False
                 obs = Observation(robot_state=robot_state, user_input=user_input)
 
                 imu_status = None
@@ -503,7 +534,8 @@ class Scheduler:
                 # Update move states and dispatch one call per move per tick
                 if hardware_mode == "limp":
                     # Explicit B or process startup: torque is physically off
-                    # and no goal position is written.
+                    # and no goal position is written. Network gaps are held
+                    # earlier without changing the hardware gate.
                     command = MotorCommand(target_angles={})
                     self._safety_hold_active = False
                     self._serial_write_hold_pending = False

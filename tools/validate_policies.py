@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright 2026 nyxrobotics
 
-"""Validate the installed walk and get-up policies without opening interfaces.
+"""Validate the installed walk, get-up and PICO policies without opening interfaces.
 
 Checks src/agents/manifest.json, each ONNX against contract microban-policy-1
 (src/policy_contract.py) and runs each policy's startup self-test under ONNX

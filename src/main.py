@@ -11,10 +11,12 @@ from robot_controller import RobotController
 from scheduler import Scheduler
 from input.input_source import InputSource
 from input.keyboard_input import KeyboardInputSource
+from moves.hmd_head import HmdHeadTrackingMove
 from moves.getup import GetupMove
+from moves.pico_arms import PicoArmTrackingMove
+from moves.policy_selector import PolicySelectableWalkMove
 from moves.rotate_head import RotateHeadMove
 from moves.squat import SquatMove
-from moves.walk import WalkMove
 
 PID_FILE = Path("/tmp/microban_scheduler.pid")
 
@@ -42,13 +44,26 @@ GAMEPAD_BUTTON_MOVES = {"X": "walk"}
 def build_input_source() -> InputSource:
     """Use the gamepad when one is connected, otherwise fall back to the keyboard.
 
-    Override with MICROBAN_INPUT=keyboard|gamepad.
+    Override with MICROBAN_INPUT=keyboard|gamepad|network. Network mode listens for
+    the external VR bridge on MICROBAN_NETWORK_PORT (default 5555).
     """
     requested = os.environ.get("MICROBAN_INPUT", "auto").lower()
 
+    if requested == "network":
+        from input.network_input import NetworkInputSource
+
+        port = int(os.environ.get("MICROBAN_NETWORK_PORT", "5555"))
+        allowed_remote = os.environ.get("MICROBAN_NETWORK_ALLOWED_IP") or None
+        allowed_remote_file = os.environ.get("MICROBAN_NETWORK_ALLOWED_IP_FILE") or None
+        return NetworkInputSource(
+            port=port,
+            allowed_remote=allowed_remote,
+            allowed_remote_file=allowed_remote_file,
+        )
+
     if requested not in ("auto", "keyboard", "gamepad"):
         raise ValueError(
-            f"Unknown MICROBAN_INPUT={requested!r}; use auto, keyboard, or gamepad."
+            f"Unknown MICROBAN_INPUT={requested!r}; use auto, keyboard, gamepad, or network."
         )
 
     if requested in ("auto", "gamepad"):
@@ -108,7 +123,7 @@ def main() -> None:
         if force_start_off and not controls_motor_power:
             raise ValueError(
                 "MICROBAN_START_TORQUE_OFF requires an input source with the "
-                "B/A/R3 hardware-power gate (use MICROBAN_INPUT=gamepad)"
+                "B/A/R3 hardware-power gate (use MICROBAN_INPUT=network or gamepad)"
             )
         serial_hold_value = os.environ.get(
             "MICROBAN_SERIAL_HOLD_LAST_ON_ERROR", "0"
@@ -155,7 +170,11 @@ def main() -> None:
             moves={
                 "head": RotateHeadMove(),
                 "squat": SquatMove(),
-                "walk": WalkMove(controller=controller),
+                "walk": PolicySelectableWalkMove(controller=controller),
+                # Ordered after walk so the right-trigger direct IK path owns
+                # only the six arm joints in both standing and walking modes.
+                "pico_arms": PicoArmTrackingMove(controller=controller),
+                "hmd_head": HmdHeadTrackingMove(),
                 "getup": GetupMove(controller=controller),
             },
         )

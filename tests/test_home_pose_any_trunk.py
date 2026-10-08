@@ -47,6 +47,8 @@ print(json.dumps({
     "gravity": list(constants.HOME_PROJECTED_GRAVITY),
     "neutral": constants.NEUTRAL_POSE,
     "tag": home_pose.HOME_TAG,
+    "pico_frame": policy_contract.PICO_TARGET_FRAME,
+    "hand_fk_revision": home_pose.hand_target_fk_contract()["revision"],
     "settled": {str(p): s._settled(gravity(p)) for p in (-15, -5, 0, 5, 10, 15, 20, 25)},
     "standing": {str(p): s._standing(gravity(p)) for p in (-30, -20, -15, 0, 10, 30, 35, 40)},
     "tilt_at_home": home_pose.tilt_from_home_rad(constants.HOME_PROJECTED_GRAVITY),
@@ -106,6 +108,12 @@ class AnyTrunkHomeTest(unittest.TestCase):
         }
         self.assertEqual(lean["neutral"], expected_neutral)
         self.assertEqual(lean["tag"], "forward_lean_home")
+        self.assertEqual(lean["pico_frame"], "robot_home_levelled_trunk_xyz_forward_left_up")
+        self.assertEqual(
+            lean["hand_fk_revision"],
+            "microban_robot_xml_arm_fk_reachable_box_elbow_upper_minus10_"
+            "home_levelled_lean10_receiver_box64mm_v4",
+        )
 
     def test_centered_constants(self):
         centered = self.centered
@@ -113,6 +121,7 @@ class AnyTrunkHomeTest(unittest.TestCase):
         self.assertEqual(centered["gravity"], [0.0, 0.0, -1.0])
         self.assertEqual(centered["quat"], [1.0, 0.0, 0.0, 0.0])
         self.assertEqual(centered["tag"], "centered_home_bbef07cab8")
+        self.assertEqual(centered["pico_frame"], "robot_trunk_xyz_forward_left_up")
 
     def test_settle_and_stand_are_measured_from_home_gravity(self):
         # Forward-lean HOME: settled within 12 deg of the 10 deg lean, so a

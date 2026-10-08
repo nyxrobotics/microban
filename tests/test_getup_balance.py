@@ -13,6 +13,7 @@ import scheduler as scheduler_module
 from constants import HOME_PROJECTED_GRAVITY, HOME_TRUNK_PITCH_RAD, MOTOR_TO_ID, NEUTRAL_POSE
 from input.input_source import UserInput
 from moves.move import Move, MoveState
+from moves.policy_selector import PolicySelectableWalkMove, _HoldPositionMove
 from observer import RobotState
 from scheduler import GETUP_AUTO_TIMEOUT_S, Scheduler
 
@@ -924,9 +925,39 @@ class HardwareGateReleaseTest(unittest.TestCase):
         self.assertEqual(h.controller.torque_writes[-1][1], [False] * len(MOTOR_TO_ID))
 
 
+class _BalancingChild(Move):
+    def can_balance(self, user_input):
+        return True
+
+    def step(self, _obs, _command):
+        pass
+
+
 class CanBalanceTest(unittest.TestCase):
+    missing = Path(tempfile.gettempdir()) / "missing_pico_policy_for_balance.onnx"
+
     def test_base_move_cannot_balance(self):
         self.assertFalse(FakeGetup().can_balance(UserInput()))
+
+    def test_hold_cannot_balance(self):
+        self.assertFalse(_HoldPositionMove(controller=None).can_balance(UserInput()))
+
+    def test_selector_without_policy_falls_back_to_hold(self):
+        move = PolicySelectableWalkMove(controller=None, pico_policy_path=self.missing)
+        move.preload()
+        self.assertFalse(move.can_balance(UserInput(locomotion_policy="pico_teleop")))
+        self.assertFalse(move.can_balance(UserInput(locomotion_policy="walk")))
+
+    def test_selector_with_loaded_policy_balances_only_when_selected(self):
+        move = PolicySelectableWalkMove(
+            controller=None, pico_policy_path=self.missing, pico_move=_BalancingChild()
+        )
+        self.assertTrue(move.can_balance(UserInput(locomotion_policy="pico_teleop")))
+        self.assertFalse(move.can_balance(UserInput(locomotion_policy="walk")))
+        self.assertFalse(move.can_balance(
+            UserInput(locomotion_policy="pico_teleop", learned_policy_degraded=True)
+        ))
+        self.assertFalse(move.can_balance(UserInput(locomotion_policy="bogus")))
 
     def test_walk_move_balances(self):
         from moves.walk import WalkMove

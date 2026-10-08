@@ -1,7 +1,7 @@
 """Synthetic sessions carrying contract microban-policy-1 at this process's HOME.
 
 ``contract_metadata(kind)`` is what the training exporter writes for a
-walk / getup policy trained at config/home_pose.yaml's HOME (or at
+walk / getup / pico policy trained at config/home_pose.yaml's HOME (or at
 another ``home``); ``FakeSession`` lets a test vary one metadata field or the
 outputs without an ONNX file, and ``LinearWalkSession`` is a tiny walk actor
 whose output a test can predict.  The real policy package of a training dry run
@@ -24,6 +24,7 @@ from constants import (
     OBSERVATION_DOF_ORDER,
     SERVO_TARGET_RANGE_RAD,
 )
+from home_pose import hand_target_fk_contract
 import policy_contract as pc
 
 FIXTURES = Path(__file__).resolve().parent / "fixtures"
@@ -37,7 +38,9 @@ ACTION_COUNT = len(OBSERVATION_DOF_ORDER)
 WIDTHS = {kind: sum(width for _, width in schema) for kind, schema in pc.OBSERVATION_SCHEMAS.items()}
 WALK_OBS_WIDTH = WIDTHS["walk"]
 GETUP_OBS_WIDTH = WIDTHS["getup"]
+PICO_OBS_WIDTH = WIDTHS["pico"]
 WALK_CHECKPOINT_SHA256 = "1" * 64
+PICO_RAW_ACTION_GUARD = 24.0
 # The linear walk actor: action[i] = WALK_POSITION_GAIN * joint_pos_residual[i] + WALK_BIAS[i].
 WALK_POSITION_GAIN = 0.5
 WALK_BIAS = [0.01 * ((index % 5) - 2) + 0.005 for index in range(ACTION_COUNT)]
@@ -111,6 +114,32 @@ def contract_metadata(
         "self_test_observations_json": json.dumps(rows),
         "self_test_actions_json": json.dumps(actions),
     }
+    if kind == "pico":
+        metadata.update(
+            {
+                "pico_walk_checkpoint_sha256": WALK_CHECKPOINT_SHA256,
+                "pico_target_frame": pc.PICO_TARGET_FRAME,
+                "pico_hand_target_fk_json": json.dumps(hand_target_fk_contract()),
+                "pico_foot_target_lower_json": json.dumps(list(pc.PICO_FOOT_TARGET_LOWER)),
+                "pico_foot_target_upper_json": json.dumps(list(pc.PICO_FOOT_TARGET_UPPER)),
+                "pico_both_feet_target_lower_json": json.dumps(list(pc.PICO_BOTH_FEET_TARGET_LOWER)),
+                "pico_both_feet_target_upper_json": json.dumps(list(pc.PICO_BOTH_FEET_TARGET_UPPER)),
+                "pico_hand_target_lower_json": json.dumps(list(pc.PICO_HAND_TARGET_LOWER)),
+                "pico_hand_target_upper_json": json.dumps(list(pc.PICO_HAND_TARGET_UPPER)),
+                "pico_raw_action_guard_json": json.dumps([PICO_RAW_ACTION_GUARD] * ACTION_COUNT),
+                "pico_curriculum_json": json.dumps(
+                    {
+                        "critic_warmup": 1000,
+                        "hand_start": 1000,
+                        "hand_tighten": 2500,
+                        "foot_start": 4000,
+                        "foot_tighten": 6000,
+                        "total": 9000,
+                    }
+                ),
+                "pico_active_adapter_columns_json": json.dumps(list(pc.PICO_ADAPTER_COLUMNS)),
+            }
+        )
     return metadata
 
 
@@ -120,6 +149,10 @@ def walk_contract_metadata(home: dict[str, float] | None = None) -> dict[str, st
 
 def getup_contract_metadata(home: dict[str, float] | None = None) -> dict[str, str]:
     return contract_metadata("getup", home)
+
+
+def pico_contract_metadata(home: dict[str, float] | None = None) -> dict[str, str]:
+    return contract_metadata("pico", home)
 
 
 class FakeSession:

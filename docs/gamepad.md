@@ -39,7 +39,9 @@ When the controller is connected, the `make run` command uses it as input automa
 - **START**: stop the scheduler (writes the stop flag)
 - **View/Back** button: toggle the IMU/gyro display
 
-B, A and R3 are reserved for this gate and cannot be reassigned.
+B, A and R3 are reserved for this gate and cannot be reassigned. In `make run`
+(`src/main.py`) the `walk` move holds the current pose; walking runs from the PICO
+controller ([Teleoperation](teleop.md)).
 
 Axis and button numbers vary between controllers (especially over Bluetooth) — if
 something doesn't respond as expected, see [Remapping](#remapping-for-your-controller).

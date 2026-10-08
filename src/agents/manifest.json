@@ -1,6 +1,7 @@
 {
  "checkpoints": {
   "getup": "model_17999.pt",
+  "pico": "model_8999.pt",
   "walk": "model_29000.pt"
  },
  "contract": "microban-policy-1",
@@ -22,6 +23,97 @@
     "standing_targets_beyond_1p57": 0.03937757760286331,
     "standing_targets_on_clip": 0.02710503153502941
    }
+  },
+  "pico": {
+   "failures": [],
+   "passed": true
+  },
+  "walk_source_probe": {
+   "below": [],
+   "falls": 0,
+   "margins": {
+    "backward_0p1": 0.08326632845401763,
+    "backward_0p2": 0.08622550863027573,
+    "forward_0p1": 0.06604238507151602,
+    "forward_0p2": 0.07097962027788161,
+    "lateral_left_0p1": 0.03616367182129761,
+    "lateral_right_0p1": 0.04698094688728452,
+    "yaw_left_0p5": 0.25753507101535794,
+    "yaw_right_0p5": 0.3087544803023338
+   },
+   "minimums": {
+    "backward_0p1": 0.02,
+    "backward_0p2": 0.04,
+    "forward_0p1": 0.04,
+    "forward_0p2": 0.08,
+    "lateral_left_0p1": 0.02,
+    "lateral_right_0p1": 0.02,
+    "yaw_left_0p5": 0.2,
+    "yaw_right_0p5": 0.2
+   },
+   "ok": true,
+   "receipt": "artifacts/legacy_teleop_probe/velocity_a7c28c8abaf038d8_teleop83_raw_9x300.json",
+   "receipt_sha256": "c6516ff07409cbfbfb19740d2c4cdb235a8033535a346fc2ce23913c57969870",
+   "responses": {
+    "backward_0p1": 0.10326632845401763,
+    "backward_0p2": 0.12622550863027573,
+    "forward_0p1": 0.10604238507151603,
+    "forward_0p2": 0.15097962027788162,
+    "lateral_left_0p1": 0.05616367182129761,
+    "lateral_right_0p1": 0.06698094688728452,
+    "yaw_left_0p5": 0.45753507101535795,
+    "yaw_right_0p5": 0.5087544803023338
+   },
+   "soft_limit_overshoot_rad": 0.0,
+   "twists": {
+    "backward_0p1": [
+     -0.10326632845401763,
+     0.03147453646222129,
+     -0.053274241933599115
+    ],
+    "backward_0p2": [
+     -0.12622550863027573,
+     -0.007601479652803392,
+     0.008105740906205028
+    ],
+    "forward_0p1": [
+     0.10604238507151603,
+     -0.026510598507942632,
+     -0.03448284509393852
+    ],
+    "forward_0p2": [
+     0.15097962027788162,
+     -0.012174064025166444,
+     -0.008333288453170098
+    ],
+    "lateral_left_0p1": [
+     -0.025815468606189825,
+     0.05616367182129761,
+     -0.03623170984908938
+    ],
+    "lateral_right_0p1": [
+     -0.005703939314000308,
+     -0.06698094688728452,
+     -0.03480954546690918
+    ],
+    "neutral": [
+     0.00043171294983983445,
+     0.000382055561701236,
+     -0.0039413608948816545
+    ],
+    "yaw_left_0p5": [
+     0.0207177772782743,
+     0.016547891879454255,
+     0.45753507101535795
+    ],
+    "yaw_right_0p5": [
+     -0.0029348742589354517,
+     -0.04901166117750108,
+     -0.5087544803023338
+    ]
+   },
+   "worst": "lateral_left_0p1",
+   "worst_margin": 0.03616367182129761
   }
  },
  "policies": {
@@ -29,6 +121,11 @@
    "checkpoint_sha256": "e115a8cd2b6e191a436922a2932e52c9747d4c713ab985f24c627ac5b6f3568a",
    "file": "getup.onnx",
    "sha256": "adcb8db1a46fda5cb64383e48057f7d908ee0801632c16f84871873f48d659df"
+  },
+  "pico": {
+   "checkpoint_sha256": "11179373bb04e30eed7a75fe95cb87f0f5cd878b85ea219ff20aa97169dfe7e9",
+   "file": "pico_teleop.onnx",
+   "sha256": "8b6467f53b2dc2a2cd1f3d1557016a45c157349a55034005d9c3edf74087f77f"
   },
   "walk": {
    "checkpoint_sha256": "a7c28c8abaf038d85c9c773bdaa2cc6bbe3c9bb2af6135622a4949c38a0401ff",

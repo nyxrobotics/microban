@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright 2026 nyxrobotics
 
-"""The one contract every learned policy (walk, get-up) is checked against.
+"""The one contract every learned policy (walk, get-up, PICO) is checked against.
 
 The training repository (mjlab_microban) writes the ONNX metadata described
 here and ``src/agents/manifest.json``; the robot reads them with this module
@@ -15,7 +15,7 @@ only.  Compatibility is established by
   evaluation rollouts are run through ONNX Runtime here and must reproduce the
   actions the training actor produced for them;
 * the manifest, which binds the installed files of one release together (file
-  and checkpoint SHA-256).
+  and checkpoint SHA-256, and PICO's frozen walker to the installed walk).
 
 Run-specific values live only in the manifest: the installer writes data
 files and never edits robot code.
@@ -36,7 +36,13 @@ from typing import Any
 import numpy as np
 
 from constants import NEUTRAL_POSE, OBSERVATION_DOF_ORDER, SERVO_TARGET_RANGE_RAD
-from home_pose import HOME_POSE, HOME_TAG, home_pose_stamp_matches
+from home_pose import (
+    HOME_POSE,
+    HOME_TAG,
+    HOME_TRUNK_PITCH_RAD,
+    hand_target_fk_contract,
+    home_pose_stamp_matches,
+)
 
 POLICY_CONTRACT = "microban-policy-1"
 # The training recipe each kind must come from.  A recipe id changes when the
@@ -45,6 +51,7 @@ POLICY_CONTRACT = "microban-policy-1"
 RECIPES: Mapping[str, str] = {
     "walk": "microban-walk-track-velocity-1",
     "getup": "microban-getup-single-run-1",
+    "pico": "microban-pico-pose-release-track-velocity-1",
 }
 KINDS = tuple(RECIPES)
 
@@ -54,6 +61,7 @@ MANIFEST_NAME = "manifest.json"
 POLICY_FILES: Mapping[str, str] = {
     "walk": "walk.onnx",
     "getup": "getup.onnx",
+    "pico": "pico_teleop.onnx",
 }
 
 # A dry run of the training pipeline (a few updates, gates forced) marks its
@@ -62,6 +70,7 @@ DRY_RUN_METADATA_KEY = "dry_run_not_deployable"
 DRY_RUN_POLICY_ALLOW_ENV = "MICROBAN_ALLOW_DRYRUN_POLICY"
 
 ACTION_WIDTH = len(OBSERVATION_DOF_ORDER)
+HEAD_JOINTS = ("head", "neck_roll", "neck_pitch")
 OBSERVATION_SCHEMAS: Mapping[str, tuple[tuple[str, int], ...]] = {
     "walk": (
         ("base_ang_vel", 3),
@@ -78,10 +87,21 @@ OBSERVATION_SCHEMAS: Mapping[str, tuple[tuple[str, int], ...]] = {
         ("joint_vel", ACTION_WIDTH),
         ("actions", ACTION_WIDTH),
     ),
+    "pico": (
+        ("base_ang_vel", 3),
+        ("projected_gravity", 3),
+        ("joint_pos", 21),
+        ("joint_vel", 21),
+        ("actions", ACTION_WIDTH),
+        ("command", 3),
+        ("foot_target", 6),
+        ("hand_target", 8),
+    ),
 }
 OBSERVATION_JOINT_NAMES: Mapping[str, tuple[str, ...]] = {
     "walk": tuple(OBSERVATION_DOF_ORDER),
     "getup": tuple(OBSERVATION_DOF_ORDER),
+    "pico": (*HEAD_JOINTS, *OBSERVATION_DOF_ORDER),
 }
 PREVIOUS_ACTION_SEMANTICS = "raw_policy_output"
 BASE_ANG_VEL_FRAME = "imu_sensor_xyz"
@@ -125,6 +145,27 @@ SELF_TEST_GRAVITY_NORM_TOLERANCE = 0.05
 SELF_TEST_MAX_JOINT_SPEED_RAD_S = 12.1
 SELF_TEST_JOINT_RANGE_MARGIN_RAD = math.radians(5.0)
 
+# PICO targets: the command support of the training task.  Inference clips
+# the live targets to these, never to model-provided values.
+PICO_FOOT_TARGET_LOWER = (-0.03, -0.03, 0.0) * 2
+PICO_FOOT_TARGET_UPPER = (0.03, 0.03, 0.05) * 2
+PICO_BOTH_FEET_TARGET_LOWER = (-0.01, -0.01, 0.0) * 2
+PICO_BOTH_FEET_TARGET_UPPER = (0.01, 0.01, 0.02) * 2
+PICO_HAND_TARGET_LOWER = (-0.08,) * 6
+PICO_HAND_TARGET_UPPER = (0.08,) * 6
+# Observation columns the PICO adapter learns on top of the frozen walker
+# (head/neck joint_pos and joint_vel, foot and hand targets); all of them must
+# have been trainable when the deployed checkpoint was saved.
+PICO_ADAPTER_COLUMNS = (6, 7, 8, 27, 28, 29, *range(69, 83))
+# Frame of the PICO hand/foot target columns: the trunk frame with HOME's
+# forward lean rotated out (gravity-levelled at HOME), which is what the PICO
+# bridge sends.  With a vertical trunk it is the trunk frame itself.
+PICO_TARGET_FRAME = (
+    "robot_trunk_xyz_forward_left_up"
+    if HOME_TRUNK_PITCH_RAD == 0.0
+    else "robot_home_levelled_trunk_xyz_forward_left_up"
+)
+
 _SHA256_RE = re.compile(r"[0-9a-f]{64}\Z")
 _CHECKPOINT_RE = re.compile(r"model_(0|[1-9][0-9]*)\.pt\Z")
 
@@ -135,6 +176,21 @@ class PolicyContractError(ValueError):
 
 class PolicySelfTestError(RuntimeError):
     """ONNX Runtime did not reproduce the recorded training outputs."""
+
+
+@dataclass(frozen=True)
+class PicoTargets:
+    """The PICO-only part of the contract."""
+
+    walk_checkpoint_sha256: str
+    foot_lower: tuple[float, ...]
+    foot_upper: tuple[float, ...]
+    both_feet_lower: tuple[float, ...]
+    both_feet_upper: tuple[float, ...]
+    hand_lower: tuple[float, ...]
+    hand_upper: tuple[float, ...]
+    raw_action_guard: tuple[float, ...]
+    curriculum: Mapping[str, int]
 
 
 @dataclass(frozen=True)
@@ -151,6 +207,7 @@ class PolicyContract:
     dry_run: bool
     self_test_observations: np.ndarray  # (N, 1, input_width) float32
     self_test_actions: np.ndarray  # (N, 18) float64
+    pico: PicoTargets | None = None
 
 
 @dataclass(frozen=True)
@@ -328,6 +385,7 @@ def parse_policy(kind: str, session: Any) -> PolicyContract:
     gate_report_sha256 = _sha256_value(metadata, "gate_report_sha256")
 
     observations, actions = _parse_self_test(kind, metadata, width, observation_joints)
+    pico = _parse_pico(metadata, int(match.group(1))) if kind == "pico" else None
     return PolicyContract(
         kind=kind,
         recipe=RECIPES[kind],
@@ -341,6 +399,7 @@ def parse_policy(kind: str, session: Any) -> PolicyContract:
         dry_run=dry_run,
         self_test_observations=observations,
         self_test_actions=actions,
+        pico=pico,
     )
 
 
@@ -400,10 +459,82 @@ def _parse_self_test(
     return observations.astype(np.float32).reshape(-1, 1, width), actions
 
 
+def _parse_pico(metadata: Mapping[str, str], checkpoint_iteration: int) -> PicoTargets:
+    _exact(metadata, "pico_target_frame", PICO_TARGET_FRAME)
+    if not _same_json(_json(metadata, "pico_hand_target_fk_json"), hand_target_fk_contract()):
+        raise PolicyContractError(
+            "pico_hand_target_fk_json differs from config/home_pose.yaml hand_target_fk"
+        )
+    bounds = {}
+    for key, expected in (
+        ("pico_foot_target_lower_json", PICO_FOOT_TARGET_LOWER),
+        ("pico_foot_target_upper_json", PICO_FOOT_TARGET_UPPER),
+        ("pico_both_feet_target_lower_json", PICO_BOTH_FEET_TARGET_LOWER),
+        ("pico_both_feet_target_upper_json", PICO_BOTH_FEET_TARGET_UPPER),
+        ("pico_hand_target_lower_json", PICO_HAND_TARGET_LOWER),
+        ("pico_hand_target_upper_json", PICO_HAND_TARGET_UPPER),
+    ):
+        values = _numbers(_json(metadata, key), key, 6)
+        if not np.allclose(values, expected, rtol=0.0, atol=1.0e-9):
+            raise PolicyContractError(f"{key} differs from the trained command support")
+        bounds[key] = tuple(float(value) for value in expected)
+    guard = _numbers(_json(metadata, "pico_raw_action_guard_json"), "pico_raw_action_guard_json", ACTION_WIDTH)
+    with np.errstate(over="ignore"):
+        guard_float32 = np.asarray(guard, dtype=np.float32)
+    if any(value <= 0.0 for value in guard) or not np.isfinite(guard_float32).all():
+        raise PolicyContractError("pico_raw_action_guard_json must be positive finite float32 values")
+    curriculum = _json(metadata, "pico_curriculum_json")
+    keys = ("critic_warmup", "hand_start", "hand_tighten", "foot_start", "foot_tighten", "total")
+    if (
+        not isinstance(curriculum, dict)
+        or set(curriculum) != set(keys)
+        or any(isinstance(curriculum[key], bool) or not isinstance(curriculum[key], int) for key in keys)
+        or not 0 < curriculum["hand_start"] <= curriculum["foot_start"]
+        <= curriculum["foot_tighten"] <= curriculum["total"]
+    ):
+        raise PolicyContractError("pico_curriculum_json is malformed")
+    if not curriculum["foot_tighten"] <= checkpoint_iteration + 1 <= curriculum["total"]:
+        raise PolicyContractError("PICO checkpoint is not from the final curriculum stage")
+    if _json(metadata, "pico_active_adapter_columns_json") != list(PICO_ADAPTER_COLUMNS):
+        raise PolicyContractError("PICO checkpoint did not train every adapter column")
+    return PicoTargets(
+        walk_checkpoint_sha256=_sha256_value(metadata, "pico_walk_checkpoint_sha256"),
+        foot_lower=bounds["pico_foot_target_lower_json"],
+        foot_upper=bounds["pico_foot_target_upper_json"],
+        both_feet_lower=bounds["pico_both_feet_target_lower_json"],
+        both_feet_upper=bounds["pico_both_feet_target_upper_json"],
+        hand_lower=bounds["pico_hand_target_lower_json"],
+        hand_upper=bounds["pico_hand_target_upper_json"],
+        raw_action_guard=guard,
+        curriculum=dict(curriculum),
+    )
+
+
+def _same_json(actual: Any, expected: Any) -> bool:
+    """JSON equality without Python's bool/int/float coercions."""
+
+    if type(actual) is not type(expected):
+        return False
+    if isinstance(expected, dict):
+        return actual.keys() == expected.keys() and all(
+            _same_json(actual[key], value) for key, value in expected.items()
+        )
+    if isinstance(expected, list):
+        return len(actual) == len(expected) and all(
+            _same_json(a, e) for a, e in zip(actual, expected, strict=True)
+        )
+    return bool(actual == expected)
+
+
 # ---------------------------------------------------------------- self-test
 def run_self_test(session: Any, contract: PolicyContract) -> int:
     """Run the recorded observations through ONNX Runtime; return the row count."""
 
+    guard = (
+        np.asarray(contract.pico.raw_action_guard, dtype=np.float64)
+        if contract.pico is not None
+        else None
+    )
     for index, (observation, expected) in enumerate(
         zip(contract.self_test_observations, contract.self_test_actions, strict=True)
     ):
@@ -420,6 +551,10 @@ def run_self_test(session: Any, contract: PolicyContract) -> int:
             raise PolicySelfTestError(
                 f"{contract.kind} self-test row {index}: ONNX Runtime differs from the "
                 f"recorded training output by {error:.3g} (limit {bound:.3g})"
+            )
+        if guard is not None and np.any(np.abs(output[0]) > guard):
+            raise PolicySelfTestError(
+                f"pico self-test row {index} exceeds the raw-action guard"
             )
     return len(contract.self_test_observations)
 
@@ -488,6 +623,14 @@ def check_manifest(
         raise PolicyContractError(f"{policy_path} checkpoint SHA-256 differs from the manifest")
     if contract.dry_run != manifest["dry_run"]:
         raise PolicyContractError("the manifest and the ONNX disagree about the dry run")
+    if (
+        contract.pico is not None
+        and contract.pico.walk_checkpoint_sha256
+        != manifest["policies"]["walk"]["checkpoint_sha256"]
+    ):
+        raise PolicyContractError(
+            "the PICO policy was not trained on the installed walking checkpoint"
+        )
 
 
 def open_session(model: Path | str | bytes, providers: Sequence[str] | None = None) -> Any:
