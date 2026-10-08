@@ -7,6 +7,7 @@ sync:
 	rsync -avz \
 		--exclude='.git' \
 		--exclude='.venv' \
+		--exclude='.pytest_cache' \
 		--exclude='__pycache__' \
 		--exclude='cad' \
 		--exclude='docs' \
