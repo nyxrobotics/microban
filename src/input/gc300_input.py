@@ -7,8 +7,9 @@ This source reads the kernel joystick device directly.  It never powers the
 motor bus down because a controller disappears: while disconnected it replays
 the last operation, then zeros only the velocity target after one second so
 policy feedback keeps running.  The game's A, B, R3, left trigger, and sticks
-have the same roles as the PICO controls.  Right trigger and grip have no robot
-action because the gamepad has no 6DoF poses.
+have the same roles as the PICO controls.  Y starts robot-local face following
+after the walking policy is enabled, and X ends it. Right trigger and grip have
+no robot action because the gamepad has no 6DoF poses.
 """
 
 from __future__ import annotations
@@ -26,6 +27,7 @@ from pathlib import Path
 from typing import Mapping
 
 from input.input_source import InputSource, UserInput
+from input.person_follow import PersonFollower
 
 
 # Linux joystick API and input-event code values from linux/joystick.h and
@@ -43,6 +45,8 @@ _ABS_GAS = 0x09
 _ABS_BRAKE = 0x0A
 _BTN_SOUTH = 0x130  # A
 _BTN_EAST = 0x131  # B
+_BTN_NORTH = 0x133  # Y
+_BTN_WEST = 0x134  # X
 _BTN_TL2 = 0x138   # digital LT fallback
 _BTN_THUMBR = 0x13E  # R3
 _ABS_COUNT = 0x40
@@ -99,6 +103,8 @@ def _joystick_mapping(fd: int) -> tuple[dict[str, int | None], dict[str, int | N
     buttons: dict[str, int | None] = {
         "a": buttons_by_code.get(_BTN_SOUTH),
         "b": buttons_by_code.get(_BTN_EAST),
+        "y": buttons_by_code.get(_BTN_NORTH),
+        "x": buttons_by_code.get(_BTN_WEST),
         "r3": buttons_by_code.get(_BTN_THUMBR),
         "lt": buttons_by_code.get(_BTN_TL2),
     }
@@ -116,7 +122,7 @@ def _radial_deadzone(x: float, y: float) -> tuple[float, float]:
 class Gc300InputSource(InputSource):
     """Read a GC300 over Bluetooth without delaying the 50 Hz control loop.
 
-    The pad may connect after the robot starts.  A/B/R3 only react to real
+    The pad may connect after the robot starts.  A/B/R3/X/Y only react to real
     edges, not the synthetic state replay sent when ``/dev/input/js*`` opens.
     B is also effective as a held level.  Reconnection preserves the prior
     torque/policy latch but requires LT to be released before walking resumes.
@@ -142,19 +148,23 @@ class Gc300InputSource(InputSource):
         self._next_probe_ns = 0
         self._torque = False
         self._policy = False
+        self._follow_enabled = False
+        self._person_follower = PersonFollower()
         self._motion_inhibited = False
         self._gate_rearmed = False
         self._walk_rearmed = False
         self._walking = False
         self._a_edge_pending = False
         self._r3_edge_pending = False
+        self._y_edge_pending = False
+        self._x_edge_pending = False
         self._b_press_pending = False
         self._off_after_disconnect = False
         self._disconnected_since_ns: int | None = None
         self._velocity_zeroed_after_disconnect = False
         self._resume_walk_if_quick = False
         self._sticks = {name: 0.0 for name in ("lx", "ly", "rx", "ry")}
-        self._held = {name: False for name in ("a", "b", "r3", "lt")}
+        self._held = {name: False for name in ("a", "b", "r3", "y", "x", "lt")}
         self._lt_axis = 0.0
         self.last_error: str | None = None
         self._last_output = UserInput(
@@ -230,6 +240,10 @@ class Gc300InputSource(InputSource):
             )
             quick_reconnect = self._resume_walk_if_quick and short_disconnect
             self._reset_physical_state()
+            if not short_disconnect and self._follow_enabled:
+                self._follow_enabled = False
+                self._person_follower.reset()
+                print("GC300 follow: disarmed after long disconnect", flush=True)
             if quick_reconnect:
                 self._walk_rearmed = True
                 self._walking = True
@@ -238,17 +252,23 @@ class Gc300InputSource(InputSource):
             self._velocity_zeroed_after_disconnect = False
             self.last_error = None
             print(f"GC300 connected: {name} ({path})", end="\r\n", flush=True)
+            if buttons.get("y") is None:
+                print("GC300 Y button is unavailable; manual controls remain active", flush=True)
+            if buttons.get("x") is None:
+                print("GC300 X button is unavailable; use A or R3 to end following", flush=True)
             return
 
     def _reset_physical_state(self) -> None:
         self._sticks = {name: 0.0 for name in ("lx", "ly", "rx", "ry")}
-        self._held = {name: False for name in ("a", "b", "r3", "lt")}
+        self._held = {name: False for name in ("a", "b", "r3", "y", "x", "lt")}
         self._lt_axis = 0.0
         self._gate_rearmed = False
         self._walk_rearmed = False
         self._walking = False
         self._a_edge_pending = False
         self._r3_edge_pending = False
+        self._y_edge_pending = False
+        self._x_edge_pending = False
         self._b_press_pending = False
 
     def _disconnect(self) -> None:
@@ -284,6 +304,8 @@ class Gc300InputSource(InputSource):
             raise TypeError("inhibited must be boolean")
         self._motion_inhibited = inhibited
         if inhibited:
+            self._follow_enabled = False
+            self._person_follower.reset()
             self._walk_rearmed = False
             self._walking = False
             self._last_output.active_moves.clear()
@@ -309,7 +331,7 @@ class Gc300InputSource(InputSource):
             return
         if kind != _JS_BUTTON:
             return
-        for name in ("a", "b", "r3", "lt"):
+        for name in ("a", "b", "r3", "y", "x", "lt"):
             if number != self._buttons.get(name):
                 continue
             pressed = value != 0
@@ -317,6 +339,10 @@ class Gc300InputSource(InputSource):
             self._held[name] = pressed
             if name == "b" and rising:
                 self._b_press_pending = True
+            elif name == "y" and rising:
+                self._y_edge_pending = True
+            elif name == "x" and rising:
+                self._x_edge_pending = True
             elif self._gate_rearmed and rising:
                 if name == "a":
                     self._a_edge_pending = True
@@ -377,6 +403,8 @@ class Gc300InputSource(InputSource):
             self._off_after_disconnect = False
             self._torque = False
             self._policy = False
+            self._follow_enabled = False
+            self._person_follower.reset()
             self._last_output = UserInput(
                 locomotion_policy="walk",
                 torque_enabled=False,
@@ -393,6 +421,8 @@ class Gc300InputSource(InputSource):
                 self._off_after_disconnect = False
                 self._torque = False
                 self._policy = False
+                self._follow_enabled = False
+                self._person_follower.reset()
                 self._last_output = UserInput(
                     locomotion_policy="walk",
                     torque_enabled=False,
@@ -405,15 +435,43 @@ class Gc300InputSource(InputSource):
         if self._held["b"] or self._b_press_pending:
             self._torque = False
             self._policy = False
+            self._follow_enabled = False
         elif self._a_edge_pending:
             self._torque = True
             self._policy = False
+            self._follow_enabled = False
             self._walk_rearmed = False
             self._walking = False
         elif self._r3_edge_pending and self._torque:
             self._policy = not self._policy
+            if not self._policy:
+                self._follow_enabled = False
+        if self._x_edge_pending:
+            self._follow_enabled = False
+            print("GC300 follow: OFF (X)", flush=True)
+        elif self._y_edge_pending:
+            if not self._torque:
+                print("GC300 follow: Y ignored until A enables torque", flush=True)
+            elif self._a_edge_pending:
+                # The scheduler must observe A's policy-OFF snapshot before a
+                # later policy-ON request, even if both edges arrive in one tick.
+                print("GC300 follow: Y ignored during A; press Y again", flush=True)
+            elif self._r3_edge_pending and not self._policy:
+                print("GC300 follow: Y ignored while R3 turns policy OFF", flush=True)
+            else:
+                if not self._policy:
+                    self._policy = True
+                    print("GC300 follow: policy ON requested by Y", flush=True)
+                if not self._follow_enabled:
+                    self._follow_enabled = True
+                    self._person_follower.reset()
+                print("GC300 follow: ON (Y)", flush=True)
+        if not self._follow_enabled:
+            self._person_follower.reset()
         self._a_edge_pending = False
         self._r3_edge_pending = False
+        self._y_edge_pending = False
+        self._x_edge_pending = False
         self._b_press_pending = False
         lt = max(self._lt_axis, float(self._held["lt"]))
         if lt <= _LT_RELEASE and not self._motion_inhibited:
@@ -425,6 +483,7 @@ class Gc300InputSource(InputSource):
 
         active_policy = self._torque and self._policy and not self._motion_inhibited
         walking = active_policy and self._walking
+        following = active_policy and self._follow_enabled
         lx, ly = _radial_deadzone(self._sticks["lx"], self._sticks["ly"])
         rx, _ry = _radial_deadzone(self._sticks["rx"], self._sticks["ry"])
         velocity = {
@@ -432,14 +491,36 @@ class Gc300InputSource(InputSource):
             "vy": -lx if walking else 0.0,
             "vtheta": -rx if walking else 0.0,
         }
+        head_orientation = None
+        if following:
+            follow_command = self._person_follower.command()
+            head_orientation = follow_command.head_orientation
+            if not walking:
+                velocity = follow_command.velocity
         self._last_output = UserInput(
-            active_moves={"walk"} if active_policy else set(),
+            active_moves=(
+                {"walk", "hmd_head"} if following else {"walk"}
+            ) if active_policy else set(),
             velocity=velocity,
             locomotion_policy="walk",
-            balance_only=active_policy and not walking,
+            balance_only=active_policy and not walking and not following,
+            head_orientation=head_orientation,
             arm_tracking_enabled=False,
             torque_enabled=self._torque,
             policy_enabled=self._policy,
         )
         return deepcopy(self._last_output)
 
+    def set_head_telemetry(
+        self,
+        *,
+        head: float,
+        neck_roll: float,
+        neck_pitch: float,
+        trunk_roll: float,
+        trunk_pitch: float,
+    ) -> None:
+        _ = (neck_roll, trunk_roll)
+        self._person_follower.set_head_telemetry(
+            head=head, neck_pitch=neck_pitch, trunk_pitch=trunk_pitch
+        )
