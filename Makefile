@@ -19,7 +19,9 @@ sync:
 		--exclude='.pytest_cache' \
 		--exclude='__pycache__' \
 		--exclude='cad' \
-		--exclude='docs' \
+		--include='docs/' \
+		--include='docs/pico_autostart.md' \
+		--exclude='docs/***' \
 		--exclude='logs' \
 		--exclude='src/debug' \
 		--exclude='src/sim' \
