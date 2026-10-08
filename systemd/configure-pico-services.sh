@@ -8,6 +8,7 @@ readonly runtime_unit="microban-pico-runtime.service"
 readonly camera_unit="microban-camera-tls.service"
 readonly -a conflicting_units=(
   "microban-gamepad.service"
+  "microban-gc300-runtime.service"
 )
 readonly runtime_unit_path="/etc/systemd/system/${runtime_unit}"
 readonly camera_unit_path="/etc/systemd/system/${camera_unit}"

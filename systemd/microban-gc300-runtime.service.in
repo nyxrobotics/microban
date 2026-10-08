@@ -1,0 +1,29 @@
+[Unit]
+Description=Microban robot-local GC300 Bluetooth control runtime
+Documentation=file://@REPO_ROOT@/docs/gc300.md
+Wants=bluetooth.target
+After=bluetooth.target microban-pico-runtime.service microban-gamepad.service
+Conflicts=microban-pico-runtime.service microban-gamepad.service
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+User=@SERVICE_USER@
+WorkingDirectory=@REPO_ROOT@
+Environment=PYTHONPATH=@REPO_ROOT@/src
+Environment=MICROBAN_START_TORQUE_OFF=1
+Environment=MICROBAN_SERIAL_HOLD_LAST_ON_ERROR=1
+ExecStartPre=@REPO_ROOT@/.venv/bin/python @REPO_ROOT@/tools/torque_off.py
+ExecStart=@REPO_ROOT@/.venv/bin/python -u @REPO_ROOT@/src/gc300_main.py
+ExecStopPost=-@REPO_ROOT@/.venv/bin/python @REPO_ROOT@/tools/torque_off.py
+Restart=always
+RestartSec=2
+KillSignal=SIGINT
+TimeoutStopSec=6
+UMask=0077
+NoNewPrivileges=true
+ProtectSystem=full
+ProtectHome=read-only
+
+[Install]
+WantedBy=multi-user.target

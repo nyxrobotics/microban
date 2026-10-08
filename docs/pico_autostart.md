@@ -29,9 +29,11 @@ sudo bash systemd/configure-pico-services.sh enable
 sudo bash systemd/configure-pico-services.sh uninstall
 ```
 
-`enable`は競合する`microban-gamepad.service`（ゲームパッドのheadlessモード）を停止・無効化してからPICO runtimeを起動します。
+`enable`は競合する`microban-gamepad.service`（ゲームパッドのheadlessモード）とGC300ランタイムを停止・無効化してからPICO runtimeを起動します。
+GC300の単独操縦に切り替えるときは[GC300操縦手順](gc300.md)の`configure-gc300-runtime.sh enable`を実行します。
+両モードの切替時はランタイムを停止するため、一度トルクOFFになります。
 
-`status`は設定した構成のsystemd状態を表示し、`health`はenable/active、gamepad headlessモードとの競合、UDP 5555、
+`status`は設定した構成のsystemd状態を表示し、`health`はenable/active、GC300・gamepad headlessモードとの競合、UDP 5555、
 camera構成時のHTTP 8080/TLS 8443 listenerまで検査して、未準備なら非zeroで終了します。cameraを使わない
 `--without-camera`構成では、存在しないcamera unitを異常扱いしません。runtimeとTLS proxyは一時的な
 network、camera、serial障害が長時間続いても再起動上限で停止せず、復旧を待ち続けます。

@@ -65,7 +65,7 @@ Moves are toggled independently and run on top of the neutral pose:
 
 - **Walk** (`v` / gamepad **X**) — the move that owns the legs. With the keyboard or a
   gamepad it holds the current pose; walking runs from the PICO controller
-  ([Teleoperation](teleop.md)).
+  ([Teleoperation](teleop.md)) or the GC300 runtime ([GC300](gc300.md)).
 - **Head** (`h`) — oscillates the head.
 - **Squat** (`s`) — squat motion computed with inverse kinematics.
 
@@ -99,7 +99,7 @@ joints and every value is `0.0` by default.
 - Scope: applied only inside `RobotController` (the real servo bus), on every goal
   write and every position read. Every move (walk, PICO tracking, get-up, the A /
   policy-off neutral pose, arms, head and neck) and every input source (keyboard,
-  gamepad, PICO) gets it automatically, and the policies keep observing
+  gamepad, GC300, PICO) gets it automatically, and the policies keep observing
   training coordinates. Velocities and currents are unchanged. MuJoCo / placo
   simulation (`make sim`, `make viewer`) and training ignore it.
 - Measuring: with all offsets `0.0`, hold the joint at a known true angle (in the

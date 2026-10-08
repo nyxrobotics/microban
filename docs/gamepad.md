@@ -41,7 +41,7 @@ When the controller is connected, the `make run` command uses it as input automa
 
 B, A and R3 are reserved for this gate and cannot be reassigned. In `make run`
 (`src/main.py`) the `walk` move holds the current pose; walking runs from the PICO
-controller ([Teleoperation](teleop.md)).
+controller ([Teleoperation](teleop.md)) or the GC300 runtime ([GC300](gc300.md)).
 
 Axis and button numbers vary between controllers (especially over Bluetooth) — if
 something doesn't respond as expected, see [Remapping](#remapping-for-your-controller).

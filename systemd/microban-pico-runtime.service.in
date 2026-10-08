@@ -2,8 +2,8 @@
 Description=Microban PICO network-control runtime
 Documentation=file://@REPO_ROOT@/docs/pico_autostart.md
 Wants=network-online.target
-After=network-online.target microban-gamepad.service
-Conflicts=microban-gamepad.service
+After=network-online.target microban-gamepad.service microban-gc300-runtime.service
+Conflicts=microban-gamepad.service microban-gc300-runtime.service
 # Hardware and network outages may last arbitrarily long. Every retry starts
 # torque-off and still requires a fresh A -> R3 operator sequence.
 StartLimitIntervalSec=0

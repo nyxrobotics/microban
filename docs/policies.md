@@ -4,7 +4,7 @@
 
 | モデル | ファイル | 使う動作 |
 |---|---|---|
-| 歩行 | `src/agents/walk.onnx` | `WalkMove` |
+| 歩行 | `src/agents/walk.onnx` | `WalkMove`（GC300） |
 | 起き上がり | `src/agents/getup.onnx` | `GetupMove`（転倒後の起き上がり、立位の保持） |
 | PICO | `src/agents/pico_teleop.onnx` | `PicoHybridMove`（PICO の左トリガーで選ばれる全身の遠隔操作） |
 
