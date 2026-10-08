@@ -60,7 +60,7 @@ Using a gamepad allows to drive the robot through two different modes: with a te
 
 Moves are toggled independently and run on top of the neutral pose:
 
-- **Walk** (`v` / gamepad **A**) — a reinforcement-learning policy. Once active, the
+- **Walk** (`v` / gamepad **X**) — a reinforcement-learning policy. Once active, the
   velocity command drives it: `vx` (forward/back), `vy` (lateral), `vtheta` (turn),
   set from the arrow keys or the gamepad sticks.
 - **Head** (`h`) — oscillates the head.
@@ -94,8 +94,9 @@ joints and every value is `0.0` by default.
 - Convention: `servo command = MOTOR_SIGN * (logical target + offset)` and
   `logical measurement = MOTOR_SIGN * servo reading - offset`.
 - Scope: applied only inside `RobotController` (the real servo bus), on every goal
-  write and every position read. Every move and every input source gets it
-  automatically, and the policies keep observing
+  write and every position read. Every move (walk, get-up, the A /
+  policy-off neutral pose, arms, head and neck) and every input source (keyboard,
+  gamepad) gets it automatically, and the policies keep observing
   training coordinates. Velocities and currents are unchanged. MuJoCo / placo
   simulation (`make sim`, `make viewer`) and training ignore it.
 - Measuring: with all offsets `0.0`, hold the joint at a known true angle (in the
@@ -106,7 +107,9 @@ joints and every value is `0.0` by default.
   (0.2 rad, about 11.5 deg); otherwise the runtime refuses to start. Nonzero values are
   printed once when the runtime starts (`Hardware joint offsets (...)`). Offsets are
   calibration trims; they do not keep goals in range.
-- Servo range: after sign and offset, `RobotController` saturates every servo goal into
+- Servo range: policies have no software clip. Every policy target is
+  `clip(HOME + raw * 1.0, -pi, +pi)`, the servo's one-turn goal range. After sign and
+  offset, `RobotController` saturates every servo goal into
   `[SERVO_GOAL_MIN_RAD, SERVO_GOAL_MAX_RAD] = [-pi, pi - 2*pi/4096]` rad, which is raw
   0..4095 in XC330 Position Control mode (rustypot: `raw = (rad + pi) * 4096 / (2*pi)`).
   An in-range goal is sent unchanged. A goal past an edge is sent as that edge, and the
@@ -153,6 +156,9 @@ To add a move:
 ### Training your own walk (or other RL) policies
 
 The walk move runs an ONNX policy trained in simulation. 
+
+The contract, installation and validation of every learned policy are
+documented in [learned policies](policies.md).
 You can train your own walking — or other learned skills — and drop the resulting `.onnx` file into [src/agents/](../src/agents/) to use it on the robot. Check the repository [MarcDcls/mjlab_microban](https://github.com/MarcDcls/mjlab_microban) for the training pipeline. 
 
 If you achieve some interesting results, don't hesitate to make a pull request to the repository as it is also a community-driven project!

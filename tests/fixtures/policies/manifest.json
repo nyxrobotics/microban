@@ -1,0 +1,25 @@
+{
+ "checkpoints": {
+  "getup": "model_17.pt",
+  "walk": "model_7.pt"
+ },
+ "contract": "microban-policy-1",
+ "created": "2026-10-08 20:13:47",
+ "dry_run": true,
+ "home_joint_hash": "481503d292",
+ "home_tag": "forward_lean_home",
+ "home_yaml_sha256": "db382ae3596ecdff473bcd1be183df09c3e8e6210a7491a57e59280977073c68",
+ "policies": {
+  "getup": {
+   "checkpoint_sha256": "a6358e16165d48076169aeeb6ba81c67b981ee43e222a44cfd741d3167699869",
+   "file": "getup.onnx",
+   "sha256": "955cba602f3e30c484b34cb5223c899a60a9592292e79825556d3e2d807c86ab"
+  },
+  "walk": {
+   "checkpoint_sha256": "67a6f2789db3ef120d10bb9218f3f1fbfb635f6d85927e37234da38672ce2804",
+   "file": "walk.onnx",
+   "sha256": "f09f70aea517ed5a1b6b6da0a43a3d9a47300422709857f40a7843bec6ec6a85"
+  }
+ },
+ "training_commit": "8aefeb2e1a5dc69843ea55173a7acdf671b24931"
+}

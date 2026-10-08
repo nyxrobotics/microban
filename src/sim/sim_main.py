@@ -10,12 +10,14 @@ Usage:
 
 import argparse
 
-from scheduler import Scheduler
-from sim.mujoco_input import MuJoCoInputSource
-from sim.mujoco_controller import MuJoCoController
+from input.gamepad_input import GamepadInputSource
+from moves.getup import GetupMove
 from moves.rotate_head import RotateHeadMove
 from moves.squat import SquatMove
 from moves.walk import WalkMove
+from scheduler import Scheduler
+from sim.mujoco_controller import MuJoCoController
+from sim.mujoco_input import MuJoCoInputSource
 
 
 def main() -> None:
@@ -27,13 +29,31 @@ def main() -> None:
     parser.add_argument("--delay-gyro", type=int, default=3, metavar="TICKS", help="Gyro read delay in ticks")
     parser.add_argument("--delay-quat", type=int, default=4, metavar="TICKS", help="Quaternion (projected gravity) read delay in ticks")
     parser.add_argument("--trunk-com-offset", type=float, nargs=3, default=[0.0, 0.0, 0.0], metavar=("X", "Y", "Z"), help="CoM offset on trunk body in meters (body frame)")
+    parser.add_argument("--input", choices=("keyboard", "gamepad"), default="keyboard", help="Control input (default: keyboard)")
     args = parser.parse_args()
 
-    input_source = MuJoCoInputSource(move_keys={"h": "head", "s": "squat", "v": "walk"})
+    # "walk" active from launch: standing purely on the neutral-pose position hold
+    # (no active move) isn't a stable equilibrium and drifts into an overcurrent trip
+    # within a couple of seconds.
+    if args.input == "gamepad":
+        # Real B/A/R3 get-up test controls (see GamepadInputSource), so that
+        # exact flow can be rehearsed here before ever touching real hardware.
+        # A raw /dev/input/js* reader, independent of the MuJoCo viewer, so
+        # (unlike keyboard) it needs no key_callback/reset_source.
+        input_source = GamepadInputSource(button_moves={"X": "walk"})
+        key_callback = None
+        reset_source = None
+    else:
+        input_source = MuJoCoInputSource(
+            move_keys={"h": "head", "s": "squat", "v": "walk", "g": "getup"},
+            initial_active_moves={"walk"},
+        )
+        key_callback = input_source.key_callback
+        reset_source = input_source
     controller = MuJoCoController(
         mjcf_path="src/model/mjcf/scene.xml",
-        key_callback=input_source.key_callback,
-        reset_source=input_source,
+        key_callback=key_callback,
+        reset_source=reset_source,
         delay_act_steps=args.delay_act,
         delay_pos_ticks=args.delay_pos,
         delay_vel_ticks=args.delay_vel,
@@ -41,7 +61,8 @@ def main() -> None:
         delay_quat_ticks=args.delay_quat,
         trunk_com_offset=tuple(args.trunk_com_offset),
     )
-    input_source.set_viewer_opt(controller.viewer_opt)
+    if isinstance(input_source, MuJoCoInputSource):
+        input_source.set_viewer_opt(controller.viewer_opt)
 
     scheduler = Scheduler(
         frequency_hz=args.hz,
@@ -51,8 +72,17 @@ def main() -> None:
             "head": RotateHeadMove(),
             "squat": SquatMove(),
             "walk": WalkMove(controller=controller),
+            "getup": GetupMove(controller=controller),
         },
     )
+    for move in scheduler.registered_moves.values():
+        move.preload()
+    # The overcurrent safety's cheap proxy estimate (position-error based) exists to
+    # avoid an extra bus read on real hardware; in sim that cost doesn't apply, and the
+    # proxy overestimates enough during a fall/recovery's large corrective motions to
+    # trip the safety before GetupMove gets a chance to run. Use the real (already
+    # current-limited by the BAM actuator model) simulated current instead.
+    scheduler.observer.observe_current = True
     scheduler.run()
 
 

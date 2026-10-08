@@ -1,0 +1,41 @@
+{
+ "checkpoints": {
+  "getup": "model_17999.pt",
+  "walk": "model_29000.pt"
+ },
+ "contract": "microban-policy-1",
+ "created": "2026-10-08 23:25:37",
+ "dry_run": false,
+ "home_joint_hash": "481503d292",
+ "home_tag": "forward_lean_home",
+ "home_yaml_sha256": "db382ae3596ecdff473bcd1be183df09c3e8e6210a7491a57e59280977073c68",
+ "judgments": {
+  "getup": {
+   "failures": [],
+   "passed": true,
+   "summary": {
+    "final_tilt_deg": 2.6781277656555176,
+    "min_fallen_standing_fraction": 0.9649122807017544,
+    "posture_standing_fraction": 0.96875,
+    "push_fall_fraction": 0.0,
+    "standing_joint_abs_vel_rad_s": 0.08805691450834274,
+    "standing_targets_beyond_1p57": 0.03937757760286331,
+    "standing_targets_on_clip": 0.02710503153502941
+   }
+  }
+ },
+ "policies": {
+  "getup": {
+   "checkpoint_sha256": "e115a8cd2b6e191a436922a2932e52c9747d4c713ab985f24c627ac5b6f3568a",
+   "file": "getup.onnx",
+   "sha256": "adcb8db1a46fda5cb64383e48057f7d908ee0801632c16f84871873f48d659df"
+  },
+  "walk": {
+   "checkpoint_sha256": "a7c28c8abaf038d85c9c773bdaa2cc6bbe3c9bb2af6135622a4949c38a0401ff",
+   "file": "walk.onnx",
+   "sha256": "3eb45da7581cfd680d1a2e93795ced368e9d18cbc5a34560f01ab72147414056"
+  }
+ },
+ "training_branch": "home-config",
+ "training_commit": "fb37dd5ad8f21e975768541d89bf08c205f4f106"
+}

@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright 2026 Marc Duclusaud
 
+import math
 import threading
 import time
 from dataclasses import dataclass
@@ -33,7 +34,9 @@ def imu_quat_to_body(
 ) -> tuple[float, float, float, float]:
     """Convert a quaternion measured in IMU frame to the trunk (body) frame.
 
-    Applies q_body = q_imu * conjugate(IMU_MOUNT_QUAT).
+    The filter reports ``q_world_sensor`` and ``IMU_MOUNT_QUAT`` is
+    ``q_body_sensor`` (sensor vectors into body coordinates), so this applies
+    ``q_world_body = q_world_sensor * conjugate(q_body_sensor)``.
     """
     w1, x1, y1, z1 = q
     w2, x2, y2, z2 = IMU_MOUNT_QUAT[0], -IMU_MOUNT_QUAT[1], -IMU_MOUNT_QUAT[2], -IMU_MOUNT_QUAT[3]
@@ -58,6 +61,24 @@ def quat_apply_inverse(quat: list[float], vec: list[float]) -> list[float]:
     w = quat[0]
     t = 2 * np.cross(xyz, vec)
     return vec - w * t + np.cross(xyz, t)
+
+
+def trunk_roll_pitch(body_quat: list[float]) -> tuple[float, float] | None:
+    """Trunk roll (about +X) and pitch (about +Y) of a body-frame quaternion.
+
+    The same convention as the neck_roll/neck_pitch joint axes (robot.xml).
+    None for a non-finite, wrong-length or near-zero quaternion.
+    """
+    if len(body_quat) != 4 or not all(math.isfinite(value) for value in body_quat):
+        return None
+    norm = math.sqrt(sum(value * value for value in body_quat))
+    if norm < 1e-6:
+        return None
+    w, x, y, z = (value / norm for value in body_quat)
+    roll = math.atan2(2 * (w * x + y * z), 1 - 2 * (x * x + y * y))
+    pitch = math.asin(max(-1.0, min(1.0, 2 * (w * y - z * x))))
+    return roll, pitch
+
 
 class ThreadedIMUReader:
     """Reads BMI088 on a dedicated thread and exposes the latest sample snapshot."""

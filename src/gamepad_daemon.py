@@ -6,7 +6,7 @@
 Runs as a background service (opt-in, see systemd/microban-gamepad.service). While the
 robot has no control loop running, it watches the Bluetooth controller and, when START
 is held, starts the control loop (the same `src/main.py` that `make run` runs) — no SSH
-needed. The control loop is stopped from the gamepad with B (writes the stop flag).
+needed. The control loop is stopped from the gamepad with START (writes the stop flag).
 Holding both triggers together powers the Pi off cleanly.
 
 Wi-Fi is cut as soon as the gamepad connects over Bluetooth (to free the 2.4 GHz
@@ -161,7 +161,7 @@ def power_off() -> None:
 
 
 def run_session() -> None:
-    """Start the control loop and block until it exits (B button or crash)."""
+    """Start the control loop and block until it exits (START button or crash)."""
     print("Launching control loop", flush=True)
     env = {**os.environ, "PYTHONPATH": "src"}
     proc = subprocess.Popen([sys.executable, "src/main.py"], cwd=str(REPO), env=env)

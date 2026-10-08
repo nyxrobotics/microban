@@ -1,5 +1,6 @@
 """config/home_pose.yaml is the robot's only HOME source."""
 
+import json
 import math
 import re
 import tempfile
@@ -8,6 +9,9 @@ from pathlib import Path
 
 import constants
 import home_pose
+from policy_contract import PolicyContractError
+from policy_fixtures import OTHER_HOME, home_pose_stamp, walk_contract_metadata
+from test_walk_contract import fake_walk
 
 CONFIG_TEXT = home_pose.HOME_POSE_PATH.read_text(encoding="utf-8")
 
@@ -39,6 +43,7 @@ class HomePoseConfigTest(unittest.TestCase):
         self.assertEqual(list(constants.NEUTRAL_POSE), list(constants.MOTOR_TO_ID))
         self.assertEqual(constants.HOME_ROOT_POS_Z_M, loaded["root_pos_m"][2])
         self.assertEqual(constants.HOME_ROOT_QUAT_WXYZ, loaded["root_quat_wxyz"])
+        self.assertEqual(constants.HOME_PROJECTED_GRAVITY, loaded["projected_gravity"])
 
     def test_parser_matches_a_full_yaml_parser(self):
         try:
@@ -74,6 +79,27 @@ class HomePoseConfigTest(unittest.TestCase):
                     load_variant(text)
         self.assertEqual(load_variant(CONFIG_TEXT)["joint_pos_rad"], home_pose.HOME_JOINT_POS_RAD)
 
+    def test_home_pose_stamp_must_be_this_home(self):
+        self.assertTrue(home_pose.home_pose_stamp_matches(home_pose_stamp()))
+        self.assertFalse(home_pose.home_pose_stamp_matches(home_pose_stamp(OTHER_HOME)))
+        self.assertFalse(home_pose.home_pose_stamp_matches(None))
+        self.assertFalse(home_pose.home_pose_stamp_matches("{"))
+        raised = json.loads(home_pose_stamp())
+        raised["root_pos_m"][2] += 0.005
+        self.assertFalse(home_pose.home_pose_stamp_matches(json.dumps(raised)))
+        tilted = json.loads(home_pose_stamp())
+        tilted["root_quat_wxyz"] = [math.cos(0.05), 0.0, math.sin(0.05), 0.0]
+        self.assertFalse(home_pose.home_pose_stamp_matches(json.dumps(tilted)))
+
+    def test_walk_policy_needs_the_home_stamp(self):
+        fake_walk()  # the deployed contract loads
+        missing = walk_contract_metadata()
+        del missing["home_pose"]
+        other_home = walk_contract_metadata()
+        other_home["home_pose"] = home_pose_stamp(OTHER_HOME)
+        for case, metadata in (("missing", missing), ("other_home", other_home)):
+            with self.subTest(case=case), self.assertRaises(PolicyContractError):
+                fake_walk(metadata)
 
 
 if __name__ == "__main__":

@@ -49,3 +49,23 @@ class Move(ABC):
         """Called each tick while state is STOPPING.
         Must set self.state = MoveState.INACTIVE when the transition is done."""
         self.state = MoveState.INACTIVE
+
+    def can_balance(self, user_input) -> bool:
+        """Whether this move, started now for ``user_input``, keeps a standing
+        robot upright by active feedback (a learned standing/walking actor).
+
+        The scheduler keeps GetupMove on as the standing balancer after a
+        get-up until the requested "walk" move answers True here. Conservative
+        default: a static hold or scripted motion cannot balance.
+        """
+        _ = user_input
+        return False
+
+    def on_safety_resume(self, obs: Observation) -> None:
+        """Resynchronize private transition state after a scheduler safety hold.
+
+        A safety hold deliberately skips normal move callbacks. Stateful moves may
+        override this to discard stale interpolation/policy history before dispatch
+        resumes; the lifecycle state itself is preserved.
+        """
+        _ = obs

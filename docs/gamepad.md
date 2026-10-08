@@ -30,11 +30,16 @@ Once paired and trusted, the controller reconnects automatically when powered on
 
 When the controller is connected, the `make run` command uses it as input automatically instead of the keyboard. The mapping is:
 
+- **B**: all-joint torque off. The control loop starts with torque off.
+- **A**: torque on, and a slow return of every joint to HOME (learned policies withheld)
+- **R3** (right stick click): toggle the learned policies (only while torque is on)
+- **X**: toggle the `walk` move
 - **Left stick**: `vx` (up/down), `vy` (left/right)
 - **Right stick** (left/right): `vtheta`
-- **A**: toggle the `walk` move
-- **B**: stop the scheduler (writes the stop flag)
+- **START**: stop the scheduler (writes the stop flag)
 - **View/Back** button: toggle the IMU/gyro display
+
+B, A and R3 are reserved for this gate and cannot be reassigned.
 
 Axis and button numbers vary between controllers (especially over Bluetooth) — if
 something doesn't respond as expected, see [Remapping](#remapping-for-your-controller).
@@ -60,16 +65,16 @@ make gamepad-headless-enable
 
 Once enabled, it launches a daemon on the Pi that waits for a controller to connect over Bluetooth. Once a controller is connected, the Wi-Fi is turned off to free the 2.4 GHz antenna and the following commands are available on the controller:
 
-- **Hold START** → start the control loop.
-- **A** → toggle the `walk` move.
-- **B** → stop the control loop.
+- **Hold START** → start the control loop (torque off until **A**).
+- **B / A / R3 / X** → the same roles as in the SSH usage above.
+- **START** → stop the control loop.
 - **Hold both triggers** → power off the Pi cleanly. Wait 10-15 s after that before
   flipping the robot's power switch off, to give the Pi time to actually halt.
 
 The headless mode persists across reboots, which means that you don't need to connect to the Pi over SSH to enable it again. It is particularly useful for demonstration purposes, as it allows to drive the robot without any computer connected to it.
 
-If the **controller disconnects** during a session, the robot's velocity is zeroed so
-it stops moving (torque stays on, holding its pose). Reconnect and press **B** or power off the robot end the session.
+If the **controller disconnects** during a session, the velocity is zeroed and all
+joint torque is cut. Reconnect and press **START**, or power off the robot, to end the session.
 
 Whenever the daemon is left with no controller connected — because it disconnected,
 because the control loop crashed, or because the robot just booted — Wi-Fi is
@@ -106,7 +111,7 @@ sudo apt install -y joystick
    | :--- | :--- |
    | Left stick horizontal / vertical | `Axis` → `_AXIS_LX` / `_AXIS_LY` |
    | Right stick horizontal | `Axis` → `_AXIS_RX` (drives `vtheta`) |
-   | A / B / Back / Start | `Button` → `XBOX_BUTTONS` |
+   | A / B / X / R3 / Back / Start | `Button` → `XBOX_BUTTONS` |
    | Left / right trigger | `Axis` → `TRIGGER_AXES` (headless power-off gesture) |
 
 3. Edit the constants at the top of
@@ -120,7 +125,8 @@ sudo apt install -y joystick
 
 4. Which button does what is set by `GAMEPAD_BUTTON_MOVES` in
    [main.py](../src/main.py) (moves) and the `stop_button` / `imu_button` arguments of
-   `GamepadInputSource` (defaults: stop = `B`, IMU = `BACK`).
+   `GamepadInputSource` (defaults: stop = `START`, IMU = `BACK`). B, A and R3 cannot be
+   reassigned.
 
 The defaults shipped in the repo (A=0, B=1, Start=11; left stick = axes 0/1, right
 stick horizontal = axis 2, triggers = axes 4/5) are verified on an Xbox controller

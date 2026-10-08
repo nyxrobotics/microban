@@ -61,23 +61,41 @@ class GamepadInputSource(InputSource):
     Designed as a drop-in replacement for KeyboardInputSource. Zero dependencies:
     reads raw 8-byte events from /dev/input/js* with struct.
 
+    B/A/right-stick-click (R3) are the real-hardware master gate: B cuts all
+    joint torque; A re-enables torque and asks Scheduler to slew every joint
+    slowly to neutral with learned outputs withheld; R3 toggles normal policy
+    execution once torque is on. They cannot be reassigned.
+
     Args:
-        button_moves: mapping from Xbox button name to move name, e.g. {"A": "walk"}.
+        button_moves: mapping from Xbox button name to move name, e.g. {"X": "walk"}.
+            Must not name A, B, or R3 (reserved -- see above).
         stop_button: button name that requests scheduler shutdown (writes the stop flag).
+            Must not be A, B, or R3.
         imu_button: button name that toggles the IMU display, or None to disable.
         device_path: explicit /dev/input/jsX path, or None to auto-detect.
         stop_flag_path: path to the stop flag file polled by the scheduler.
     """
 
+    _RESERVED_BUTTONS = {"A", "B", "R3"}
+    controls_motor_power = True
+
     def __init__(
         self,
         button_moves: dict[str, str] | None = None,
-        stop_button: str = "B",
+        stop_button: str = "START",
         imu_button: str | None = "BACK",
         device_path: str | None = None,
         stop_flag_path: str = "/tmp/microban_scheduler.stop",
     ) -> None:
-        self._button_moves = button_moves if button_moves is not None else {"A": "walk"}
+        self._button_moves = button_moves if button_moves is not None else {}
+        reserved_used = self._RESERVED_BUTTONS & (
+            set(self._button_moves) | {stop_button.upper()}
+        )
+        if reserved_used:
+            raise ValueError(
+                f"Buttons reserved for hardware control cannot be reassigned: "
+                f"{sorted(reserved_used)}"
+            )
         self._stop_flag_path = Path(stop_flag_path)
         self._device_path = device_path
 
@@ -86,8 +104,11 @@ class GamepadInputSource(InputSource):
         self._stop_number = self._number(stop_button)
         self._imu_number = self._number(imu_button) if imu_button else None
         self._name_by_number = {v: k for k, v in XBOX_BUTTONS.items()}
+        self._limp_number = self._number("B")
+        self._recover_number = self._number("A")
+        self._policy_toggle_number = self._number("R3")
 
-        self._state = UserInput()
+        self._state = UserInput(torque_enabled=False, policy_enabled=False)
         self._lock = threading.Lock()
         self._thread: threading.Thread | None = None
         self._running = False
@@ -130,6 +151,9 @@ class GamepadInputSource(InputSource):
                 active_moves=set(self._state.active_moves),
                 velocity=dict(self._state.velocity),
                 show_imu=self._state.show_imu,
+                torque_enabled=self._state.torque_enabled,
+                policy_enabled=self._state.policy_enabled,
+                getup_armed=self._state.getup_armed,
             )
 
     # ------------------------------------------------------------------
@@ -164,9 +188,13 @@ class GamepadInputSource(InputSource):
     def _on_disconnect(self) -> None:
         # Stop commanding motion on the last (now stale) stick values, otherwise the
         # robot would keep moving on the velocity it had when the controller dropped.
+        # A dropped pad is lost operator authority: fail to limp rather than
+        # retaining whichever torque/policy state happened to be current.
         with self._lock:
             self._state.velocity = {"vx": 0.0, "vy": 0.0, "vtheta": 0.0}
-        print("Gamepad disconnected (velocity zeroed)", end="\r\n", flush=True)
+            self._state.torque_enabled = False
+            self._state.policy_enabled = False
+        print("Gamepad disconnected (velocity zeroed, torque cut)", end="\r\n", flush=True)
 
     def _normalize(self, value: int) -> float:
         norm = max(-1.0, min(1.0, value / _AXIS_FULL_SCALE))
@@ -186,7 +214,39 @@ class GamepadInputSource(InputSource):
             self._state.velocity[axis] = max(-1.0, min(1.0, norm))
 
     def _handle_button(self, number: int) -> None:
-        if number in self._move_numbers:
+        if number == self._limp_number:
+            with self._lock:
+                self._state.torque_enabled = False
+                self._state.policy_enabled = False
+            print("Hardware gate: LIMP (all-joint torque off)", end="\r\n", flush=True)
+        elif number == self._recover_number:
+            with self._lock:
+                self._state.torque_enabled = True
+                self._state.policy_enabled = False
+            print(
+                "Hardware gate: torque on, slewing to neutral (policy withheld)",
+                end="\r\n",
+                flush=True,
+            )
+        elif number == self._policy_toggle_number:
+            with self._lock:
+                if self._state.torque_enabled:
+                    self._state.policy_enabled = not self._state.policy_enabled
+                policy_enabled = self._state.policy_enabled
+                torque_enabled = self._state.torque_enabled
+            if not torque_enabled:
+                print(
+                    "Hardware gate: R3 ignored, torque is off (press A first)",
+                    end="\r\n",
+                    flush=True,
+                )
+            else:
+                print(
+                    f"Hardware gate: policy {'enabled' if policy_enabled else 'disabled (neutral hold)'}",
+                    end="\r\n",
+                    flush=True,
+                )
+        elif number in self._move_numbers:
             move_name = self._move_numbers[number]
             with self._lock:
                 if move_name in self._state.active_moves:
@@ -212,6 +272,9 @@ class GamepadInputSource(InputSource):
             "Gamepad controls:",
             "  left stick   vx (up/down), vy (left/right)",
             "  right stick  vtheta",
+            "  [B]   all-joint torque off (LIMP)",
+            "  [A]   torque on, slow neutral return (policy withheld)",
+            "  [R3]  toggle normal policy output (only while torque is on)",
             *(f"  [{btn(number)}]  toggle move '{move}'" for number, move in self._move_numbers.items()),
         ]
         if self._imu_number is not None:

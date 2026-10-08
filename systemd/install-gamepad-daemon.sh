@@ -54,5 +54,5 @@ EOF
 systemctl daemon-reload
 systemctl enable --now microban-gamepad.service
 echo "Headless gamepad service installed and started (user=$USER_NAME, repo=$REPO)."
-echo "Connect the controller, then: hold START 2s to launch, B to stop, BACK 2s to power off."
+echo "Connect the controller, then: hold START 2s to launch, START to stop, BACK 2s to power off."
 echo "It stays enabled across reboots until 'make gamepad-headless-disable'."
