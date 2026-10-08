@@ -14,6 +14,7 @@
 ## 契約
 - 版: metadata の `microban_policy_contract` が `microban-policy-1`。観測・行動・目標の意味を変えたら、両方のリポジトリで手で上げる。
 - 種類とレシピ: `microban_policy_kind`（walk / getup / pico）と `microban_recipe`。受け付けるレシピ id は `policy_contract.RECIPES` に 1 つずつ。
+  PICO のモデルは、凍結した歩行器の出力に、学習した小さな補正の網（入力 81、隠れ層 64・64）の出力を足したもので、1 つのグラフになっている。レシピ id `microban-pico-arm-overlay-residual-track-velocity-1` はこの構造を表し、補正の網のない以前のモデル（`microban-pico-arm-overlay-track-velocity-1`）は拒否する。
 - HOME: `home_pose` の全精度のスタンプと `default_joint_pos` が `config/home_pose.yaml` と 1e-6 以内で一致すること。別の HOME で学習したモデルは拒否する。
 - 目標の式: どのモデルも `target = clip(HOME + raw * 1.0, -π, +π)`（18 関節、ソフトウェアのクリップなし、±π はサーボの 1 回転の範囲）。前回の行動の観測は生の出力。PICO だけは腕の 6 関節にこの式を使わない（下の「PICO の実行時の動き」）。
 - 観測の並び: `observation_schema_json`（walk 63、getup 60、pico 81）と `observation_joint_names`。

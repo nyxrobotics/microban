@@ -53,11 +53,14 @@ from pico_arm_contract import (
 POLICY_CONTRACT = "microban-policy-1"
 # The training recipe each kind must come from.  A recipe id changes when the
 # reward or the target meaning changes (one reviewed line here); fixing a
-# failed run inside the same recipe family does not change it.
+# failed run inside the same recipe family does not change it.  PICO's also
+# names its structure: the frozen walker plus a residual MLP added to its
+# output (the robot runs the ONNX graph as it is; the id keeps the two
+# structures apart).
 RECIPES: Mapping[str, str] = {
     "walk": "microban-walk-track-velocity-1",
     "getup": "microban-getup-single-run-1",
-    "pico": "microban-pico-arm-overlay-track-velocity-1",
+    "pico": "microban-pico-arm-overlay-residual-track-velocity-1",
 }
 KINDS = tuple(RECIPES)
 

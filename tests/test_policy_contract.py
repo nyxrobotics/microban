@@ -60,6 +60,13 @@ class ContractMetadataTest(unittest.TestCase):
         self.assertEqual(set(pc.RECIPES), {"walk", "getup", "pico"})
         self.assertEqual({WIDTHS[kind] for kind in ("walk", "getup", "pico")}, {63, 60, 81})
 
+    def test_pico_without_the_residual_mlp_is_refused(self):
+        self.assertEqual(pc.RECIPES["pico"], "microban-pico-arm-overlay-residual-track-velocity-1")
+        metadata = contract_metadata("pico")
+        metadata["microban_recipe"] = "microban-pico-arm-overlay-track-velocity-1"
+        with self.assertRaisesRegex(pc.PolicyContractError, "microban_recipe"):
+            parse("pico", metadata)
+
     def test_missing_fields_fail_closed(self):
         for kind in pc.KINDS:
             for key in contract_metadata(kind):
