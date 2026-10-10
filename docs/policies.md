@@ -51,6 +51,65 @@ make teleop-validate HOST=microban   # 作業機と Raspberry Pi の両方で va
 `make teleop-validate` は作業ツリーをそのまま rsync するので、`git status --porcelain=v1 --untracked-files=all` が空の状態で実行する。
 通ってから `make teleop-run HOST=microban` で制御を始める。
 
+### PICOだけを再学習した場合
+
+同じHOMEと同じ歩行器からPICOだけを再学習した場合は、3モデル一括の
+`retrain_all_for_home.py`ではなく、PICO専用の導入道具を使う。書き出しに使った
+stage gateも渡すため、別の判定結果やcheckpointから作ったONNXは導入できない。
+
+```bash
+TRAINING_REPO=/absolute/path/to/mjlab_microban
+PICO_RELEASE="$TRAINING_REPO/artifacts/pico_release/<run>"
+TRAINING_COMMIT=<学習開始時にrunが記録した40桁のcommit>
+
+PYTHONPATH=src uv run --locked python tools/install_pico_policy.py \
+  "$PICO_RELEASE/pico_teleop.onnx" \
+  "$PICO_RELEASE/model_14999_gate.json" \
+  --training-repo "$TRAINING_REPO" \
+  --training-branch tracking-v13c \
+  --training-commit "$TRAINING_COMMIT" \
+  --check-only
+
+PYTHONPATH=src uv run --locked python tools/install_pico_policy.py \
+  "$PICO_RELEASE/pico_teleop.onnx" \
+  "$PICO_RELEASE/model_14999_gate.json" \
+  --training-repo "$TRAINING_REPO" \
+  --training-branch tracking-v13c \
+  --training-commit "$TRAINING_COMMIT"
+
+PYTHONPATH=src uv run --locked python tools/validate_policies.py src/agents
+PYTHONPATH=src uv run --locked --with pytest python -m pytest -q tests
+```
+
+導入道具は、既存のwalk/getupを先に検証してそのbytesとmanifest欄を変えずに候補bundleへコピーし、
+新しいPICOの契約、CPU自己テスト、stage gate hash、凍結walkerのcheckpoint hashを検証する。
+さらにstage gateが指すcheckpointとrunの`git/mjlab_microban.diff`を読み、ONNX metadataに埋め込まれた
+学習開始時のcommit・branch・Git記録hashと一致すること、そのcommitが指定branchに含まれることを確かめる。
+現在のbranch先端（学習後の文書commitなど）を学習commitとして記録してはならない。
+
+manifest上端の`training_commit`、`training_branch`、`home_yaml_sha256`、`created`は、保持したwalk/getupを含む
+元の3-policy bundleの記録なので書き換えない。後から入れたPICOの出所は
+`policy_provenance.pico`にcheckpoint、gate、ONNX、runのGit記録まで別に保存する。
+
+3モデルをまとめた候補bundleが通った後にだけ`pico_teleop.onnx`と`manifest.json`を置き換える。
+2ファイルは一度にはrenameできないため、導入前の両bytesとfsync済みjournalを
+`src/agents/.pico-policy-install*`へ先に保存する。途中で電源断・killが起きた場合は、次にこの道具を
+起動した時点で、完全な新しい組なら検証して確定し、途中の組なら古い組へ戻す。
+復旧資料が壊れていて判断できない場合は上書きせず失敗する。正常終了時にはjournalもbackupも残らない。
+同じbundleへの導入はlockで直列化し、atomic rename前に止まって残った専用tempも次回起動で除く。
+`--check-only`を含むどの起動も、残っているtransactionの復旧だけは先に行う。
+したがって差分はこの2ファイルだけでなければならない。
+
+```bash
+git status --short
+git diff --stat
+git diff -- src/agents/manifest.json
+sha256sum src/agents/walk.onnx src/agents/getup.onnx
+```
+
+最後の2つのhashは導入前から不変であること。commit後にworktreeが空になってから
+`make teleop-validate HOST=microban`を実行し、同じcommitをRaspberry Piへ同期して再検証する。
+
 契約に合わないモデルの扱い:
 - 歩行: `WalkMove` が例外を出し、そのランタイムは起動しない。
 - 起き上がり: `GetupMove.model_ready` が False になり、転倒時はゆっくり初期姿勢へ戻るだけになる。
