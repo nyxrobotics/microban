@@ -34,7 +34,7 @@
     "standing_still",
     "support_foot_still"
    ],
-   "gate_report_sha256": "b95c35be75f8bece144648547fa7b88076cb915b7d101d8c377fe0e29983fd08",
+   "gate_report_sha256": "d9915307ba0ea866fad3ce37689cb95841211a2857227e59417930f330696553",
    "passed": false,
    "tracking_waiver": {
     "approval": "User approved on 2026-10-11 installing this model on the tracking branches to test single-foot stance and arm tracking on the robot, with these tracking checks failing. The user chose option 1: install the current best model (tracking-v13c, trained from scratch for 15000 updates) on the robot and teleop tracking branches and push it, check single-foot stance and hand tracking on the robot, and fix the remaining issues in the order the robot shows them.",
@@ -262,7 +262,7 @@
   "pico": {
    "checkpoint_sha256": "e092d28e65a3d42f4da4f9cd4f60e761b7c691a76b17b407ead1eadaff4e0179",
    "file": "pico_teleop.onnx",
-   "sha256": "86a93dc6cf8698a98233213e860dd212b11af54801765d9a812d06d2a1ee963d"
+   "sha256": "6c0ffd38ded4502a17627244f6098122cb668c1ed65ee311467e7edbf3f20aed"
   },
   "walk": {
    "checkpoint_sha256": "a7c28c8abaf038d85c9c773bdaa2cc6bbe3c9bb2af6135622a4949c38a0401ff",
@@ -275,15 +275,15 @@
    "checkpoint": "model_14999.pt",
    "checkpoint_path": "logs/rsl_rl/mjlab_microban_teleop_v12/2026-10-10_22-34-42_home_481503d292_pico_v13_v13c/model_14999.pt",
    "checkpoint_sha256": "e092d28e65a3d42f4da4f9cd4f60e761b7c691a76b17b407ead1eadaff4e0179",
-   "installed_at": "2026-10-11 13:45:01",
-   "policy_sha256": "86a93dc6cf8698a98233213e860dd212b11af54801765d9a812d06d2a1ee963d",
+   "installed_at": "2026-10-11 14:09:53",
+   "policy_sha256": "6c0ffd38ded4502a17627244f6098122cb668c1ed65ee311467e7edbf3f20aed",
    "run_git_snapshot": "logs/rsl_rl/mjlab_microban_teleop_v12/2026-10-10_22-34-42_home_481503d292_pico_v13_v13c/git/mjlab_microban.diff",
    "run_git_snapshot_sha256": "dfc239a19cdd39bf6236a559747da940d5ca86d8bc0abc88ba8a20dea4485f32",
    "scope": "pico_only",
-   "stage_gate_sha256": "b95c35be75f8bece144648547fa7b88076cb915b7d101d8c377fe0e29983fd08",
+   "stage_gate_sha256": "d9915307ba0ea866fad3ce37689cb95841211a2857227e59417930f330696553",
    "training_branch": "tracking-v13c",
    "training_branch_ref": "refs/heads/tracking-v13c",
-   "training_branch_tip_at_install": "3d4f4e88e7c7d7ff6c3b3d7ae71d42cf65235fc3",
+   "training_branch_tip_at_install": "b54b35361b16d0a59c10d4b4ca865761a67e03d6",
    "training_commit": "10d264f09afefb2ae4a719bd0268d55a4bcc8495",
    "training_home_yaml_sha256": "5ce21e779bbb2b0834bd190c2ebe953f0aba18ca3a7da7db3d832d078850bd05"
   }
