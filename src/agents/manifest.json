@@ -26,60 +26,60 @@
   },
   "pico": {
    "checkpoint": "model_14999.pt",
-   "checkpoint_sha256": "e092d28e65a3d42f4da4f9cd4f60e761b7c691a76b17b407ead1eadaff4e0179",
+   "checkpoint_sha256": "88ef866e6da8da4dee77477fe626c172ada6f936cec3f9304fac18a2e2c83fce",
    "failures": [
     "foot_error",
     "foot_lift",
     "no_falls_without_push",
-    "standing_still",
+    "push_falls",
     "support_foot_still"
    ],
-   "gate_report_sha256": "d9915307ba0ea866fad3ce37689cb95841211a2857227e59417930f330696553",
+   "gate_report_sha256": "42660156b0d8e985a123df30d1a6ae219cd792c428b1b150d31b00e905128e7a",
    "passed": false,
    "tracking_waiver": {
-    "approval": "User approved on 2026-10-11 installing this model on the tracking branches to test single-foot stance and arm tracking on the robot, with these tracking checks failing. The user chose option 1: install the current best model (tracking-v13c, trained from scratch for 15000 updates) on the robot and teleop tracking branches and push it, check single-foot stance and hand tracking on the robot, and fix the remaining issues in the order the robot shows them.",
+    "approval": "User approved on 2026-10-12 installing the tracking-v13g2 model (trained from scratch for 15000 updates at mjlab_microban tracking-v13g 6182d36, support_zmp) on the robot tracking branch in place of tracking-v13c if the comparison showed it better, with the failing tracking checks waived as for tracking-v13c, to test it on the robot. Better than tracking-v13c in this judgment: standing still 0.00 touchdowns/s in every neutral arm scenario (v13c 0.95 arms raised, 1.34 reach left; standing_still now passes); support foot moves 0.2-0.9 mm in 13 of 14 single-foot scenarios (v13c four over 10 mm, up to 28.9 mm); falls without push 3 in one scenario (v13c 10 in four); walking speed off the command by 18 % on average (v13c 28 %; yaw left 0.5 rad/s: 0.44 vs 0.19). Still failing: foot_error just over its limit in 4 scenarios (worst 16.2 mm vs 15.7 mm); foot_lift: both-feet targets do not lower the trunk (0.3 mm vs 11.2 mm), as in v13c; support_foot_still: right_back_in/arms_reach_right 20.0 mm; no_falls_without_push: forward_0p1/arms_home 3 of 128; push_falls: 7.9 % vs the walker's 1.8 % + 5 % (v13c 6.5 %, passed by 0.1 point). The safety checks, the 9x300 locomotion and the ONNX gate pass.",
     "checks": {
      "foot_error": [
       {
        "limit": 0.008,
-       "measured": 0.009970137849450111,
+       "measured": 0.008554873056709766,
        "quantity": "relative_error_rms_m",
        "rule": "at_most",
        "scenario": "left_up20"
       },
       {
+       "limit": 0.011999999731779098,
+       "measured": 0.012048895470798016,
+       "quantity": "relative_error_rms_m",
+       "rule": "at_most",
+       "scenario": "left_up40"
+      },
+      {
+       "limit": 0.015737852454185484,
+       "measured": 0.016231173649430275,
+       "quantity": "relative_error_rms_m",
+       "rule": "at_most",
+       "scenario": "right_front_in"
+      },
+      {
        "limit": 0.008,
-       "measured": 0.008058064617216587,
+       "measured": 0.008444109931588173,
        "quantity": "relative_error_rms_m",
        "rule": "at_most",
-       "scenario": "right_up20"
-      },
-      {
-       "limit": 0.015737852454185484,
-       "measured": 0.018394043669104576,
-       "quantity": "relative_error_rms_m",
-       "rule": "at_most",
-       "scenario": "right_front_out"
-      },
-      {
-       "limit": 0.015737852454185484,
-       "measured": 0.017211096361279488,
-       "quantity": "relative_error_rms_m",
-       "rule": "at_most",
-       "scenario": "right_back_out"
+       "scenario": "both_back_right"
       }
      ],
      "foot_lift": [
       {
        "limit": 0.0112,
-       "measured": -0.000525502662640065,
+       "measured": 0.0002586337213870138,
        "quantity": "trunk_drop_median_m",
        "rule": "at_least",
        "scenario": "both_front_left"
       },
       {
        "limit": 0.0112,
-       "measured": -0.0008107001194730401,
+       "measured": 0.000233389888308011,
        "quantity": "trunk_drop_median_m",
        "rule": "at_least",
        "scenario": "both_back_right"
@@ -88,74 +88,25 @@
      "no_falls_without_push": [
       {
        "limit": 0.0,
-       "measured": 1.0,
+       "measured": 3.0,
        "quantity": "falls",
        "rule": "at_most",
-       "scenario": "right_back_in/arms_reach_right"
-      },
-      {
-       "limit": 0.0,
-       "measured": 6.0,
-       "quantity": "falls",
-       "rule": "at_most",
-       "scenario": "backward_0p2/arms_home"
-      },
-      {
-       "limit": 0.0,
-       "measured": 1.0,
-       "quantity": "falls",
-       "rule": "at_most",
-       "scenario": "lateral_left_0p1/arms_home"
-      },
-      {
-       "limit": 0.0,
-       "measured": 2.0,
-       "quantity": "falls",
-       "rule": "at_most",
-       "scenario": "backward_0p2/arms_raised"
+       "scenario": "forward_0p1/arms_home"
       }
      ],
-     "standing_still": [
+     "push_falls": [
       {
-       "limit": 0.5,
-       "measured": 0.953993022441864,
-       "quantity": "touchdowns_per_s",
+       "limit": 0.06822916666666667,
+       "measured": 0.07899305555555555,
+       "quantity": "pico_fall_rate",
        "rule": "at_most",
-       "scenario": "neutral/arms_raised"
-      },
-      {
-       "limit": 0.5,
-       "measured": 1.3411458730697632,
-       "quantity": "touchdowns_per_s",
-       "rule": "at_most",
-       "scenario": "neutral/arms_reach_left"
+       "scenario": "all_push_scenarios"
       }
      ],
      "support_foot_still": [
       {
        "limit": 0.01,
-       "measured": 0.028864774852991104,
-       "quantity": "support_move_median_m",
-       "rule": "at_most",
-       "scenario": "left_back_out"
-      },
-      {
-       "limit": 0.01,
-       "measured": 0.01360405795276165,
-       "quantity": "support_move_median_m",
-       "rule": "at_most",
-       "scenario": "left_back_in"
-      },
-      {
-       "limit": 0.01,
-       "measured": 0.019933361560106277,
-       "quantity": "support_move_median_m",
-       "rule": "at_most",
-       "scenario": "left_front_in/arms_reach_left"
-      },
-      {
-       "limit": 0.01,
-       "measured": 0.01663520373404026,
+       "measured": 0.019966406747698784,
        "quantity": "support_move_median_m",
        "rule": "at_most",
        "scenario": "right_back_in/arms_reach_right"
@@ -260,9 +211,9 @@
    "sha256": "adcb8db1a46fda5cb64383e48057f7d908ee0801632c16f84871873f48d659df"
   },
   "pico": {
-   "checkpoint_sha256": "e092d28e65a3d42f4da4f9cd4f60e761b7c691a76b17b407ead1eadaff4e0179",
+   "checkpoint_sha256": "88ef866e6da8da4dee77477fe626c172ada6f936cec3f9304fac18a2e2c83fce",
    "file": "pico_teleop.onnx",
-   "sha256": "6c0ffd38ded4502a17627244f6098122cb668c1ed65ee311467e7edbf3f20aed"
+   "sha256": "c594d132898dd7f7ab112c58ca9f5d3a7a06efa9eb00348ebc390dcde44ce8b3"
   },
   "walk": {
    "checkpoint_sha256": "a7c28c8abaf038d85c9c773bdaa2cc6bbe3c9bb2af6135622a4949c38a0401ff",
@@ -273,18 +224,18 @@
  "policy_provenance": {
   "pico": {
    "checkpoint": "model_14999.pt",
-   "checkpoint_path": "logs/rsl_rl/mjlab_microban_teleop_v12/2026-10-10_22-34-42_home_481503d292_pico_v13_v13c/model_14999.pt",
-   "checkpoint_sha256": "e092d28e65a3d42f4da4f9cd4f60e761b7c691a76b17b407ead1eadaff4e0179",
-   "installed_at": "2026-10-11 14:09:53",
-   "policy_sha256": "6c0ffd38ded4502a17627244f6098122cb668c1ed65ee311467e7edbf3f20aed",
-   "run_git_snapshot": "logs/rsl_rl/mjlab_microban_teleop_v12/2026-10-10_22-34-42_home_481503d292_pico_v13_v13c/git/mjlab_microban.diff",
-   "run_git_snapshot_sha256": "dfc239a19cdd39bf6236a559747da940d5ca86d8bc0abc88ba8a20dea4485f32",
+   "checkpoint_path": "logs/rsl_rl/mjlab_microban_teleop_v12/2026-10-11_23-19-20_home_481503d292_pico_v13_v13g2/model_14999.pt",
+   "checkpoint_sha256": "88ef866e6da8da4dee77477fe626c172ada6f936cec3f9304fac18a2e2c83fce",
+   "installed_at": "2026-10-12 05:34:13",
+   "policy_sha256": "c594d132898dd7f7ab112c58ca9f5d3a7a06efa9eb00348ebc390dcde44ce8b3",
+   "run_git_snapshot": "logs/rsl_rl/mjlab_microban_teleop_v12/2026-10-11_23-19-20_home_481503d292_pico_v13_v13g2/git/mjlab_microban.diff",
+   "run_git_snapshot_sha256": "93ee5856955f8d2f3fda45c3b5382a2c4570bbd314967b24d0585ea803b30972",
    "scope": "pico_only",
-   "stage_gate_sha256": "d9915307ba0ea866fad3ce37689cb95841211a2857227e59417930f330696553",
-   "training_branch": "tracking-v13c",
-   "training_branch_ref": "refs/heads/tracking-v13c",
-   "training_branch_tip_at_install": "b54b35361b16d0a59c10d4b4ca865761a67e03d6",
-   "training_commit": "10d264f09afefb2ae4a719bd0268d55a4bcc8495",
+   "stage_gate_sha256": "42660156b0d8e985a123df30d1a6ae219cd792c428b1b150d31b00e905128e7a",
+   "training_branch": "tracking-v13g",
+   "training_branch_ref": "refs/heads/tracking-v13g",
+   "training_branch_tip_at_install": "6182d369e901520dfd75e374f59a4bd6b78b33c3",
+   "training_commit": "6182d369e901520dfd75e374f59a4bd6b78b33c3",
    "training_home_yaml_sha256": "5ce21e779bbb2b0834bd190c2ebe953f0aba18ca3a7da7db3d832d078850bd05"
   }
  },
