@@ -73,6 +73,19 @@ class TrainingNumbersTest(unittest.TestCase):
             np.testing.assert_allclose(pos, home_pos + d @ levelled_to_trunk.T, atol=5e-5)
             np.testing.assert_allclose(rot, np.broadcast_to(home_rot, rot.shape), atol=2e-3)
 
+    def test_the_knees_bend_forward_and_more_with_dz(self):
+        """Every node's knee angle (HOME + offset) is >= 0 and grows with dz;
+        the table refuses a backward-knee solution when it is built."""
+
+        values = crouch_table()["values"]
+        for side in ("left", "right"):
+            knee = NEUTRAL_POSE[f"{side}_knee"] + values[..., cf.LEG_JOINT_NAMES.index(f"{side}_knee")]
+            self.assertTrue(np.all(knee >= 0.0), side)
+            self.assertTrue(np.all(np.diff(knee, axis=2) > 0.0), side)
+        backward = {**NEUTRAL_POSE, "left_knee": -1.2, "right_knee": -1.2}
+        with self.assertRaisesRegex(RuntimeError, "backward knee"):
+            cf.solve_offsets(backward, HOME_TRUNK_PITCH_RAD, [[0.0, 0.0, 0.004]])
+
     def test_zero_without_a_two_foot_target(self):
         feet = np.array([
             [0.0] * 6,
