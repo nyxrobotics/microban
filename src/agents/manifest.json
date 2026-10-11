@@ -1,7 +1,7 @@
 {
  "checkpoints": {
   "getup": "model_17999.pt",
-  "pico": "model_8999.pt",
+  "pico": "model_14999.pt",
   "walk": "model_29000.pt"
  },
  "contract": "microban-policy-1",
@@ -25,8 +25,145 @@
    }
   },
   "pico": {
-   "failures": [],
-   "passed": true
+   "checkpoint": "model_14999.pt",
+   "checkpoint_sha256": "e092d28e65a3d42f4da4f9cd4f60e761b7c691a76b17b407ead1eadaff4e0179",
+   "failures": [
+    "foot_error",
+    "foot_lift",
+    "no_falls_without_push",
+    "standing_still",
+    "support_foot_still"
+   ],
+   "gate_report_sha256": "b95c35be75f8bece144648547fa7b88076cb915b7d101d8c377fe0e29983fd08",
+   "passed": false,
+   "tracking_waiver": {
+    "approval": "User approved on 2026-10-11 installing this model on the tracking branches to test single-foot stance and arm tracking on the robot, with these tracking checks failing. The user chose option 1: install the current best model (tracking-v13c, trained from scratch for 15000 updates) on the robot and teleop tracking branches and push it, check single-foot stance and hand tracking on the robot, and fix the remaining issues in the order the robot shows them.",
+    "checks": {
+     "foot_error": [
+      {
+       "limit": 0.008,
+       "measured": 0.009970137849450111,
+       "quantity": "relative_error_rms_m",
+       "rule": "at_most",
+       "scenario": "left_up20"
+      },
+      {
+       "limit": 0.008,
+       "measured": 0.008058064617216587,
+       "quantity": "relative_error_rms_m",
+       "rule": "at_most",
+       "scenario": "right_up20"
+      },
+      {
+       "limit": 0.015737852454185484,
+       "measured": 0.018394043669104576,
+       "quantity": "relative_error_rms_m",
+       "rule": "at_most",
+       "scenario": "right_front_out"
+      },
+      {
+       "limit": 0.015737852454185484,
+       "measured": 0.017211096361279488,
+       "quantity": "relative_error_rms_m",
+       "rule": "at_most",
+       "scenario": "right_back_out"
+      }
+     ],
+     "foot_lift": [
+      {
+       "limit": 0.0112,
+       "measured": -0.000525502662640065,
+       "quantity": "trunk_drop_median_m",
+       "rule": "at_least",
+       "scenario": "both_front_left"
+      },
+      {
+       "limit": 0.0112,
+       "measured": -0.0008107001194730401,
+       "quantity": "trunk_drop_median_m",
+       "rule": "at_least",
+       "scenario": "both_back_right"
+      }
+     ],
+     "no_falls_without_push": [
+      {
+       "limit": 0.0,
+       "measured": 1.0,
+       "quantity": "falls",
+       "rule": "at_most",
+       "scenario": "right_back_in/arms_reach_right"
+      },
+      {
+       "limit": 0.0,
+       "measured": 6.0,
+       "quantity": "falls",
+       "rule": "at_most",
+       "scenario": "backward_0p2/arms_home"
+      },
+      {
+       "limit": 0.0,
+       "measured": 1.0,
+       "quantity": "falls",
+       "rule": "at_most",
+       "scenario": "lateral_left_0p1/arms_home"
+      },
+      {
+       "limit": 0.0,
+       "measured": 2.0,
+       "quantity": "falls",
+       "rule": "at_most",
+       "scenario": "backward_0p2/arms_raised"
+      }
+     ],
+     "standing_still": [
+      {
+       "limit": 0.5,
+       "measured": 0.953993022441864,
+       "quantity": "touchdowns_per_s",
+       "rule": "at_most",
+       "scenario": "neutral/arms_raised"
+      },
+      {
+       "limit": 0.5,
+       "measured": 1.3411458730697632,
+       "quantity": "touchdowns_per_s",
+       "rule": "at_most",
+       "scenario": "neutral/arms_reach_left"
+      }
+     ],
+     "support_foot_still": [
+      {
+       "limit": 0.01,
+       "measured": 0.028864774852991104,
+       "quantity": "support_move_median_m",
+       "rule": "at_most",
+       "scenario": "left_back_out"
+      },
+      {
+       "limit": 0.01,
+       "measured": 0.01360405795276165,
+       "quantity": "support_move_median_m",
+       "rule": "at_most",
+       "scenario": "left_back_in"
+      },
+      {
+       "limit": 0.01,
+       "measured": 0.019933361560106277,
+       "quantity": "support_move_median_m",
+       "rule": "at_most",
+       "scenario": "left_front_in/arms_reach_left"
+      },
+      {
+       "limit": 0.01,
+       "measured": 0.01663520373404026,
+       "quantity": "support_move_median_m",
+       "rule": "at_most",
+       "scenario": "right_back_in/arms_reach_right"
+      }
+     ]
+    }
+   },
+   "waived_by_user": true
   },
   "walk_source_probe": {
    "below": [],
@@ -123,14 +260,32 @@
    "sha256": "adcb8db1a46fda5cb64383e48057f7d908ee0801632c16f84871873f48d659df"
   },
   "pico": {
-   "checkpoint_sha256": "11179373bb04e30eed7a75fe95cb87f0f5cd878b85ea219ff20aa97169dfe7e9",
+   "checkpoint_sha256": "e092d28e65a3d42f4da4f9cd4f60e761b7c691a76b17b407ead1eadaff4e0179",
    "file": "pico_teleop.onnx",
-   "sha256": "8b6467f53b2dc2a2cd1f3d1557016a45c157349a55034005d9c3edf74087f77f"
+   "sha256": "86a93dc6cf8698a98233213e860dd212b11af54801765d9a812d06d2a1ee963d"
   },
   "walk": {
    "checkpoint_sha256": "a7c28c8abaf038d85c9c773bdaa2cc6bbe3c9bb2af6135622a4949c38a0401ff",
    "file": "walk.onnx",
    "sha256": "3eb45da7581cfd680d1a2e93795ced368e9d18cbc5a34560f01ab72147414056"
+  }
+ },
+ "policy_provenance": {
+  "pico": {
+   "checkpoint": "model_14999.pt",
+   "checkpoint_path": "logs/rsl_rl/mjlab_microban_teleop_v12/2026-10-10_22-34-42_home_481503d292_pico_v13_v13c/model_14999.pt",
+   "checkpoint_sha256": "e092d28e65a3d42f4da4f9cd4f60e761b7c691a76b17b407ead1eadaff4e0179",
+   "installed_at": "2026-10-11 13:45:01",
+   "policy_sha256": "86a93dc6cf8698a98233213e860dd212b11af54801765d9a812d06d2a1ee963d",
+   "run_git_snapshot": "logs/rsl_rl/mjlab_microban_teleop_v12/2026-10-10_22-34-42_home_481503d292_pico_v13_v13c/git/mjlab_microban.diff",
+   "run_git_snapshot_sha256": "dfc239a19cdd39bf6236a559747da940d5ca86d8bc0abc88ba8a20dea4485f32",
+   "scope": "pico_only",
+   "stage_gate_sha256": "b95c35be75f8bece144648547fa7b88076cb915b7d101d8c377fe0e29983fd08",
+   "training_branch": "tracking-v13c",
+   "training_branch_ref": "refs/heads/tracking-v13c",
+   "training_branch_tip_at_install": "3d4f4e88e7c7d7ff6c3b3d7ae71d42cf65235fc3",
+   "training_commit": "10d264f09afefb2ae4a719bd0268d55a4bcc8495",
+   "training_home_yaml_sha256": "5ce21e779bbb2b0834bd190c2ebe953f0aba18ca3a7da7db3d832d078850bd05"
   }
  },
  "training_branch": "home-config",
