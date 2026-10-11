@@ -82,6 +82,9 @@ class ContractMetadataTest(unittest.TestCase):
             "joints": lambda r: r["joint_names"].reverse(),
             "no_crouch_probe": lambda r: r.update(foot_targets=[[0.0] * 6], leg_offsets_rad=[[0.0] * 12]),
             "rows": lambda r: r["leg_offsets_rad"].pop(),
+            "rate": lambda r: r.__setitem__("max_step_rad", 0.3),
+            "period": lambda r: r.__setitem__("policy_dt_s", 0.01),
+            "unbounded": lambda r: r.pop("max_step_rad"),
         }
         for name, change in cases.items():
             changed = json.loads(json.dumps(record))

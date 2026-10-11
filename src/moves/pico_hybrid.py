@@ -14,6 +14,9 @@ training.  On a two-foot target the legs work around its crouch pose
 (crouch_feedforward, the training's code): the leg targets are
 clip(HOME + offset + raw, -pi, +pi) and the policy observes the leg joints
 minus HOME and the same offset; the previous action stays the raw output.
+The offset in use follows the target offset of the received foot targets at
+a bounded rate per policy step (``crouch_feedforward.follow``), from zero at
+the start: the observation uses the offset the same cycle's action keeps.
 Its contract (src/policy_contract.py)
 is checked before any torque is used; an unusable output raises
 ``PicoHybridPolicyRuntimeError`` before any target is written so the selector
@@ -138,6 +141,10 @@ class PicoHybridMove(Move):
         )
         self._last_action = np.zeros(ACTION_WIDTH, dtype=np.float32)
         self._crouch_table = crouch_table()
+        # The offsets in use (crouch_feedforward.LEG_JOINT_NAMES order) and
+        # those of this cycle's observation, kept by its action.
+        self._crouch_offsets = np.zeros((1, len(crouch_feedforward.LEG_JOINT_NAMES)))
+        self._crouch_next = self._crouch_offsets
         self._stop_start_time_s: float | None = None
         self._stop_start_angles: dict[str, float] = {}
 
@@ -191,9 +198,7 @@ class PicoHybridMove(Move):
             self._controller.sync_write_kp(ALL_MOTOR_IDS, [KP_RL] * len(ALL_MOTOR_IDS))
         for name in OBSERVATION_DOF_ORDER:
             command.target_angles[name] = self._physical_target(measured_positions[name])
-        self._last_action.fill(0.0)
-        self._stop_start_time_s = None
-        self._stop_start_angles = {}
+        self._reset_recurrence()
         self.state = MoveState.ACTIVE
 
     def _foot_targets(self, obs: Observation) -> list[float]:
@@ -248,14 +253,18 @@ class PicoHybridMove(Move):
             self._targets.arm_upper,
         )
 
-    def _crouch_offsets(self, foot_values: Sequence[float]) -> dict[str, float]:
-        """Leg offsets of the crouch pose of the observed foot targets (zero
-        unless both feet have one)."""
+    def _next_crouch_offsets(self, foot_values: Sequence[float]) -> dict[str, float]:
+        """The leg offsets of this cycle: the offsets in use one step towards
+        the crouch pose of the observed foot targets (zero unless both feet
+        have one inside the two-foot support).  ``step`` keeps them."""
 
-        offsets = crouch_feedforward.leg_offsets(
+        target = crouch_feedforward.leg_offsets(
             self._crouch_table, np.asarray([foot_values], dtype=np.float64)
-        )[0]
-        return dict(zip(crouch_feedforward.LEG_JOINT_NAMES, (float(v) for v in offsets), strict=True))
+        )
+        self._crouch_next = crouch_feedforward.follow(self._crouch_offsets, target)
+        return dict(
+            zip(crouch_feedforward.LEG_JOINT_NAMES, (float(v) for v in self._crouch_next[0]), strict=True)
+        )
 
     def build_observation(self, obs: Observation) -> list[float]:
         try:
@@ -273,7 +282,7 @@ class PicoHybridMove(Move):
             )
 
         foot_values = self._foot_targets(obs)
-        crouch = self._crouch_offsets(foot_values)
+        crouch = self._next_crouch_offsets(foot_values)
         values: list[float] = gyro_policy + gravity
         for name, default in zip(
             self._contract.observation_joint_names, self._observation_defaults
@@ -339,7 +348,10 @@ class PicoHybridMove(Move):
         # observation, and the absolute target is clipped like every other
         # policy: target = clip(HOME + raw * 1.0, -pi, +pi), with the legs'
         # HOME moved by the crouch offsets the observation used.
-        crouch = self._crouch_offsets(observation[FOOT_TARGET_COLUMNS])
+        crouch_next = self._crouch_next
+        crouch = dict(
+            zip(crouch_feedforward.LEG_JOINT_NAMES, (float(v) for v in crouch_next[0]), strict=True)
+        )
         with np.errstate(over="ignore", invalid="ignore"):
             raw_action = action[0].astype(np.float32)
         if not np.isfinite(raw_action).all():
@@ -374,6 +386,7 @@ class PicoHybridMove(Move):
                 float(NEUTRAL_POSE[name]) + value
             )
         self._last_action = raw_action.copy()
+        self._crouch_offsets = crouch_next
 
     def on_stop(self, obs: Observation, command: MotorCommand) -> None:
         if "getup" in obs.user_input.active_moves:
@@ -403,14 +416,17 @@ class PicoHybridMove(Move):
                 )
             self._finish_stop()
 
-    def _finish_stop(self) -> None:
+    def _reset_recurrence(self) -> None:
         self._last_action.fill(0.0)
+        self._crouch_offsets = np.zeros_like(self._crouch_offsets)
+        self._crouch_next = self._crouch_offsets
         self._stop_start_time_s = None
         self._stop_start_angles = {}
+
+    def _finish_stop(self) -> None:
+        self._reset_recurrence()
         self.state = MoveState.INACTIVE
 
     def on_safety_resume(self, obs: Observation) -> None:
         _ = obs
-        self._last_action.fill(0.0)
-        self._stop_start_time_s = None
-        self._stop_start_angles = {}
+        self._reset_recurrence()

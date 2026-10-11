@@ -23,7 +23,7 @@
   実機は受け付けたうえで、起動時のログと `tools/validate_policies.py` の出力（JSON の `gate_status`・`tracking_waiver` と、標準エラーの WARNING 行）に、免除した項目と測定値を出す。
   免除できるのは動きの項目（`policy_contract.PICO_WAIVABLE_TRACKING_CHECKS`: 押さないときの転倒、足の上げ、足の位置のずれ、支える足、押されたときの転倒、止まれの足踏み、腕を動かしての歩行）だけ。
   安全の項目（`finite`、`actual_soft_limits`、`raw_action_recurrence`、`forced_hmd_motion`、`arm_observation`）を免除したもの、記録が壊れているもの、walk・getup の免除は拒否する。
-- PICO だけ: 凍結した歩行器のチェックポイント（`pico_walk_checkpoint_sha256`）、足の目標の座標（HOME の体幹の傾きから決まる）と範囲、腕の目標（`pico_arm_target_json`: 関節の箱と速さ 4 rad/s が `pico_arm_contract` と同じ）、生の行動の上限（`pico_raw_action_guard_json`）、しゃがみの脚の角（`pico_crouch_feedforward_json`: 名前 `microban_pico_crouch_feedforward_v1`、12 脚関節の並び、確かめの足の目標でこの実機の `crouch_feedforward` が記録の角を 1e-6 rad 以内で再現すること）、段の時刻（`critic_warmup / arm_start / foot_start / foot_tighten / total`。保存点が最後の段のものであること）、全部の追加列が学習されたこと。
+- PICO だけ: 凍結した歩行器のチェックポイント（`pico_walk_checkpoint_sha256`）、足の目標の座標（HOME の体幹の傾きから決まる）と範囲、腕の目標（`pico_arm_target_json`: 関節の箱と速さ 4 rad/s が `pico_arm_contract` と同じ）、生の行動の上限（`pico_raw_action_guard_json`）、しゃがみの脚の角（`pico_crouch_feedforward_json`: 名前 `microban_pico_crouch_feedforward_v2`、12 脚関節の並び、方策の周期 0.02 s と Δq の 1 周期の上限 0.2 rad がこの実機の `crouch_feedforward` と同じこと、確かめの足の目標でこの実機の `crouch_feedforward` が記録の角を 1e-6 rad 以内で再現すること）、段の時刻（`critic_warmup / arm_start / foot_start / foot_tighten / total`。保存点が最後の段のものであること）、全部の追加列が学習されたこと。
 
 実機側のソースのハッシュは使わない。互換性は契約の版と次の起動時の自己テストで確かめる。
 
@@ -131,6 +131,6 @@ sha256sum src/agents/walk.onnx src/agents/getup.onnx
 - 腕の目標は、1 周期前に `pico_arms` が腕の 6 サーボに書いた目標角から HOME を引いた値（左 pitch, roll, elbow、右 pitch, roll, elbow。`PicoArmTargetHold` で受け渡す）。右トリガーを離していれば HOME に戻り 0 になる。
 - 出力の 18 個はそのまま生の行動として前回の行動の観測に戻すが、サーボに使うのは脚の 12 個だけで、上の目標の式で目標にする。腕の 6 サーボには観測に使った腕の目標を書き、`pico_arms` が動いていれば同じ周期で上書きする。学習でも腕は外から同じ箱と速さで動かす。どれかが非有限、float32 で溢れる、または上限 `pico_raw_action_guard_json` を超えたら、目標を 1 つも書かずに例外を出し、selector が同じ周期で最後の体の目標を保持する（トリガーを離すまで保持を続ける）。
 - 足の目標は学習の範囲で切り詰める。支持足の床の帯（z ≤ 2.5 mm）はちょうど 0 であること。両足を同時に上げる目標は学習の範囲の 0.8 倍以内で、速度指令が 0 のときだけ受け付ける。
-- 両足の目標がともに床の帯より上のとき（操作者がしゃがんだとき）、脚はそのしゃがみの姿勢を基準に動く。`src/crouch_feedforward.py`（学習側と同じファイル）が、(dx, dy の平均, 低い方の dz) だけ胴を下げて両足の裏を HOME の位置に残す脚の角 Δq を求め、脚の目標を `clip(HOME + Δq + raw, -π, +π)`、観測の脚の関節角を 実測 − HOME − Δq にする。前回の行動は生の出力のまま。片足の目標・目標なし・歩行では Δq = 0。
+- 両足の目標がともに床の帯より上のとき（操作者がしゃがんだとき）、脚はそのしゃがみの姿勢を基準に動く。`src/crouch_feedforward.py`（学習側と同じファイル）が、(dx, dy の平均, 低い方の dz) だけ胴を下げて両足の裏を HOME の位置に残す脚の角を求める。片足の目標・目標なし・歩行・両足の範囲（xy ±10 mm、dz 20 mm 以下）の外では、この角は 0。使う Δq は、この角へ 1 周期 0.2 rad（12 関節のノルム、10 rad/s）までの速さで近づく状態で、PICO の動作の始めと終わりに 0 にする。両足の目標が一度に消えたとき（左トリガーを離す、スティックを倒す、範囲を越える）も、脚の目標は跳ばずにこの速さで HOME に戻る。脚の目標を `clip(HOME + Δq + raw, -π, +π)`、観測の脚の関節角を 実測 − HOME − Δq にする（同じ周期の同じ Δq）。前回の行動は生の出力のまま。
 - 左トリガーを押している間は `walk` が `active_moves` に入り、PICO のモデルにスティックの速度と体の目標を渡す。R3 で有効にしたまま左トリガーを離すと、速度 0・体の目標 0 で立位を保つ。右トリガーは `hmd_head`（首の追従）と `pico_arms`（腕の直接の追従）を有効にする。
 - `MICROBAN_INPUT=network` の起動は全関節トルク OFF から始まる。右手 B はいつでも全関節のトルクを OFF にし、A は現在角を目標に書いてからトルクを ON にして 0.5 rad/s 以下で `NEUTRAL_POSE` へ戻す。R3 は A の後だけ、PICO のモデルと初期姿勢の復帰を切り替える。

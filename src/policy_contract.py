@@ -720,6 +720,8 @@ def _check_pico_crouch(value: Any) -> None:
     if not isinstance(value, dict) or set(value) != {
         "contract",
         "joint_names",
+        "policy_dt_s",
+        "max_step_rad",
         "foot_targets",
         "leg_offsets_rad",
     }:
@@ -728,6 +730,12 @@ def _check_pico_crouch(value: Any) -> None:
         raise PolicyContractError(f"{key} contract is not {crouch_feedforward.CONTRACT!r}")
     if value["joint_names"] != list(crouch_feedforward.LEG_JOINT_NAMES):
         raise PolicyContractError(f"{key} joint_names drifted")
+    for field, expected in (
+        ("policy_dt_s", crouch_feedforward.POLICY_DT_S),
+        ("max_step_rad", crouch_feedforward.MAX_STEP_RAD),
+    ):
+        if isinstance(value[field], bool) or value[field] != expected:
+            raise PolicyContractError(f"{key}.{field} must be {expected!r}")
     targets, recorded = value["foot_targets"], value["leg_offsets_rad"]
     if not isinstance(targets, list) or not isinstance(recorded, list) or not targets or len(targets) != len(recorded):
         raise PolicyContractError(f"{key} must record one offset row per probe target")

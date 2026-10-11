@@ -98,30 +98,55 @@ class TrainingNumbersTest(unittest.TestCase):
 
 class PicoCrouchTest(unittest.TestCase):
     def test_the_legs_work_around_the_crouch_pose(self):
+        """Each cycle observes and acts on one offset, which follows the crouch
+        pose at most MAX_STEP_RAD per cycle, and returns to zero the same way
+        when the teleop drops both foot targets at once."""
+
         raw = np.linspace(-0.2, 0.2, 18, dtype=np.float32).reshape(1, 18)
         move = PicoHybridMove(session=pico_session(raw), gyro_transform=lambda value: value)
         obs = observation()
         obs.user_input.velocity = {"vx": 0.0, "vy": 0.0, "vtheta": 0.0}
-        obs.user_input.foot_target = {"left": (0.004, 0.004, 0.012), "right": (0.004, 0.004, 0.012)}
-        crouch = dict(zip(cf.LEG_JOINT_NAMES, cf.leg_offsets(
-            crouch_table(), np.array([[0.004, 0.004, 0.012] * 2]))[0], strict=True))
-        self.assertGreater(crouch["left_knee"], 0.4)
-        for name in crouch:
-            obs.robot_state.motor_positions[name] = NEUTRAL_POSE[name] + crouch[name] + 0.01
-        values = move.build_observation(obs)
+        foot = {"left": (0.004, 0.004, 0.012), "right": (0.004, 0.004, 0.012)}
+        target = cf.leg_offsets(crouch_table(), np.array([[0.004, 0.004, 0.012] * 2]))[0]
+        self.assertGreater(target[cf.LEG_JOINT_NAMES.index("left_knee")], 0.4)
         joints = move.contract.observation_joint_names
-        for index, name in enumerate(joints):
-            expected = 0.01 if name in crouch else 0.0
-            self.assertAlmostEqual(values[6 + index], expected, places=12, msg=name)
         command = MotorCommand()
         move.on_start(obs, command)
-        move.step(obs, command)
-        for index, name in enumerate(OBSERVATION_DOF_ORDER):
-            if name in crouch:
-                expected = NEUTRAL_POSE[name] + crouch[name] + float(raw[0, index])
-                self.assertAlmostEqual(command.target_angles[name], expected, places=12, msg=name)
+        previous = np.zeros(12)
+        used = []
+        for cycle in range(20):
+            obs.user_input.foot_target = foot if cycle < 10 else None
+            measured = {name: NEUTRAL_POSE[name] + previous[k] + 0.01 for k, name in enumerate(cf.LEG_JOINT_NAMES)}
+            obs.robot_state.motor_positions.update(measured)
+            values = move.build_observation(obs)
+            move.step(obs, command)
+            offset = {
+                name: command.target_angles[name] - NEUTRAL_POSE[name] - float(raw[0, OBSERVATION_DOF_ORDER.index(name)])
+                for name in cf.LEG_JOINT_NAMES
+            }
+            current = np.array([offset[name] for name in cf.LEG_JOINT_NAMES])
+            # The observation of this cycle is relative to the offset its action added.
+            for index, name in enumerate(joints):
+                if name in offset:
+                    self.assertAlmostEqual(values[6 + index], measured[name] - NEUTRAL_POSE[name] - offset[name], places=12)
+            self.assertLessEqual(np.linalg.norm(current - previous), cf.MAX_STEP_RAD + 1e-9)
+            used.append(current)
+            previous = current
+        np.testing.assert_allclose(used[9], target, atol=1e-12)
+        np.testing.assert_allclose(used[-1], np.zeros(12), atol=1e-12)
+        self.assertGreater(np.linalg.norm(used[10]), 0.5)  # not dropped in one cycle
         # The previous action is the raw output.
         np.testing.assert_array_equal(np.asarray(move.build_observation(obs)[48:66], dtype=np.float32), raw[0])
+        # A new start begins from HOME again.
+        obs.user_input.foot_target = foot
+        move.step(obs, command)
+        move.on_start(obs, command)
+        move.step(obs, command)
+        first = np.array([
+            command.target_angles[name] - NEUTRAL_POSE[name] - float(raw[0, OBSERVATION_DOF_ORDER.index(name)])
+            for name in cf.LEG_JOINT_NAMES
+        ])
+        np.testing.assert_allclose(first, cf.follow(np.zeros((1, 12)), target[None])[0], atol=1e-12)
 
     def test_one_foot_up_keeps_home(self):
         move = PicoHybridMove(session=pico_session(), gyro_transform=lambda value: value)
