@@ -22,8 +22,21 @@ GATE_SHA = "c3" * 32
 TRAINING_COMMIT = "d5" * 20
 
 
-def contract(*, gate_sha=GATE_SHA, checkpoint_sha=PICO_SHA):
+WAIVER = {
+    "approval": "User approved installing this model with these tracking checks failing",
+    "checks": {
+        "standing_still": [{
+            "scenario": "neutral/arms_raised", "quantity": "touchdowns_per_s",
+            "measured": 0.95, "limit": 0.5, "rule": "at_most",
+        }],
+    },
+}
+
+
+def contract(*, gate_sha=GATE_SHA, checkpoint_sha=PICO_SHA, tracking_waiver=None):
     return SimpleNamespace(
+        kind="pico",
+        tracking_waiver=tracking_waiver,
         checkpoint_filename="model_14999.pt",
         checkpoint_iteration=14999,
         checkpoint_sha256=checkpoint_sha,
@@ -128,6 +141,51 @@ class PicoPolicyInstallerTest(unittest.TestCase):
             with self.assertRaises(installer.PolicyContractError):
                 installer._load_stage_gate(path, contract(gate_sha=gate_sha))
 
+    def test_a_waived_gate_must_carry_the_onnx_waiver(self):
+        gate = {
+            "schema_version": 3,
+            "gate": "microban_teleop_v12_stage",
+            "status": "pass_with_waiver",
+            "tracking_waiver": WAIVER,
+            "checkpoint_sha256": PICO_SHA,
+            "iteration": 14999,
+            "completed_updates": 15000,
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "gate.json"
+
+            def load(document, waiver):
+                path.write_text(json.dumps(document), encoding="utf-8")
+                gate_sha = hashlib.sha256(path.read_bytes()).hexdigest()
+                return installer._load_stage_gate(
+                    path, contract(gate_sha=gate_sha, tracking_waiver=waiver)
+                )
+
+            self.assertEqual(load(gate, WAIVER), gate)
+            other = json.loads(json.dumps(WAIVER))
+            other["checks"]["standing_still"][0]["measured"] = 0.8
+            for document, waiver in (
+                (gate, None),
+                (gate, other),
+                ({**gate, "status": "pass"}, WAIVER),
+                ({key: value for key, value in gate.items() if key != "tracking_waiver"}, WAIVER),
+                ({**gate, "status": "pass"}, None),
+            ):
+                with self.subTest(document=document, waiver=waiver):
+                    with self.assertRaises(installer.PolicyContractError):
+                        load(document, waiver)
+
+        after = installer._updated_manifest(
+            self.manifest(),
+            pico_sha256="6" * 64,
+            contract=contract(tracking_waiver=WAIVER),
+            pico_provenance={"scope": "pico_only"},
+        )
+        self.assertEqual(after["judgments"]["pico"]["failures"], ["standing_still"])
+        self.assertFalse(after["judgments"]["pico"]["passed"])
+        self.assertTrue(after["judgments"]["pico"]["waived_by_user"])
+        self.assertEqual(after["judgments"]["pico"]["tracking_waiver"], WAIVER)
+
     def test_stage_gate_hash_and_json_use_one_byte_snapshot(self):
         gate = {
             "schema_version": 3,
@@ -227,7 +285,7 @@ class PicoPolicyInstallerTest(unittest.TestCase):
                 repository=repository,
                 branch="tracking-v13c",
                 commit=commit,
-                gate={"checkpoint": "${MJLAB_REPO}/logs/run/model_14999.pt"},
+                gate={"checkpoint": "repo://logs/run/model_14999.pt"},
                 contract=contract(checkpoint_sha=checkpoint_sha),
                 pico_sha256="6" * 64,
                 onnx_provenance={
@@ -248,7 +306,7 @@ class PicoPolicyInstallerTest(unittest.TestCase):
                     repository=repository,
                     branch="tracking-v13c",
                     commit=commit,
-                    gate={"checkpoint": "${MJLAB_REPO}/logs/run/model_14999.pt"},
+                    gate={"checkpoint": "repo://logs/run/model_14999.pt"},
                     contract=contract(checkpoint_sha=checkpoint_sha),
                     pico_sha256="6" * 64,
                     onnx_provenance={

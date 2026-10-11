@@ -203,6 +203,73 @@ class ContractMetadataTest(unittest.TestCase):
             self.assertTrue(parse("getup", metadata).dry_run)
 
 
+WAIVER = {
+    "approval": "User approved installing this model with these tracking checks failing",
+    "checks": {
+        "foot_error": [{
+            "scenario": "left_up20", "quantity": "relative_error_rms_m",
+            "measured": 0.01, "limit": 0.008, "rule": "at_most",
+        }],
+        "foot_lift": [{
+            "scenario": "both_front_left", "quantity": "trunk_drop_median_m",
+            "measured": -0.0005, "limit": 0.0112, "rule": "at_least",
+        }],
+    },
+}
+
+
+def waived_metadata(kind="pico", waiver=WAIVER, status=pc.GATE_STATUS_WAIVED):
+    metadata = contract_metadata(kind)
+    metadata["gate_status"] = status
+    if waiver is not None:
+        metadata[pc.TRACKING_WAIVER_METADATA_KEY] = json.dumps(waiver)
+    return metadata
+
+
+class TrackingWaiverTest(unittest.TestCase):
+    def test_a_waived_pico_policy_is_accepted_and_shown(self):
+        self.assertIsNone(parse("pico").tracking_waiver)
+        self.assertEqual(pc.tracking_waiver_lines(parse("pico")), [])
+        contract = parse("pico", waived_metadata())
+        self.assertEqual(contract.tracking_waiver, WAIVER)
+        lines = pc.tracking_waiver_lines(contract)
+        self.assertIn("foot_error, foot_lift", lines[0])
+        self.assertIn(WAIVER["approval"], lines[1])
+        self.assertTrue(any("left_up20 relative_error_rms_m=0.01 (limit <= 0.008)" in line for line in lines))
+        self.assertTrue(any("trunk_drop_median_m=-0.0005 (limit >= 0.0112)" in line for line in lines))
+
+    def test_safety_checks_and_broken_records_are_refused(self):
+        entry = WAIVER["checks"]["foot_error"][0]
+        cases = {
+            "walk": waived_metadata("walk"),
+            "getup": waived_metadata("getup"),
+            "missing_record": waived_metadata(waiver=None),
+            "pass_with_record": waived_metadata(status="pass"),
+            "other_status": waived_metadata(status="waived"),
+            "not_json": {**waived_metadata(), pc.TRACKING_WAIVER_METADATA_KEY: "{"},
+        }
+        broken = {
+            "finite": {**WAIVER, "checks": {"finite": [entry]}},
+            "soft_limits": {**WAIVER, "checks": {**WAIVER["checks"], "actual_soft_limits": [entry]}},
+            "arm_observation": {**WAIVER, "checks": {"arm_observation": [entry]}},
+            "unknown": {**WAIVER, "checks": {"hand_error": [entry]}},
+            "no_checks": {**WAIVER, "checks": {}},
+            "no_measurement": {**WAIVER, "checks": {"foot_error": []}},
+            "no_approval": {**WAIVER, "approval": " "},
+            "extra_key": {**WAIVER, "by": "someone"},
+            "within_limit": {**WAIVER, "checks": {"foot_error": [{**entry, "measured": 0.007}]}},
+            "nan": {**WAIVER, "checks": {"foot_error": [{**entry, "measured": None}]}},
+            "rule": {**WAIVER, "checks": {"foot_error": [{**entry, "rule": "near"}]}},
+        }
+        cases.update({name: waived_metadata(waiver=record) for name, record in broken.items()})
+        for case, metadata in cases.items():
+            kind = case if case in ("walk", "getup") else "pico"
+            with self.subTest(case=case), self.assertRaises(pc.PolicyContractError):
+                parse(kind, metadata)
+        with self.assertRaisesRegex(pc.PolicyContractError, "safety checks cannot be waived"):
+            parse("pico", waived_metadata(waiver=broken["soft_limits"]))
+
+
 class SelfTestTest(unittest.TestCase):
     def rows(self, kind, mutate, base=None):
         rows = self_test_rows(kind) if base is None else [list(base) for _ in range(8)]

@@ -78,6 +78,34 @@ POLICY_FILES: Mapping[str, str] = {
 DRY_RUN_METADATA_KEY = "dry_run_not_deployable"
 DRY_RUN_POLICY_ALLOW_ENV = "MICROBAN_ALLOW_DRYRUN_POLICY"
 
+# A PICO policy whose behaviour checks failed may be installed when the user
+# approved it.  Its gate status is GATE_STATUS_WAIVED and
+# TRACKING_WAIVER_METADATA_KEY records the approval and every failing
+# measurement of each waived check; the robot shows them at start and in
+# tools/validate_policies.py.  Only behaviour checks can be waived: a policy
+# that waives a safety check, or whose record is malformed, is refused.
+GATE_STATUS_PASS = "pass"
+GATE_STATUS_WAIVED = "pass_with_waiver"
+TRACKING_WAIVER_METADATA_KEY = "gate_tracking_waiver_json"
+PICO_WAIVABLE_TRACKING_CHECKS = (
+    "no_falls_without_push",
+    "foot_lift",
+    "foot_error",
+    "support_foot_still",
+    "push_falls",
+    "standing_still",
+    "walking_with_arms",
+)
+PICO_UNWAIVABLE_TRACKING_CHECKS = (
+    "finite",
+    "actual_soft_limits",
+    "raw_action_recurrence",
+    "forced_hmd_motion",
+    "arm_observation",
+)
+TRACKING_WAIVER_RULES = ("at_most", "at_least")
+TRACKING_WAIVER_APPROVAL_MAX_CHARS = 2000
+
 ACTION_WIDTH = len(OBSERVATION_DOF_ORDER)
 HEAD_JOINTS = ("head", "neck_roll", "neck_pitch")
 OBSERVATION_SCHEMAS: Mapping[str, tuple[tuple[str, int], ...]] = {
@@ -240,6 +268,8 @@ class PolicyContract:
     self_test_observations: np.ndarray  # (N, 1, input_width) float32
     self_test_actions: np.ndarray  # (N, 18) float64
     pico: PicoTargets | None = None
+    # The user-approved waiver of failing PICO behaviour checks, if any.
+    tracking_waiver: Mapping[str, Any] | None = None
 
 
 @dataclass(frozen=True)
@@ -413,7 +443,7 @@ def parse_policy(kind: str, session: Any) -> PolicyContract:
     if match is None or metadata.get("checkpoint_iteration") != match.group(1):
         raise PolicyContractError("checkpoint_filename/checkpoint_iteration are not model_N.pt / N")
     checkpoint_sha256 = _sha256_value(metadata, "checkpoint_sha256")
-    _exact(metadata, "gate_status", "pass")
+    tracking_waiver = _parse_gate_status(kind, metadata)
     gate_report_sha256 = _sha256_value(metadata, "gate_report_sha256")
 
     observations, actions = _parse_self_test(kind, metadata, width, observation_joints)
@@ -432,7 +462,95 @@ def parse_policy(kind: str, session: Any) -> PolicyContract:
         self_test_observations=observations,
         self_test_actions=actions,
         pico=pico,
+        tracking_waiver=tracking_waiver,
     )
+
+
+def _parse_gate_status(kind: str, metadata: Mapping[str, str]) -> dict[str, Any] | None:
+    """The gate passed, or (PICO only) passed under a user-approved waiver."""
+
+    status = metadata.get("gate_status")
+    if status == GATE_STATUS_PASS:
+        if TRACKING_WAIVER_METADATA_KEY in metadata:
+            raise PolicyContractError(
+                f"a passed gate must not carry {TRACKING_WAIVER_METADATA_KEY}"
+            )
+        return None
+    if status == GATE_STATUS_WAIVED and kind == "pico":
+        return check_tracking_waiver(_json(metadata, TRACKING_WAIVER_METADATA_KEY))
+    raise PolicyContractError(f"metadata gate_status={status!r}, expected 'pass'")
+
+
+def check_tracking_waiver(value: Any) -> dict[str, Any]:
+    """A waiver record: the approval and the failing measurements of behaviour checks."""
+
+    if not isinstance(value, dict) or set(value) != {"approval", "checks"}:
+        raise PolicyContractError("tracking waiver must hold exactly approval and checks")
+    approval = value["approval"]
+    if (
+        not isinstance(approval, str)
+        or not approval.strip()
+        or approval != approval.strip()
+        or len(approval) > TRACKING_WAIVER_APPROVAL_MAX_CHARS
+    ):
+        raise PolicyContractError("tracking waiver approval must be a non-empty trimmed text")
+    checks = value["checks"]
+    if not isinstance(checks, dict) or not checks:
+        raise PolicyContractError("tracking waiver must name at least one check")
+    unwaivable = sorted(set(checks) & set(PICO_UNWAIVABLE_TRACKING_CHECKS))
+    if unwaivable:
+        raise PolicyContractError(f"safety checks cannot be waived: {', '.join(unwaivable)}")
+    unknown = sorted(set(checks) - set(PICO_WAIVABLE_TRACKING_CHECKS))
+    if unknown:
+        raise PolicyContractError(f"tracking waiver names unknown checks: {', '.join(unknown)}")
+    for name, entries in checks.items():
+        if not isinstance(entries, list) or not entries:
+            raise PolicyContractError(f"tracking waiver {name} records no failing measurement")
+        for entry in entries:
+            if not isinstance(entry, dict) or set(entry) != {
+                "scenario", "quantity", "measured", "limit", "rule"
+            }:
+                raise PolicyContractError(f"tracking waiver {name} measurement is malformed")
+            numbers = (entry["measured"], entry["limit"])
+            if (
+                not isinstance(entry["scenario"], str)
+                or not entry["scenario"]
+                or not isinstance(entry["quantity"], str)
+                or not entry["quantity"]
+                or entry["rule"] not in TRACKING_WAIVER_RULES
+                or any(
+                    isinstance(x, bool) or not isinstance(x, (int, float)) or not math.isfinite(x)
+                    for x in numbers
+                )
+            ):
+                raise PolicyContractError(f"tracking waiver {name} measurement is malformed")
+            measured, limit = (float(x) for x in numbers)
+            if (measured <= limit) if entry["rule"] == "at_most" else (measured >= limit):
+                raise PolicyContractError(
+                    f"tracking waiver {name} records a measurement within its limit"
+                )
+    return value
+
+
+def tracking_waiver_lines(contract: PolicyContract) -> list[str]:
+    """Human-readable lines of a policy's waiver (empty without one)."""
+
+    waiver = contract.tracking_waiver
+    if waiver is None:
+        return []
+    lines = [
+        f"WARNING: {contract.kind} policy {contract.checkpoint_filename} was installed with "
+        f"failing tracking checks waived: {', '.join(sorted(waiver['checks']))}",
+        f"  approval: {waiver['approval']}",
+    ]
+    for name in sorted(waiver["checks"]):
+        for entry in waiver["checks"][name]:
+            sign = "<=" if entry["rule"] == "at_most" else ">="
+            lines.append(
+                f"  {name}: {entry['scenario']} {entry['quantity']}="
+                f"{float(entry['measured']):.4g} (limit {sign} {float(entry['limit']):.4g})"
+            )
+    return lines
 
 
 def _term_offsets(kind: str) -> dict[str, tuple[int, int]]:

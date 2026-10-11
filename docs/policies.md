@@ -19,6 +19,10 @@
 - 目標の式: どのモデルも `target = clip(HOME + raw * 1.0, -π, +π)`（18 関節、ソフトウェアのクリップなし、±π はサーボの 1 回転の範囲）。前回の行動の観測は生の出力。PICO だけは腕の 6 関節にこの式を使わない（下の「PICO の実行時の動き」）。
 - 観測の並び: `observation_schema_json`（walk 63、getup 60、pico 81）と `observation_joint_names`。
 - 合格: `gate_status=pass` と判定レポートの sha256。チェックポイントの名前と sha256。
+- 免除つきの合格（PICO だけ）: ユーザーが承認して、PICO の判定の一部に落ちたまま入れたモデルは、`gate_status=pass_with_waiver` と `gate_tracking_waiver_json`（承認の文と、免除した項目ごとの落ちた測定値・場面・合格の線）を持つ。
+  実機は受け付けたうえで、起動時のログと `tools/validate_policies.py` の出力（JSON の `gate_status`・`tracking_waiver` と、標準エラーの WARNING 行）に、免除した項目と測定値を出す。
+  免除できるのは動きの項目（`policy_contract.PICO_WAIVABLE_TRACKING_CHECKS`: 押さないときの転倒、足の上げ、足の位置のずれ、支える足、押されたときの転倒、止まれの足踏み、腕を動かしての歩行）だけ。
+  安全の項目（`finite`、`actual_soft_limits`、`raw_action_recurrence`、`forced_hmd_motion`、`arm_observation`）を免除したもの、記録が壊れているもの、walk・getup の免除は拒否する。
 - PICO だけ: 凍結した歩行器のチェックポイント（`pico_walk_checkpoint_sha256`）、足の目標の座標（HOME の体幹の傾きから決まる）と範囲、腕の目標（`pico_arm_target_json`: 関節の箱と速さ 4 rad/s が `pico_arm_contract` と同じ）、生の行動の上限（`pico_raw_action_guard_json`）、段の時刻（`critic_warmup / arm_start / foot_start / foot_tighten / total`。保存点が最後の段のものであること）、全部の追加列が学習されたこと。
 
 実機側のソースのハッシュは使わない。互換性は契約の版と次の起動時の自己テストで確かめる。

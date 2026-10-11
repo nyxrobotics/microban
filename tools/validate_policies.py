@@ -28,6 +28,7 @@ from policy_contract import (
     PolicySelfTestError,
     load_installed_policy,
     load_manifest,
+    tracking_waiver_lines,
 )
 
 
@@ -58,7 +59,11 @@ def validate_policies(agents_dir: Path = AGENTS_DIR) -> dict[str, object]:
             "gate_report_sha256": contract.gate_report_sha256,
             "input_width": contract.input_width,
             "self_test_rows": loaded.self_test_rows,
+            "gate_status": "pass" if contract.tracking_waiver is None else "pass_with_waiver",
         }
+        if contract.tracking_waiver is not None:
+            report["policies"][kind]["tracking_waiver"] = contract.tracking_waiver
+            report.setdefault("warnings", []).extend(tracking_waiver_lines(contract))
     return report
 
 
@@ -72,6 +77,8 @@ def main() -> int:
         print(json.dumps({"status": "fail", "error": f"{type(exc).__name__}: {exc}"}, indent=2))
         return 1
     print(json.dumps(report, indent=2))
+    for line in report.get("warnings", []):
+        print(line, file=sys.stderr)
     return 0
 
 

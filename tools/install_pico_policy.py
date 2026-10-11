@@ -50,12 +50,15 @@ from policy_contract import (
     open_session,
     parse_policy,
     run_self_test,
+    tracking_waiver_lines,
 )
 
 
 _GIT_COMMIT_RE = re.compile(r"[0-9a-f]{40}\Z")
 _SHA256_RE = re.compile(r"[0-9a-f]{64}\Z")
-_REPO_PATH_PREFIX = "${MJLAB_REPO}/"
+# The training side writes in-repository paths as repo://<relative path>
+# (mjlab_microban teleop_v12_bootstrap.portable_bootstrap_artifact_path).
+_REPO_PATH_PREFIX = "repo://"
 _TRANSACTION_SCHEMA_VERSION = 1
 _TRANSACTION_FILE = ".pico-policy-install.json"
 _PICO_BACKUP_FILE = ".pico-policy-install.pico.bak"
@@ -214,15 +217,19 @@ def _load_stage_gate(path: Path, contract: PolicyContract) -> dict[str, Any]:
         )
     gate = _strict_json_object(gate_data, f"PICO stage gate {path}")
     assert contract.pico is not None
+    waiver = contract.tracking_waiver
     expected = {
         "schema_version": 3,
         "gate": "microban_teleop_v12_stage",
-        "status": "pass",
+        "status": "pass" if waiver is None else "pass_with_waiver",
+        "tracking_waiver": waiver,
         "checkpoint_sha256": contract.checkpoint_sha256,
         "iteration": contract.checkpoint_iteration,
         "completed_updates": contract.pico.curriculum["total"],
     }
     wrong = [key for key, value in expected.items() if gate.get(key) != value]
+    if waiver is None and "tracking_waiver" in gate:
+        wrong.append("tracking_waiver")
     if wrong or contract.checkpoint_iteration + 1 != gate.get("completed_updates"):
         raise PolicyContractError(
             "PICO stage gate does not describe the packaged final checkpoint"
@@ -378,6 +385,13 @@ def _updated_manifest(
         "checkpoint_sha256": contract.checkpoint_sha256,
         "gate_report_sha256": contract.gate_report_sha256,
     }
+    if contract.tracking_waiver is not None:
+        judgments["pico"].update(
+            failures=sorted(contract.tracking_waiver["checks"]),
+            passed=False,
+            waived_by_user=True,
+            tracking_waiver=copy.deepcopy(contract.tracking_waiver),
+        )
     policy_provenance = result.setdefault("policy_provenance", {})
     if not isinstance(policy_provenance, dict):
         raise PolicyContractError("manifest policy_provenance record is malformed")
@@ -760,6 +774,12 @@ def _install_locked(
         "stage_gate_sha256": contract.gate_report_sha256,
         "source_self_test_rows": source_self_test_rows,
         "policies": policies,
+        **(
+            {"tracking_waiver": contract.tracking_waiver,
+             "warnings": tracking_waiver_lines(contract)}
+            if contract.tracking_waiver is not None
+            else {}
+        ),
     }
 
 

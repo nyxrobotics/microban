@@ -41,6 +41,7 @@ from policy_contract import (
     ACTION_WIDTH,
     load_installed_policy,
     parse_policy,
+    tracking_waiver_lines,
 )
 
 AGENT_NAME = "pico_teleop.onnx"
@@ -110,6 +111,8 @@ class PicoHybridMove(Move):
             loaded = load_installed_policy("pico", policy_path)
             session, contract = loaded.session, loaded.contract
             self._self_test_rows = loaded.self_test_rows
+            for line in tracking_waiver_lines(contract):
+                print(line, end="\r\n", flush=True)
         else:
             # An injected session (tests, tools) is checked but not self-tested
             # here; load_installed_policy is the deployment path.
