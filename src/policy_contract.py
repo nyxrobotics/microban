@@ -30,11 +30,13 @@ import os
 import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
 import numpy as np
 
+import crouch_feedforward
 from constants import NEUTRAL_POSE, OBSERVATION_DOF_ORDER, SERVO_TARGET_RANGE_RAD
 from home_pose import (
     HOME_POSE,
@@ -56,11 +58,13 @@ POLICY_CONTRACT = "microban-policy-1"
 # failed run inside the same recipe family does not change it.  PICO's also
 # names its structure: the frozen walker plus a residual MLP added to its
 # output (the robot runs the ONNX graph as it is; the id keeps the two
-# structures apart).
+# structures apart), with the leg targets and the observed leg joints offset
+# by the crouch pose of a two-foot target, which the robot computes
+# (crouch_feedforward, pico_crouch_feedforward_json).
 RECIPES: Mapping[str, str] = {
     "walk": "microban-walk-track-velocity-1",
     "getup": "microban-getup-single-run-1",
-    "pico": "microban-pico-arm-overlay-residual-track-velocity-1",
+    "pico": "microban-pico-arm-overlay-residual-crouch-feedforward-track-velocity-1",
 }
 KINDS = tuple(RECIPES)
 
@@ -211,6 +215,8 @@ PICO_ARM_OBSERVATION_UPPER = tuple(
     for name, upper in zip(PICO_ARM_TARGET_JOINTS, PICO_ARM_TARGET_UPPER_RAD, strict=True)
 )
 SELF_TEST_ARM_TARGET_TOLERANCE_RAD = 1.0e-6
+# This robot's crouch offsets must reproduce the policy's recorded probes.
+PICO_CROUCH_TOLERANCE_RAD = 1.0e-6
 # Observation columns the PICO adapter learns on top of the frozen walker
 # (head/neck joint_pos and joint_vel, foot and arm targets); all of them must
 # have been trainable when the deployed checkpoint was saved.
@@ -637,6 +643,7 @@ def _parse_pico(metadata: Mapping[str, str], checkpoint_iteration: int) -> PicoT
             raise PolicyContractError(f"{key} differs from the trained command support")
         bounds[key] = tuple(float(value) for value in expected)
     _check_pico_arm_target(_json(metadata, "pico_arm_target_json"))
+    _check_pico_crouch(_json(metadata, "pico_crouch_feedforward_json"))
     guard = _numbers(_json(metadata, "pico_raw_action_guard_json"), "pico_raw_action_guard_json", ACTION_WIDTH)
     with np.errstate(over="ignore"):
         guard_float32 = np.asarray(guard, dtype=np.float32)
@@ -697,6 +704,40 @@ def _check_pico_arm_target(value: Any) -> None:
         raise PolicyContractError(
             f"{key}.slew_rad_s must be the overlay's {PICO_ARM_SLEW_RATE_RAD_S!r} rad/s"
         )
+
+
+@lru_cache(maxsize=1)
+def crouch_table() -> dict[str, np.ndarray]:
+    """The crouch offsets of this robot's HOME (crouch_feedforward.build_table)."""
+
+    return crouch_feedforward.build_table(NEUTRAL_POSE, HOME_TRUNK_PITCH_RAD)
+
+
+def _check_pico_crouch(value: Any) -> None:
+    """The policy was trained with the crouch offsets this robot computes."""
+
+    key = "pico_crouch_feedforward_json"
+    if not isinstance(value, dict) or set(value) != {
+        "contract",
+        "joint_names",
+        "foot_targets",
+        "leg_offsets_rad",
+    }:
+        raise PolicyContractError(f"{key} is malformed")
+    if value["contract"] != crouch_feedforward.CONTRACT:
+        raise PolicyContractError(f"{key} contract is not {crouch_feedforward.CONTRACT!r}")
+    if value["joint_names"] != list(crouch_feedforward.LEG_JOINT_NAMES):
+        raise PolicyContractError(f"{key} joint_names drifted")
+    targets, recorded = value["foot_targets"], value["leg_offsets_rad"]
+    if not isinstance(targets, list) or not isinstance(recorded, list) or not targets or len(targets) != len(recorded):
+        raise PolicyContractError(f"{key} must record one offset row per probe target")
+    targets = np.asarray([_numbers(row, f"{key}.foot_targets", 6) for row in targets])
+    recorded = np.asarray([_numbers(row, f"{key}.leg_offsets_rad", 12) for row in recorded])
+    if not np.any(recorded != 0.0):
+        raise PolicyContractError(f"{key} records no two-foot probe")
+    offsets = crouch_feedforward.leg_offsets(crouch_table(), targets)
+    if np.max(np.abs(offsets - recorded)) > PICO_CROUCH_TOLERANCE_RAD:
+        raise PolicyContractError(f"{key} differs from this robot's crouch offsets")
 
 
 # ---------------------------------------------------------------- self-test
