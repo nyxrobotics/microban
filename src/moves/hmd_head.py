@@ -66,7 +66,7 @@ class HmdHeadTrackingMove(Move):
     def __init__(self, slew_rate_rad_s: float = 2.5, wholebody_claim: WholebodyClaim | None = None) -> None:
         super().__init__()
         self._slew_rate_rad_s = slew_rate_rad_s
-        # Whole-body tracking holds the neck at HOME (its policy never saw it move).
+        # Whole-body tracking drives the neck to the reference's neck angles.
         self._claim = wholebody_claim if wholebody_claim is not None else WholebodyClaim()
         self._last_targets: dict[str, float] = {}
         self._last_time_s: float | None = None

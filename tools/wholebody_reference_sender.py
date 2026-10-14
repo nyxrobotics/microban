@@ -20,6 +20,8 @@ plays, then CALIBRATED again for a second.
 Only the PC's live retargeting replaces it.  ``--control-port`` also stands in
 for the PICO bridge in a simulation without a headset: control packets with
 A (torque) from the start and R3 (policy) after a second, triggers released.
+``--neck-demo`` puts a hand-made head motion in the neck fields (the
+recordings' necks are 0) until the PC sends the operator's head.
 """
 
 from __future__ import annotations
@@ -58,6 +60,15 @@ def _slerp(q0: np.ndarray, q1: np.ndarray, t: float) -> np.ndarray:
     w1 = np.where(safe, np.sin(t * omega) / np.where(safe, sin, 1.0), t)
     out = w0 * q0 + w1 * q1
     return out / np.linalg.norm(out, axis=-1, keepdims=True)
+
+
+def neck_demo(t: float) -> tuple[np.ndarray, np.ndarray]:
+    """A head looking around (rad, rad/s): head +-0.8, neck_roll +-0.25, neck_pitch -0.15 +- 0.35."""
+    w = 2.0 * np.pi * np.array([0.25, 0.45, 0.35])
+    phase = np.array([0.0, 2.0, 1.0])
+    amplitude = np.array([0.8, 0.25, 0.35])
+    offset = np.array([0.0, 0.0, -0.15])
+    return offset + amplitude * np.sin(w * t + phase), amplitude * w * np.cos(w * t + phase)
 
 
 class MotionReplay:
@@ -122,6 +133,7 @@ def main() -> int:
     parser.add_argument("--lead-in-s", type=float, default=3.0, help="CALIBRATED only, before ACTIVE")
     parser.add_argument("--hold-s", type=float, default=1.2, help="Standing still at the first frame after ACTIVE")
     parser.add_argument("--control-port", type=int, default=None, help="Also send A and R3 control packets here")
+    parser.add_argument("--neck-demo", action="store_true", help="A hand-made head motion in the neck fields")
     args = parser.parse_args()
     replay = MotionReplay(args.motion, args.clip)
     end_s = replay.duration_s if args.seconds is None else min(replay.duration_s, args.start_s + args.seconds)
@@ -142,6 +154,8 @@ def main() -> int:
         else:
             flags = CALIBRATED
         frame = replay.sample(min(motion_s, end_s), still=elapsed < args.lead_in_s + args.hold_s)
+        if args.neck_demo:
+            frame["joint_pos"][:3], frame["joint_vel"][:3] = neck_demo(motion_s - args.start_s)
         sock.sendto(encode_frame(seq, time.time(), frame, flags), (args.host, args.port))
         if args.control_port is not None:
             control = {"version": 1, "session_id": "wholebody-sender", "seq": seq, "active_moves": [],

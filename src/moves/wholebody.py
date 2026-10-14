@@ -42,6 +42,13 @@ The stopped activation does not start again: tracking resumes only when the
 PC starts a new one (ACTIVE off then on, or RESTART).  A trunk tilted more
 than 60 deg from vertical holds the measured pose, as the
 PICO policy does: the scheduler's fall detection then starts the get-up.
+
+Neck: its targets are the reference's neck angles (the PC fills them from the
+operator's head), clamped to the contract's ``neck_limits_rad_json`` and
+slewed at ``neck_slew_rates_rad_s_json`` from the measured neck at the start,
+as training's ReferenceNeckTarget does; the hold and the return to HOME move
+the neck with the rest of the reference.  The HMD head move yields
+(``WholebodyClaim``).
 """
 
 from __future__ import annotations
@@ -546,9 +553,13 @@ class WholebodyMove(Move):
             raise WholebodyPolicyRuntimeError("projected gravity is invalid")
         measured = self._measured_positions(obs)
         if gravity[2] > FALL_GRAVITY_Z:
-            # Falling: the scheduler's fall detection owns what follows.
+            # Falling: the scheduler's fall detection owns what follows; the
+            # neck keeps its last target.
             for name in OBSERVATION_DOF_ORDER:
                 command.target_angles[name] = measured[name]
+            if self._neck_target is not None:
+                for index, name in enumerate(HEAD_JOINTS):
+                    command.target_angles[name] = float(self._neck_target[index])
             return
         now = float(obs.robot_state.time_s)
         robot_quat = self._body_quat(obs)

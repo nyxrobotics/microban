@@ -13,7 +13,7 @@ standing policy: the PICO policy when it is installed, else the position
 hold.  A stopped or refused activation is not tracked again; the PC's next
 start (ACTIVE off then on, or RESTART) is.  While tracking, the arm overlay
 (pico_arms) and the HMD head move yield (``WholebodyClaim``): the policy
-drives the arms and the neck stays at HOME.
+drives the arms and the move drives the neck to the reference's neck angles.
 """
 
 from __future__ import annotations

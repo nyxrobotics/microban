@@ -190,9 +190,10 @@ class ContractTest(unittest.TestCase):
 ENGAGED = CALIBRATED | ACTIVE
 
 
-def frame_arrays(*, pitch=HOME_TRUNK_PITCH_RAD, height=0.17, joint_offset=0.0, yaw=0.0, vel=0.0):
+def frame_arrays(*, pitch=HOME_TRUNK_PITCH_RAD, height=0.17, joint_offset=0.0, yaw=0.0, vel=0.0, neck=(0.0, 0.0, 0.0)):
     quat = quat_mul(quat_from_yaw(yaw), [math.cos(pitch / 2), 0.0, math.sin(pitch / 2), 0.0])
     joints = np.array([NEUTRAL_POSE[n] for n in ROBOT_JOINTS]) + joint_offset
+    joints[:3] = neck  # head, neck_roll, neck_pitch (HOME is 0)
     others = np.zeros((21, 3))
     return {
         "joint_pos": joints, "joint_vel": np.full(21, vel),
@@ -342,6 +343,27 @@ class MoveTest(unittest.TestCase):
             self.assertAlmostEqual(command.target_angles[name], max(-math.pi, min(math.pi, NEUTRAL_POSE[name] + 0.25)))
         for name in ("head", "neck_roll", "neck_pitch"):
             self.assertAlmostEqual(command.target_angles[name], NEUTRAL_POSE[name])
+
+    def test_the_neck_follows_the_references_neck_and_returns_to_home_with_it(self):
+        move, ref, _ = started_move()
+        rate = 2.5 * 0.02
+        neck_target = lambda command: [command.target_angles[n] for n in ("head", "neck_roll", "neck_pitch")]
+        command, t = run(move, ref, 0.0, 0.1, neck=(0.6, 0.9, -0.3))
+        # Slewed at 2.5 rad/s from the measured neck (HOME) toward the reference.
+        np.testing.assert_allclose(neck_target(command), [5 * rate, 5 * rate, -5 * rate], atol=1e-9)
+        command, t = run(move, ref, t, 1.5, neck=(0.6, 0.9, -0.3))
+        # Clamped to the contract's limits (neck_roll +-0.4).
+        np.testing.assert_allclose(neck_target(command), [0.6, 0.4, -0.3], atol=1e-9)
+        # A falling tick keeps the neck's last target.
+        command = MotorCommand()
+        move.step(tick_obs(t + 0.01, gravity=[0.9, 0.0, -0.3]), command)
+        np.testing.assert_allclose(neck_target(command), [0.6, 0.4, -0.3], atol=1e-9)
+        # The PC stops: the neck holds, then returns to HOME with the reference.
+        command, t = run(move, ref, t, t + 0.3, flags=CALIBRATED, neck=(0.0, 0.0, 0.0))
+        self.assertEqual(move.phase, Phase.HOLD)
+        np.testing.assert_allclose(neck_target(command), [0.6, 0.4, -0.3], atol=1e-9)
+        command, t = run(move, ref, t, t + STOP_HOLD_S + RETURN_S, flags=CALIBRATED)
+        np.testing.assert_allclose(neck_target(command), [0.0, 0.0, 0.0], atol=1e-9)
 
     def test_settle_then_track(self):
         move, ref, session = started_move()
