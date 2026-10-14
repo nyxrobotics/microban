@@ -10,7 +10,7 @@ Wire format: one complete JSON snapshot per UDP packet —
       "seq": 42,
       "velocity": {"vx": 0.3, "vy": 0.0, "vtheta": 0.0},
       "active_moves": ["walk"],
-      "locomotion_policy": "walk" | "pico_teleop",
+      "locomotion_policy": "walk" | "pico_teleop" | "wholebody",
       "head_orientation": {"roll": 0.0, "pitch": -0.2, "yaw": 0.3} | null,  # gated by the right-trigger deadman below, same as arm_joint_target
       "head_yaw_front": false,
       "body_target_contract": "microban_pico_offsets_v3_feet_arm_overlay",
@@ -77,7 +77,7 @@ from pico_arm_contract import (
 )
 
 _NETWORK_MOVES = frozenset({"walk", "hmd_head", "pico_arms"})
-_LOCOMOTION_POLICIES = frozenset({"walk", "pico_teleop"})
+_LOCOMOTION_POLICIES = frozenset({"walk", "pico_teleop", "wholebody"})
 _PICO_BODY_TARGET_CONTRACT = "microban_pico_offsets_v3_feet_arm_overlay"
 _PICO_BODY_TARGET_SAFETY_MARGIN = 0.8
 _PICO_SUPPORT_FOOT_FLOOR_BAND_M = 0.0025

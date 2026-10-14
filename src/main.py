@@ -78,6 +78,23 @@ def build_input_source() -> InputSource:
     return KeyboardInputSource(move_keys=MOVE_KEYS)
 
 
+def build_wholebody_reference():
+    """The whole-body reference receiver, with network input only (docs/wholebody.md).
+
+    MICROBAN_WHOLEBODY_PORT (default 5556) is the UDP port of the PC's
+    reference stream; it accepts the same sender as the control packets.
+    """
+    if os.environ.get("MICROBAN_INPUT", "auto").lower() != "network":
+        return None
+    from input.wholebody_reference import ReferenceReceiver
+
+    return ReferenceReceiver(
+        port=int(os.environ.get("MICROBAN_WHOLEBODY_PORT", "5556")),
+        allowed_remote=os.environ.get("MICROBAN_NETWORK_ALLOWED_IP") or None,
+        allowed_remote_file=os.environ.get("MICROBAN_NETWORK_ALLOWED_IP_FILE") or None,
+    )
+
+
 def ramp_to_neutral(controller: RobotController, duration_s: float = 2.0) -> None:
     """Ramp all motors smoothly to neutral position before starting the control loop."""
     motor_ids = list(MOTOR_TO_ID.values())
@@ -107,8 +124,10 @@ def main() -> None:
 
     controller: RobotController | None = None
     scheduler: Scheduler | None = None
+    wholebody_reference = None
     try:
         input_source = build_input_source()
+        wholebody_reference = build_wholebody_reference()
         controls_motor_power = bool(
             getattr(input_source, "controls_motor_power", False)
         )
@@ -172,7 +191,9 @@ def main() -> None:
                 "head": RotateHeadMove(),
                 "squat": SquatMove(),
                 "walk": PolicySelectableWalkMove(
-                    controller=controller, arm_target_hold=arm_target_hold
+                    controller=controller,
+                    arm_target_hold=arm_target_hold,
+                    wholebody_reference=wholebody_reference,
                 ),
                 # Ordered after walk so the right-trigger direct IK path owns
                 # only the six arm joints in both standing and walking modes.
@@ -188,6 +209,9 @@ def main() -> None:
         for move in scheduler.registered_moves.values():
             move.preload()
 
+        if wholebody_reference is not None:
+            wholebody_reference.start()
+
         # Flush stale UART bytes accumulated during preload
         for _ in range(10):
             try:
@@ -198,6 +222,8 @@ def main() -> None:
         scheduler.run()
 
     finally:
+        if wholebody_reference is not None:
+            wholebody_reference.stop()
         # Scheduler.run() owns normal cleanup. Cover initialization/preload failures
         # that happen after torque was enabled but before its finally block begins.
         if controller is not None and (scheduler is None or not scheduler._cleanup_done):

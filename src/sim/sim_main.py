@@ -12,6 +12,7 @@ import argparse
 
 from input.gamepad_input import GamepadInputSource
 from input.network_input import NetworkInputSource
+from input.wholebody_reference import ReferenceReceiver
 from moves.getup import GetupMove
 from moves.hmd_head import HmdHeadTrackingMove
 from moves.pico_arms import PicoArmTargetHold, PicoArmTrackingMove
@@ -34,13 +35,17 @@ def main() -> None:
     parser.add_argument("--trunk-com-offset", type=float, nargs=3, default=[0.0, 0.0, 0.0], metavar=("X", "Y", "Z"), help="CoM offset on trunk body in meters (body frame)")
     parser.add_argument("--input", choices=("keyboard", "network", "gamepad"), default="keyboard", help="Control input (default: keyboard)")
     parser.add_argument("--network-port", type=int, default=5555, help="UDP port used with --input network")
+    parser.add_argument("--wholebody-port", type=int, default=5556, help="UDP port of the whole-body reference stream (with --input network)")
+    parser.add_argument("--headless", action="store_true", help="Run without the MuJoCo viewer")
     args = parser.parse_args()
 
     # "walk" active from launch: standing purely on the neutral-pose position hold
     # (no active move) isn't a stable equilibrium and drifts into an overcurrent trip
     # within a couple of seconds.
+    wholebody_reference = None
     if args.input == "network":
         input_source = NetworkInputSource(port=args.network_port)
+        wholebody_reference = ReferenceReceiver(port=args.wholebody_port)
         key_callback = None
         reset_source = None
     elif args.input == "gamepad":
@@ -68,6 +73,7 @@ def main() -> None:
         delay_gyro_ticks=args.delay_gyro,
         delay_quat_ticks=args.delay_quat,
         trunk_com_offset=tuple(args.trunk_com_offset),
+        headless=args.headless,
     )
     if isinstance(input_source, MuJoCoInputSource):
         input_source.set_viewer_opt(controller.viewer_opt)
@@ -81,7 +87,9 @@ def main() -> None:
             "head": RotateHeadMove(),
             "squat": SquatMove(),
             "walk": PolicySelectableWalkMove(
-                controller=controller, arm_target_hold=arm_target_hold
+                controller=controller,
+                arm_target_hold=arm_target_hold,
+                wholebody_reference=wholebody_reference,
             ),
             # Match production ordering: direct controller arms overwrite only
             # the six arm joints, and the PICO policy observes their targets.
@@ -100,7 +108,13 @@ def main() -> None:
     # trip the safety before GetupMove gets a chance to run. Use the real (already
     # current-limited by the BAM actuator model) simulated current instead.
     scheduler.observer.observe_current = True
-    scheduler.run()
+    if wholebody_reference is not None:
+        wholebody_reference.start()
+    try:
+        scheduler.run()
+    finally:
+        if wholebody_reference is not None:
+            wholebody_reference.stop()
 
 
 if __name__ == "__main__":

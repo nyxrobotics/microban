@@ -6,7 +6,9 @@
 
 Checks src/agents/manifest.json, each ONNX against contract microban-policy-1
 (src/policy_contract.py) and runs each policy's startup self-test under ONNX
-Runtime's CPU provider, as the robot does.  Prints a JSON report; exits non-zero
+Runtime's CPU provider, as the robot does.  When a whole-body policy is
+installed (src/agents/wholebody_manifest.json), it is checked the same way
+against microban-wholebody-1 (src/wholebody_contract.py).  Prints a JSON report; exits non-zero
 on the first failure.
 
     PYTHONPATH=src uv run --locked python tools/validate_policies.py [src/agents]
@@ -30,6 +32,10 @@ from policy_contract import (
     load_manifest,
     tracking_waiver_lines,
 )
+from wholebody_contract import CONTRACT as WHOLEBODY_CONTRACT
+from wholebody_contract import MANIFEST_FILE as WHOLEBODY_MANIFEST
+from wholebody_contract import POLICY_FILE as WHOLEBODY_FILE
+from wholebody_contract import load_wholebody_policy
 
 
 def validate_policies(agents_dir: Path = AGENTS_DIR) -> dict[str, object]:
@@ -64,6 +70,20 @@ def validate_policies(agents_dir: Path = AGENTS_DIR) -> dict[str, object]:
         if contract.tracking_waiver is not None:
             report["policies"][kind]["tracking_waiver"] = contract.tracking_waiver
             report.setdefault("warnings", []).extend(tracking_waiver_lines(contract))
+    if (Path(agents_dir) / WHOLEBODY_MANIFEST).exists():
+        loaded = load_wholebody_policy(Path(agents_dir) / WHOLEBODY_FILE, providers=["CPUExecutionProvider"])
+        contract = loaded.contract
+        report["wholebody"] = {
+            "contract": WHOLEBODY_CONTRACT,
+            "file": WHOLEBODY_FILE,
+            "recipe": contract.recipe,
+            "checkpoint": contract.checkpoint_filename,
+            "checkpoint_sha256": contract.checkpoint_sha256,
+            "dry_run": contract.dry_run,
+            "self_test_rows": loaded.self_test_rows,
+        }
+        if contract.dry_run:
+            report.setdefault("warnings", []).append("the whole-body policy is a DRY RUN (trial) export")
     return report
 
 

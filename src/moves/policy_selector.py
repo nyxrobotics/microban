@@ -1,7 +1,19 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright 2026 nyxrobotics
 
-"""Select PICO locomotion and hold position if its actor is unavailable."""
+"""Select PICO locomotion or whole-body tracking; hold position if no actor is available.
+
+Whole-body tracking (moves/wholebody.py) runs while the PC's reference stream
+says the operator started it (CALIBRATED and ACTIVE) and the wire asks for
+``pico_teleop`` or ``wholebody`` with the policy enabled (R3); the PICO
+triggers and joystick are not used meanwhile.  When the PC stops, the stream
+goes stale, the trunk leaves the reference's attitude or ``walk`` is asked
+for, the move holds, returns to the HOME stance and hands the robot to the
+standing policy: the PICO policy when it is installed, else the position
+hold.  A stopped or refused activation is not tracked again; the PC's next
+start (ACTIVE off then on, or RESTART) is.  While tracking, the arm overlay
+(pico_arms) yields the arms to the whole-body policy.
+"""
 
 from __future__ import annotations
 
@@ -17,9 +29,11 @@ from moves.move import MotorCommand, Move, MoveState
 from moves.pico_arms import PicoArmTargetHold
 from moves.pico_hybrid import AGENT_NAME as PICO_AGENT_NAME
 from moves.pico_hybrid import PicoHybridMove
+from moves.wholebody import WholebodyMove
 from observer import Observation
+from wholebody_contract import POLICY_FILE as WHOLEBODY_POLICY_FILE
 
-POLICY_NAMES = frozenset({"walk", "pico_teleop"})
+POLICY_NAMES = frozenset({"walk", "pico_teleop", "wholebody"})
 
 # Builds the learned move from the installed policy (tests inject their own).
 LearnedMoveFactory = Callable[[ControllerProtocol | None, Path], Move]
@@ -168,6 +182,9 @@ class PolicySelectableWalkMove(Move):
         pico_move: Move | None = None,
         learned_move_factory: LearnedMoveFactory | None = None,
         arm_target_hold: PicoArmTargetHold | None = None,
+        wholebody_reference=None,
+        wholebody_policy_path: str | Path = Path("src/agents") / WHOLEBODY_POLICY_FILE,
+        wholebody_move: Move | None = None,
     ) -> None:
         super().__init__()
         self._controller = controller
@@ -182,6 +199,14 @@ class PolicySelectableWalkMove(Move):
         }
         if pico_move is not None:
             self._children["pico_teleop"] = pico_move
+        # The whole-body move needs the reference receiver; without one the
+        # mode is unavailable (and requesting it stands on the standing policy).
+        self._wholebody_reference = wholebody_reference
+        self._wholebody_policy_path = Path(wholebody_policy_path)
+        self._injected_wholebody = wholebody_move
+        self.wholebody_unavailable_reason: str | None = None
+        self._last_learned_targets: dict[str, float] | None = None
+        self._arm_target_hold = arm_target_hold
 
         self._selected_name: str | None = None
         self._selected: Move | None = None
@@ -249,10 +274,44 @@ class PolicySelectableWalkMove(Move):
         child.preload()
         return child
 
+    def _preload_wholebody(self) -> None:
+        if self._injected_wholebody is not None:
+            self._injected_wholebody.preload()
+            self._children["wholebody"] = self._injected_wholebody
+            return
+        if self._wholebody_reference is None:
+            self.wholebody_unavailable_reason = "no whole-body reference receiver"
+            return
+        if not self._wholebody_policy_path.is_file():
+            self.wholebody_unavailable_reason = (
+                f"whole-body policy is not installed at {self._wholebody_policy_path}"
+            )
+            return
+        try:
+            child = WholebodyMove(
+                reference=self._wholebody_reference,
+                controller=self._controller,
+                policy_path=self._wholebody_policy_path,
+            )
+            child.preload()
+        except Exception as exc:  # noqa: BLE001 - optional parser/runtime boundary
+            self.wholebody_unavailable_reason = self._describe_failure("whole-body load", exc)
+            print(f"Whole-body tracking unavailable: {self.wholebody_unavailable_reason}", flush=True)
+            return
+        self._children["wholebody"] = child
+        self.wholebody_unavailable_reason = None
+        print(
+            f"Whole-body policy {child.contract.checkpoint_filename} loaded "
+            f"(self-test {child.self_test_rows} rows"
+            f"{', DRY RUN' if child.contract.dry_run else ''})",
+            flush=True,
+        )
+
     def preload(self) -> None:
         # The fixed-position hold is always available; an injected fallback
         # move (tests) is preloaded the same way.
         self._children["walk"].preload()
+        self._preload_wholebody()
 
         injected = self._children.get("pico_teleop")
         if injected is not None:
@@ -369,6 +428,7 @@ class PolicySelectableWalkMove(Move):
             "hold" if name == "walk" and isinstance(child, _HoldPositionMove) else name
         )
         self._selected = child
+        self._yield_arms(name == "wholebody")
         self.state = MoveState.ACTIVE
 
     def _remember_pico_targets(self, command: MotorCommand) -> None:
@@ -436,6 +496,10 @@ class PolicySelectableWalkMove(Move):
         if requested not in POLICY_NAMES:
             return False
         self._poll_reload()
+        if requested == "wholebody" or (requested == "pico_teleop" and self._wholebody_wanted()):
+            if self._wholebody_wanted():
+                return True
+            return self._standing_child()[1].can_balance(user_input)
         if requested == "pico_teleop" and not user_input.learned_policy_degraded:
             learned = self._children.get("pico_teleop")
             if learned is not None:
@@ -449,6 +513,11 @@ class PolicySelectableWalkMove(Move):
         self._last_pico_targets = None
         self._last_balance_only = bool(obs.user_input.balance_only)
         requested = self._requested_policy(obs)
+        if requested == "wholebody" or (requested == "pico_teleop" and self._wholebody_wanted()):
+            self._last_learned_targets = None
+            if not self._try_start_wholebody(obs, command):
+                self._start_standing(obs, command, step_now=False)
+            return
         child = self._children.get(requested)
 
         if requested == "pico_teleop" and child is None:
@@ -487,6 +556,13 @@ class PolicySelectableWalkMove(Move):
         self._last_balance_only = balance_only
 
         requested = self._requested_policy(obs)
+        if (
+            requested == "wholebody"
+            or self._selected_name == "wholebody"
+            or (requested == "pico_teleop" and self._wholebody_wanted())
+        ):
+            self._step_wholebody_mode(obs, command, requested)
+            return
         if self._selected_name == "pico_teleop" and requested != "pico_teleop":
             if obs.user_input.learned_policy_degraded:
                 # Optional tracking failed. Retain trigger/stick input and latch the
@@ -557,6 +633,90 @@ class PolicySelectableWalkMove(Move):
                 step_now=True,
             )
 
+    # ------------------------------------------------------------ whole-body mode
+    def _standing_child(self) -> tuple[str, Move]:
+        """The policy that stands the robot in whole-body mode: PICO, else the hold."""
+        pico = self._children.get("pico_teleop")
+        return ("pico_teleop", pico) if pico is not None else ("walk", self._children["walk"])
+
+    def _wholebody_start_refusal(self) -> str | None:
+        child = self._children.get("wholebody")
+        if child is None:
+            return self.wholebody_unavailable_reason or "whole-body policy unavailable"
+        return child.start_refusal()
+
+    def _wholebody_wanted(self) -> bool:
+        """The PC started an activation that may be tracked now."""
+        return self._wholebody_start_refusal() is None
+
+    def _remember_learned_targets(self, command: MotorCommand) -> None:
+        try:
+            targets = {name: float(command.target_angles[name]) for name in OBSERVATION_DOF_ORDER}
+        except (KeyError, TypeError, ValueError, OverflowError):
+            return
+        if all(math.isfinite(value) for value in targets.values()):
+            self._last_learned_targets = targets
+
+    def _start_standing(self, obs: Observation, command: MotorCommand, *, step_now: bool) -> None:
+        name, child = self._standing_child()
+        if isinstance(child, _HoldPositionMove):
+            child.seed_targets(self._last_learned_targets)
+        try:
+            self._start_child(name, child, obs, command)
+            if step_now:
+                child.step(obs, command)
+        except Exception as exc:  # noqa: BLE001 - learned child only
+            if name == "walk":
+                raise
+            self._fallback_from_exception("start", exc, obs, command, step_now=step_now)
+
+    def _try_start_wholebody(self, obs: Observation, command: MotorCommand) -> bool:
+        """Start whole-body tracking; on refusal record why and return False."""
+        refusal = self._wholebody_start_refusal()
+        if refusal is None:
+            child = self._children["wholebody"]
+            try:
+                self._start_child("wholebody", child, obs, command)
+                self._remember_learned_targets(command)
+                return True
+            except Exception as exc:  # noqa: BLE001 - learned child only
+                refusal = self._describe_failure("whole-body start", exc)
+                child.refuse(refusal)
+        self._fallback_reason = refusal
+        return False
+
+    def _step_wholebody_mode(self, obs: Observation, command: MotorCommand, requested: str) -> None:
+        if self._selected_name == "wholebody":
+            child = self._selected
+            if requested not in ("wholebody", "pico_teleop"):
+                child.request_stop(f"{requested} requested", float(obs.robot_state.time_s))
+            try:
+                child.step(obs, command)
+            except Exception as exc:  # noqa: BLE001 - learned child only
+                reason = self._describe_failure("whole-body inference", exc)
+                child.refuse(reason)
+                self._fallback_reason = reason
+                print(f"Whole-body tracking failed: {reason}; standing", flush=True)
+                self._start_standing(obs, command, step_now=True)
+                return
+            self._remember_learned_targets(command)
+            if child.handoff_ready:
+                # Back at HOME: the standing policy takes the robot.
+                self._fallback_reason = child.stop_reason
+                self._start_standing(obs, command, step_now=False)
+            return
+        if self._try_start_wholebody(obs, command):
+            return
+        if self._selected is not self._standing_child()[1]:
+            self._start_standing(obs, command, step_now=True)
+            return
+        try:
+            self._selected.step(obs, command)
+        except Exception as exc:  # noqa: BLE001 - learned child only
+            if self._selected_name == "hold":
+                raise
+            self._fallback_from_exception("inference", exc, obs, command, step_now=True)
+
     def on_stop(self, obs: Observation, command: MotorCommand) -> None:
         self._poll_reload()
         self._notice_replacement()
@@ -571,8 +731,14 @@ class PolicySelectableWalkMove(Move):
         self._selected.on_stop(obs, command)
         self._sync_stop_state()
 
+    def _yield_arms(self, yielded: bool) -> None:
+        """The whole-body policy drives the arms: the arm overlay must not."""
+        if self._arm_target_hold is not None:
+            self._arm_target_hold.yielded = yielded
+
     def _sync_stop_state(self) -> None:
         if self._selected is not None and self._selected.state == MoveState.INACTIVE:
+            self._yield_arms(False)
             self._selected = None
             self._selected_name = None
             self._fallback_latched = False

@@ -36,6 +36,8 @@ class PicoArmTargetHold:
 
     def __init__(self) -> None:
         self._targets: dict[str, float] = {}
+        # True while whole-body tracking drives the arms: the overlay yields.
+        self.yielded = False
         self.reset()
 
     def write(self, targets: Mapping[str, float]) -> None:
@@ -185,7 +187,7 @@ class PicoArmTrackingMove(Move):
         self._last_time_s = now
 
     def _handle_getup_ownership(self, obs: Observation) -> bool:
-        if "getup" in obs.user_input.active_moves:
+        if "getup" in obs.user_input.active_moves or self._hold.yielded:
             self._suspended_for_getup = True
             return True
         if self._suspended_for_getup:
@@ -199,10 +201,11 @@ class PicoArmTrackingMove(Move):
         self._write_slew_limited(obs, command, self._desired_live_target(obs))
 
     def on_stop(self, obs: Observation, command: MotorCommand) -> None:
-        if "getup" in obs.user_input.active_moves:
+        if "getup" in obs.user_input.active_moves or self._hold.yielded:
             # Get-up is registered after this overlay and owns all 18 body
-            # joints.  Do not change its commands or gains during the hand-off.
-            # Get-up ends at HOME, so the PICO policy resumes from HOME arms.
+            # joints; whole-body tracking drives the arms too.  Do not change
+            # their commands or gains during the hand-off.  Both end at HOME,
+            # so the PICO policy resumes from HOME arms.
             self._hold.reset()
             self._last_targets = {}
             self._last_time_s = None

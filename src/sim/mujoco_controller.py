@@ -64,6 +64,7 @@ class MuJoCoController:
         delay_gyro_ticks: int = 0,
         delay_quat_ticks: int = 0,
         trunk_com_offset: tuple[float, float, float] = (0.0, 0.0, 0.0),
+        headless: bool = False,
     ) -> None:
         self._stop_flag_path = Path(stop_flag_path)
         self._reset_source = reset_source
@@ -148,8 +149,10 @@ class MuJoCoController:
         self._kp = np.full(len(self._kp_names), float(KP_HARDWARE_NEUTRAL))
         self._bam.model.actuator.kp = self._kp
 
-        self._viewer = mujoco.viewer.launch_passive(
-            self._model, self._data, key_callback=key_callback
+        self._viewer = (
+            None
+            if headless
+            else mujoco.viewer.launch_passive(self._model, self._data, key_callback=key_callback)
         )
 
         # Sensor indices for IMU readout
@@ -161,7 +164,15 @@ class MuJoCoController:
 
     @property
     def viewer_opt(self) -> mujoco.MjvOption:
-        return self._viewer.opt
+        return self._viewer.opt if self._viewer is not None else mujoco.MjvOption()
+
+    @property
+    def model(self) -> mujoco.MjModel:
+        return self._model
+
+    @property
+    def data(self) -> mujoco.MjData:
+        return self._data
 
     def set_kp(self, kp: float) -> None:
         self._kp[:] = kp
@@ -180,7 +191,7 @@ class MuJoCoController:
         pass
 
     def sync_write_goal_position(self, ids: list[int], positions: list[float]) -> None:
-        if not self._viewer.is_running():
+        if self._viewer is not None and not self._viewer.is_running():
             self._stop_flag_path.write_text("stop\n", encoding="ascii")
             return
 
@@ -204,7 +215,8 @@ class MuJoCoController:
                 print(f"Torque sum: {total:.3f} Nm")
                 self._last_torque_print = now
 
-        self._viewer.sync()
+        if self._viewer is not None:
+            self._viewer.sync()
 
     def sync_read_present_position(self, ids: list[int]) -> list[float]:
         return [
@@ -302,4 +314,5 @@ class MuJoCoController:
             neutral = self._data.qpos[self._name_to_qpos_idx[ID_TO_MOTOR[mid]]]
             self._delay_act[mid].fill(neutral)
         self._delay_quat.fill(self._sensor_quat())
-        self._viewer.sync()
+        if self._viewer is not None:
+            self._viewer.sync()
