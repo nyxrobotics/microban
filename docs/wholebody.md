@@ -108,11 +108,13 @@ PYTHONPATH=src uv run --locked python tools/install_wholebody_policy.py <wholebo
 
 ```bash
 make teleop-sim ALLOW_DRYRUN_POLICY=1          # 実機と同じ動作、操縦は UDP 5555、お手本は UDP 5556
-PYTHONPATH=src uv run --with h5py python tools/wholebody_reference_sender.py <motion.h5> --clip picoteleopit_rec06 --start-s 13
+PYTHONPATH=src uv run --with h5py python tools/wholebody_reference_sender.py <motion.h5> \
+    --clip picoteleopit_rec06 --start-s 13 --control-port 5555
 ```
 
 送り手は録画を 50 Hz に補間し、PC と同じ旗で流す（最初の 3 秒は CALIBRATED だけ、そのあと CALIBRATED と ACTIVE、終わると ACTIVE を落とす）。
-R3 で方策を有効にしておくと、ACTIVE が立ったところで追従を始め、終わると HOME に戻って PICO の方策に渡す。
+`--control-port 5555` は、PICO のブリッジの代わりに A と R3（トリガーは離したまま）を送る（頭なしで試すとき）。
+ACTIVE が立ったところで追従を始め、終わると HOME に戻って PICO の方策に渡す。
 PC の写しと試すときは PC 側の送り手を使う。
 
 ## 実機で確かめること
