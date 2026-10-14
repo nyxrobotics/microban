@@ -12,7 +12,8 @@ for, the move holds, returns to the HOME stance and hands the robot to the
 standing policy: the PICO policy when it is installed, else the position
 hold.  A stopped or refused activation is not tracked again; the PC's next
 start (ACTIVE off then on, or RESTART) is.  While tracking, the arm overlay
-(pico_arms) yields the arms to the whole-body policy.
+(pico_arms) and the HMD head move yield (``WholebodyClaim``): the policy
+drives the arms and the neck stays at HOME.
 """
 
 from __future__ import annotations
@@ -25,7 +26,7 @@ from pathlib import Path
 
 from constants import KP_HARDWARE_NEUTRAL, MOTOR_TO_ID, NEUTRAL_POSE, OBSERVATION_DOF_ORDER
 from controller import ControllerProtocol
-from moves.move import MotorCommand, Move, MoveState
+from moves.move import MotorCommand, Move, MoveState, WholebodyClaim
 from moves.pico_arms import PicoArmTargetHold
 from moves.pico_hybrid import AGENT_NAME as PICO_AGENT_NAME
 from moves.pico_hybrid import PicoHybridMove
@@ -185,6 +186,7 @@ class PolicySelectableWalkMove(Move):
         wholebody_reference=None,
         wholebody_policy_path: str | Path = Path("src/agents") / WHOLEBODY_POLICY_FILE,
         wholebody_move: Move | None = None,
+        wholebody_claim: WholebodyClaim | None = None,
     ) -> None:
         super().__init__()
         self._controller = controller
@@ -206,7 +208,7 @@ class PolicySelectableWalkMove(Move):
         self._injected_wholebody = wholebody_move
         self.wholebody_unavailable_reason: str | None = None
         self._last_learned_targets: dict[str, float] | None = None
-        self._arm_target_hold = arm_target_hold
+        self._claim = wholebody_claim if wholebody_claim is not None else WholebodyClaim()
 
         self._selected_name: str | None = None
         self._selected: Move | None = None
@@ -428,7 +430,7 @@ class PolicySelectableWalkMove(Move):
             "hold" if name == "walk" and isinstance(child, _HoldPositionMove) else name
         )
         self._selected = child
-        self._yield_arms(name == "wholebody")
+        self._claim.active = name == "wholebody"
         self.state = MoveState.ACTIVE
 
     def _remember_pico_targets(self, command: MotorCommand) -> None:
@@ -731,14 +733,9 @@ class PolicySelectableWalkMove(Move):
         self._selected.on_stop(obs, command)
         self._sync_stop_state()
 
-    def _yield_arms(self, yielded: bool) -> None:
-        """The whole-body policy drives the arms: the arm overlay must not."""
-        if self._arm_target_hold is not None:
-            self._arm_target_hold.yielded = yielded
-
     def _sync_stop_state(self) -> None:
         if self._selected is not None and self._selected.state == MoveState.INACTIVE:
-            self._yield_arms(False)
+            self._claim.active = False
             self._selected = None
             self._selected_name = None
             self._fallback_latched = False

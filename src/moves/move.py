@@ -27,6 +27,17 @@ class MotorCommand:
     target_angles: dict[str, float] = field(default_factory=lambda: dict(NEUTRAL_POSE))
 
 
+@dataclass
+class WholebodyClaim:
+    """Set while whole-body tracking drives the robot (moves/wholebody.py).
+
+    Its policy drives the arms and its contract holds the neck at the
+    reference's (HOME), so the arm overlay and the HMD head move yield.
+    """
+
+    active: bool = False
+
+
 class Move(ABC):
     """Base class for all motion behaviors."""
 

@@ -10,7 +10,7 @@ from collections.abc import Mapping
 
 from constants import KP_HARDWARE_NEUTRAL, KP_RL, MOTOR_TO_ID, NEUTRAL_POSE
 from controller import ControllerProtocol
-from moves.move import MotorCommand, Move, MoveState
+from moves.move import MotorCommand, Move, MoveState, WholebodyClaim
 from observer import Observation
 from pico_arm_contract import (
     PICO_ARM_HOME_RAD,
@@ -36,8 +36,6 @@ class PicoArmTargetHold:
 
     def __init__(self) -> None:
         self._targets: dict[str, float] = {}
-        # True while whole-body tracking drives the arms: the overlay yields.
-        self.yielded = False
         self.reset()
 
     def write(self, targets: Mapping[str, float]) -> None:
@@ -67,6 +65,7 @@ class PicoArmTrackingMove(Move):
         controller: ControllerProtocol | None = None,
         *,
         arm_target_hold: PicoArmTargetHold | None = None,
+        wholebody_claim: WholebodyClaim | None = None,
         slew_rate_rad_s: float = PICO_ARM_SLEW_RATE_RAD_S,
         neutral_return_duration_s: float = 0.8,
     ) -> None:
@@ -82,6 +81,7 @@ class PicoArmTrackingMove(Move):
             )
         self._controller = controller
         self._hold = arm_target_hold if arm_target_hold is not None else PicoArmTargetHold()
+        self._claim = wholebody_claim if wholebody_claim is not None else WholebodyClaim()
         self._slew_rate_rad_s = float(slew_rate_rad_s)
         self._neutral_return_duration_s = float(neutral_return_duration_s)
         self._last_targets: dict[str, float] = {}
@@ -187,7 +187,7 @@ class PicoArmTrackingMove(Move):
         self._last_time_s = now
 
     def _handle_getup_ownership(self, obs: Observation) -> bool:
-        if "getup" in obs.user_input.active_moves or self._hold.yielded:
+        if "getup" in obs.user_input.active_moves or self._claim.active:
             self._suspended_for_getup = True
             return True
         if self._suspended_for_getup:
@@ -201,7 +201,7 @@ class PicoArmTrackingMove(Move):
         self._write_slew_limited(obs, command, self._desired_live_target(obs))
 
     def on_stop(self, obs: Observation, command: MotorCommand) -> None:
-        if "getup" in obs.user_input.active_moves or self._hold.yielded:
+        if "getup" in obs.user_input.active_moves or self._claim.active:
             # Get-up is registered after this overlay and owns all 18 body
             # joints; whole-body tracking drives the arms too.  Do not change
             # their commands or gains during the hand-off.  Both end at HOME,

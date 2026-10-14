@@ -14,6 +14,7 @@ from input.gamepad_input import GamepadInputSource
 from input.network_input import NetworkInputSource
 from input.wholebody_reference import ReferenceReceiver
 from moves.getup import GetupMove
+from moves.move import WholebodyClaim
 from moves.hmd_head import HmdHeadTrackingMove
 from moves.pico_arms import PicoArmTargetHold, PicoArmTrackingMove
 from moves.policy_selector import PolicySelectableWalkMove
@@ -79,6 +80,7 @@ def main() -> None:
         input_source.set_viewer_opt(controller.viewer_opt)
 
     arm_target_hold = PicoArmTargetHold()
+    wholebody_claim = WholebodyClaim()
     scheduler = Scheduler(
         frequency_hz=args.hz,
         controller=controller,
@@ -90,13 +92,16 @@ def main() -> None:
                 controller=controller,
                 arm_target_hold=arm_target_hold,
                 wholebody_reference=wholebody_reference,
+                wholebody_claim=wholebody_claim,
             ),
             # Match production ordering: direct controller arms overwrite only
             # the six arm joints, and the PICO policy observes their targets.
             "pico_arms": PicoArmTrackingMove(
-                controller=controller, arm_target_hold=arm_target_hold
+                controller=controller,
+                arm_target_hold=arm_target_hold,
+                wholebody_claim=wholebody_claim,
             ),
-            "hmd_head": HmdHeadTrackingMove(),
+            "hmd_head": HmdHeadTrackingMove(wholebody_claim=wholebody_claim),
             "getup": GetupMove(controller=controller),
         },
     )

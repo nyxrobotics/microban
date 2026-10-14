@@ -35,7 +35,9 @@ from input.wholebody_reference import (
     encode_frame,
 )
 from moves.move import MotorCommand, Move, MoveState
-from moves.pico_arms import PicoArmTargetHold
+from moves.hmd_head import HmdHeadTrackingMove
+from moves.move import WholebodyClaim
+from moves.pico_arms import PicoArmTrackingMove
 from moves.policy_selector import PolicySelectableWalkMove
 from moves.wholebody import (
     HANDOFF_TICKS,
@@ -473,6 +475,26 @@ class MoveTest(unittest.TestCase):
         np.testing.assert_allclose(orientation, [1.0, 0.0, 0.0, 1.0, 0.0, 0.0], atol=1e-6)
 
 
+class OverlayYieldTest(unittest.TestCase):
+    """While whole-body tracking runs, the arm overlay and the HMD head move write nothing."""
+
+    def test_arms_and_neck_yield_then_resume_from_the_measured_pose(self):
+        claim = WholebodyClaim(active=True)
+        arms = PicoArmTrackingMove(wholebody_claim=claim)
+        head = HmdHeadTrackingMove(wholebody_claim=claim)
+        obs = tick_obs(0.0, moves=("walk", "pico_arms", "hmd_head"))
+        obs.user_input.head_orientation = {"roll": 0.0, "pitch": 0.0, "yaw": 0.8}
+        for move in (arms, head):
+            move.state = MoveState.ACTIVE
+            command = MotorCommand(target_angles={})
+            move.step(obs, command)
+            self.assertEqual(command.target_angles, {})
+        claim.active = False
+        command = MotorCommand(target_angles={})
+        head.step(tick_obs(0.02, moves=("walk", "hmd_head")), command)
+        self.assertAlmostEqual(command.target_angles["head"], NEUTRAL_POSE["head"], places=6)  # from measured, slewed
+
+
 class StandingMove(Move):
     def __init__(self):
         super().__init__()
@@ -577,19 +599,19 @@ class SelectorTest(unittest.TestCase):
         self.assertIn("no reference frame", selector.fallback_reason)
         self.assertTrue(selector.can_balance(UserInput(locomotion_policy="wholebody", balance_only=True)))
 
-    def test_an_inference_failure_stands_and_the_arms_return_to_the_overlay(self):
-        hold = PicoArmTargetHold()
+    def test_an_inference_failure_stands_and_the_arms_and_head_return_to_the_overlays(self):
+        claim = WholebodyClaim()
         ref = FakeReceiver()
         move = WholebodyMove(ref, session=Session(metadata()))
-        selector = PolicySelectableWalkMove(pico_move=StandingMove(), wholebody_move=move, arm_target_hold=hold)
+        selector = PolicySelectableWalkMove(pico_move=StandingMove(), wholebody_move=move, wholebody_claim=claim)
         selector.preload()
         self.tick(selector, ref, 0.0)
-        self.assertTrue(hold.yielded)
+        self.assertTrue(claim.active)
         move._session.action = lambda _: math.nan
         self.tick(selector, ref, 0.02)
         self.assertEqual(selector.effective_policy, "pico_teleop")
         self.assertIn("whole-body inference", selector.fallback_reason)
-        self.assertFalse(hold.yielded)
+        self.assertFalse(claim.active)
         self.tick(selector, ref, 0.04)
         self.assertEqual(selector.effective_policy, "pico_teleop")
 

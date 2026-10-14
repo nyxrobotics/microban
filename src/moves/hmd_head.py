@@ -7,7 +7,7 @@ import math
 
 from constants import NEUTRAL_POSE
 from imu_reader import trunk_roll_pitch
-from moves.move import MotorCommand, Move, MoveState
+from moves.move import MotorCommand, Move, MoveState, WholebodyClaim
 from observer import Observation
 
 
@@ -63,9 +63,11 @@ class HmdHeadTrackingMove(Move):
     roll/pitch tracking remains active.
     """
 
-    def __init__(self, slew_rate_rad_s: float = 2.5) -> None:
+    def __init__(self, slew_rate_rad_s: float = 2.5, wholebody_claim: WholebodyClaim | None = None) -> None:
         super().__init__()
         self._slew_rate_rad_s = slew_rate_rad_s
+        # Whole-body tracking holds the neck at HOME (its policy never saw it move).
+        self._claim = wholebody_claim if wholebody_claim is not None else WholebodyClaim()
         self._last_targets: dict[str, float] = {}
         self._last_time_s: float | None = None
         self._suspended_for_getup = False
@@ -102,7 +104,7 @@ class HmdHeadTrackingMove(Move):
         self._drive(obs, command)
 
     def _handle_getup_ownership(self, obs: Observation) -> bool:
-        if "getup" in obs.user_input.active_moves:
+        if "getup" in obs.user_input.active_moves or self._claim.active:
             self._suspended_for_getup = True
             return True
         if self._suspended_for_getup:
