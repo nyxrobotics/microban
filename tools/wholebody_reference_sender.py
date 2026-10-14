@@ -5,14 +5,17 @@
 """Send a recorded whole-body motion as the PC's reference stream (for tests).
 
     PYTHONPATH=src uv run --with h5py python tools/wholebody_reference_sender.py \\
-        <motion.h5> --clip picoteleopit_rec05 [--start-s 0] [--seconds 30] \\
+        <motion.h5> --clip picoteleopit_rec05 [--start-s 0] [--seconds 30] [--lead-in-s 3] \\
         [--host 127.0.0.1] [--port 5556] [--rate-hz 50]
 
 Reads a microban_wholebody_motion dataset (mjlab_microban
 wholebody/data/hdf5.py), plays one window at real time from ``--start-s``,
 interpolated to ``--rate-hz`` as the training's MotionLib does (linear, the
 quaternions slerped), and sends each frame in the wire format of
-input/wholebody_reference.py.  Only the PC's live retargeting replaces it.
+input/wholebody_reference.py as the PC does: CALIBRATED with the first frame
+held during ``--lead-in-s``, then CALIBRATED and ACTIVE (RESTART on the first
+active frame) while the motion plays, then CALIBRATED again for a second.
+Only the PC's live retargeting replaces it.
 """
 
 from __future__ import annotations
@@ -27,7 +30,7 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from input.wholebody_reference import encode_frame  # noqa: E402
+from input.wholebody_reference import ACTIVE, CALIBRATED, RESTART, encode_frame  # noqa: E402
 
 FRAME_KEYS = ("joint_pos", "joint_vel", "body_pos_w", "body_quat_w", "body_lin_vel_w", "body_ang_vel_w")
 ROBOT_JOINTS = (
@@ -111,6 +114,7 @@ def main() -> int:
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=5556)
     parser.add_argument("--rate-hz", type=float, default=50.0)
+    parser.add_argument("--lead-in-s", type=float, default=3.0, help="CALIBRATED only, before ACTIVE")
     args = parser.parse_args()
     replay = MotionReplay(args.motion, args.clip)
     end_s = replay.duration_s if args.seconds is None else min(replay.duration_s, args.start_s + args.seconds)
@@ -119,12 +123,19 @@ def main() -> int:
     period = 1.0 / args.rate_hz
     began = time.perf_counter()
     seq = 0
+    active = False
     while True:
         elapsed = time.perf_counter() - began
-        motion_s = args.start_s + elapsed
-        if motion_s > end_s:
+        motion_s = args.start_s + max(0.0, elapsed - args.lead_in_s)
+        if motion_s > end_s + 1.0:
             break
-        sock.sendto(encode_frame(seq, elapsed, replay.sample(motion_s)), (args.host, args.port))
+        if args.lead_in_s <= elapsed and motion_s <= end_s:
+            flags = CALIBRATED | ACTIVE | (0 if active else RESTART)
+            active = True
+        else:
+            flags = CALIBRATED
+        frame = replay.sample(min(motion_s, end_s), still=not flags & ACTIVE)
+        sock.sendto(encode_frame(seq, time.time(), frame, flags), (args.host, args.port))
         seq += 1
         time.sleep(max(0.0, began + seq * period - time.perf_counter()))
     print(f"sent {seq} frames")

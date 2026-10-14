@@ -401,8 +401,10 @@ class WholebodyMove(Move):
         """Why tracking cannot start now (None: it can)."""
         snapshot = self._reference.read()
         reason = self._stale_reason(snapshot, None)
-        if reason is None and snapshot.activation == self._stopped_activation:
-            reason = f"waiting for the PC to start tracking again (stopped: {self.stop_reason})"
+        # An activation already run (stopped, or interrupted by the scheduler's
+        # gate without a stop) is not resumed.
+        if reason is None and snapshot.activation in (self._stopped_activation, self._activation):
+            reason = f"waiting for the PC to start tracking again (stopped: {self.stop_reason or 'interrupted'})"
         return reason
 
     def refuse(self, reason: str) -> None:
@@ -464,6 +466,12 @@ class WholebodyMove(Move):
         self._current = Reference.aligned(frame, self._yaw_offset).still()
         self._history.reset()
         self._last_action.fill(0.0)
+        print(
+            f"Whole-body tracking started (PC activation {snapshot.activation}; reference turned "
+            f"{math.degrees(2.0 * math.atan2(self._yaw_offset[3], self._yaw_offset[0])):+.0f} deg to the IMU yaw)",
+            end="\r\n",
+            flush=True,
+        )
 
     def _body_quat(self, obs: Observation) -> np.ndarray:
         quat = np.asarray(obs.robot_state.body_quat, dtype=np.float64)
@@ -521,8 +529,16 @@ class WholebodyMove(Move):
             self._current = self._home
             settled = tilt_from_home_deg(gravity) < HANDOFF_TILT_DEG
             self._settled_ticks = self._settled_ticks + 1 if settled else 0
-            if self._settled_ticks >= HANDOFF_TICKS or now - self._phase_started_s >= HANDOFF_MAX_S:
+            if not self.handoff_ready and (
+                self._settled_ticks >= HANDOFF_TICKS or now - self._phase_started_s >= HANDOFF_MAX_S
+            ):
                 self.handoff_ready = True
+                print(
+                    f"Whole-body tracking back at HOME ({tilt_from_home_deg(gravity):.1f} deg from the HOME "
+                    "attitude); the standing policy takes over",
+                    end="\r\n",
+                    flush=True,
+                )
 
     def step(self, obs: Observation, command: MotorCommand) -> None:
         gravity = [float(v) for v in obs.robot_state.projected_gravity]

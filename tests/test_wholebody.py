@@ -493,8 +493,8 @@ class SelectorTest(unittest.TestCase):
     """The current PICO bridge sends pico_teleop; the PC's ACTIVE flag starts tracking."""
 
     def selector(self):
-        move, ref, _ = started_move()
-        move.state = MoveState.INACTIVE
+        ref = FakeReceiver()
+        move = WholebodyMove(ref, session=Session(metadata()))
         standing = StandingMove()
         selector = PolicySelectableWalkMove(pico_move=standing, wholebody_move=move)
         selector.preload()
@@ -559,6 +559,17 @@ class SelectorTest(unittest.TestCase):
         self.tick(selector, ref, t + 0.02, policy="walk")
         self.assertEqual(move.stop_reason, "walk requested")
 
+    def test_policy_off_and_on_does_not_resume_the_activation(self):
+        selector, move, ref, standing = self.selector()
+        t = self.run_until(selector, ref, -0.02, 1.0)
+        self.assertEqual(selector.effective_policy, "wholebody")
+        selector.state = MoveState.INACTIVE  # the scheduler's gate: R3 off
+        self.tick(selector, ref, t + 0.02)
+        self.assertEqual(selector.effective_policy, "pico_teleop")
+        self.assertIn("waiting for the PC", move.start_refusal())
+        self.tick(selector, ref, t + 0.04, flags=ENGAGED | RESTART)
+        self.assertEqual(selector.effective_policy, "wholebody")
+
     def test_no_reference_stands(self):
         selector, move, ref, standing = self.selector()
         self.tick(selector, ref, 1.0, send=False, policy="wholebody")
@@ -568,8 +579,8 @@ class SelectorTest(unittest.TestCase):
 
     def test_an_inference_failure_stands_and_the_arms_return_to_the_overlay(self):
         hold = PicoArmTargetHold()
-        move, ref, _ = started_move()
-        move.state = MoveState.INACTIVE
+        ref = FakeReceiver()
+        move = WholebodyMove(ref, session=Session(metadata()))
         selector = PolicySelectableWalkMove(pico_move=StandingMove(), wholebody_move=move, arm_target_hold=hold)
         selector.preload()
         self.tick(selector, ref, 0.0)
