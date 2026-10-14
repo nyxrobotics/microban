@@ -1,0 +1,14 @@
+{
+ "benchmark_report_sha256": "210d98e4579d17b3e4e66ea1bc5becbc7dd567d6974cf915de592543b9726e74",
+ "checkpoint": "model_6000.pt",
+ "checkpoint_sha256": "553a3f1038776b07e461c68ce416a1847030f1bcbeeeb2cf7adf97bb327a49b0",
+ "contract": "microban-wholebody-1",
+ "created": "2026-10-15 00:20:28",
+ "dry_run": true,
+ "eval_only_benchmark_report_sha256": "210d98e4579d17b3e4e66ea1bc5becbc7dd567d6974cf915de592543b9726e74",
+ "file": "wholebody.onnx",
+ "home_tag": "forward_lean_home",
+ "self_test_rows": 32,
+ "sha256": "55748320cce15e40e329a497660b93839ce7368ba74f0ecd6bb4dbb6c5a407b8",
+ "source": "trial export (dry run) of mjlab_microban wholebody-tracking 0827502, run wholebody_final1 model_6000, for integration tests"
+}
