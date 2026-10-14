@@ -95,6 +95,26 @@ _PICO_SIMULTANEOUS_BOTH_FEET_UPPER = tuple(
 )
 
 
+def read_allowed_ip_file(path: Path) -> str:
+    """The one allowed sender of an allowlist file (``MICROBAN_NETWORK_ALLOWED_IP=<IPv4>``)."""
+    if path.is_symlink() or not path.is_file():
+        raise ValueError("missing or linked allowlist file")
+    if path.stat().st_size > 8192:
+        raise ValueError("allowlist file is too large")
+    entries = [
+        line.removeprefix("MICROBAN_NETWORK_ALLOWED_IP=").strip()
+        for line in path.read_text(encoding="utf-8").splitlines()
+        if line.startswith("MICROBAN_NETWORK_ALLOWED_IP=")
+    ]
+    if len(entries) != 1:
+        raise ValueError("expected exactly one allowed IP entry")
+    address = entries[0]
+    parsed = ipaddress.IPv4Address(address)
+    if str(parsed) != address or parsed.is_unspecified or parsed.is_loopback or parsed.is_multicast:
+        raise ValueError("allowed IP is not a usable canonical IPv4 address")
+    return address
+
+
 def _finite_float(value) -> float:
     result = float(value)
     if not math.isfinite(result):
@@ -384,26 +404,7 @@ class NetworkInputSource(InputSource):
         if path is None:
             return
         try:
-            if path.is_symlink() or not path.is_file():
-                raise ValueError("missing or linked allowlist file")
-            if path.stat().st_size > 8192:
-                raise ValueError("allowlist file is too large")
-            entries = [
-                line.removeprefix("MICROBAN_NETWORK_ALLOWED_IP=").strip()
-                for line in path.read_text(encoding="utf-8").splitlines()
-                if line.startswith("MICROBAN_NETWORK_ALLOWED_IP=")
-            ]
-            if len(entries) != 1:
-                raise ValueError("expected exactly one allowed IP entry")
-            address = entries[0]
-            parsed = ipaddress.IPv4Address(address)
-            if (
-                str(parsed) != address
-                or parsed.is_unspecified
-                or parsed.is_loopback
-                or parsed.is_multicast
-            ):
-                raise ValueError("allowed IP is not a usable canonical IPv4 address")
+            address = read_allowed_ip_file(path)
         except (OSError, UnicodeError, ValueError) as exc:
             if not self._allowed_remote_file_error:
                 print(

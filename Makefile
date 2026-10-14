@@ -2,6 +2,8 @@
 
 HOST ?= microban
 ID ?=
+# 1 lets a trial (dry-run) whole-body policy run on the robot (docs/wholebody.md).
+ALLOW_DRYRUN_POLICY ?= $(or $(MICROBAN_ALLOW_DRYRUN_POLICY),0)
 CAMERA_UDP_PORT ?= 5000
 CAMERA_UDP_DEVICE ?= /dev/v4l/by-id/usb-3D_USB_Camera_3D_USB_Camera_01.00.00-video-index0
 CAMERA_UDP_RESOLUTION ?= 1280x480
@@ -42,7 +44,7 @@ run: sync
 
 # External-PC VR control: robot receives the deadman-gated UDP command stream.
 teleop-run: sync
-	ssh -tt $(HOST) "bash -l -c 'cd microban && MICROBAN_INPUT=network MICROBAN_NETWORK_ALLOWED_IP=\$${SSH_CONNECTION%% *} PYTHONPATH=src .venv/bin/python src/main.py'"
+	ssh -tt $(HOST) "bash -l -c 'cd microban && MICROBAN_INPUT=network MICROBAN_NETWORK_ALLOWED_IP=\$${SSH_CONNECTION%% *} MICROBAN_ALLOW_DRYRUN_POLICY=$(ALLOW_DRYRUN_POLICY) PYTHONPATH=src .venv/bin/python src/main.py'"
 
 # Validate the installed walk, get-up and PICO policies (contract, manifest and
 # startup self-test) with the exact local runtime, sync the same checkout and
@@ -54,7 +56,7 @@ teleop-validate:
 	ssh $(HOST) "bash -l -c 'cd microban && PYTHONPATH=src .venv/bin/python tools/validate_policies.py src/agents'"
 
 teleop-sim:
-	PYTHONPATH=src uv run --group sim src/sim/sim_main.py --hz 50 --input network
+	MICROBAN_ALLOW_DRYRUN_POLICY=$(ALLOW_DRYRUN_POLICY) PYTHONPATH=src uv run --group sim src/sim/sim_main.py --hz 50 --input network
 
 # Default camera stream: GPU-hardware H264 encode (bcm2835-codec /dev/video11) over
 # UDP/MPEG-TS to whichever machine runs this target (same SSH_CONNECTION trick as

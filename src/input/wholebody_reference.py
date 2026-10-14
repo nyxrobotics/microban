@@ -46,6 +46,8 @@ from pathlib import Path
 
 import numpy as np
 
+from input.network_input import read_allowed_ip_file
+
 MAGIC = b"MBWB"
 VERSION = 1
 HEADER = struct.Struct("<4sHHHIdH")
@@ -291,16 +293,15 @@ class ReferenceReceiver:
         self._thread = None
 
     def _sender_allowed(self, host: str) -> bool:
+        """The control packets' sender (the same allowlist file, re-read each second)."""
         if self._allowed_remote_file is not None:
             now = time.monotonic()
             if now - self._allowed_checked_s >= 1.0:
                 self._allowed_checked_s = now
                 try:
-                    text = self._allowed_remote_file.read_text(encoding="ascii").strip()
-                    self._allowed_remote = socket.gethostbyname(text) if text else None
-                except (OSError, UnicodeError, socket.gaierror):
+                    self._allowed_remote = read_allowed_ip_file(self._allowed_remote_file)
+                except (OSError, UnicodeError, ValueError):
                     self._allowed_remote = None
-                    return False
             if self._allowed_remote is None:
                 return False
         return self._allowed_remote is None or host == self._allowed_remote

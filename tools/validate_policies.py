@@ -8,7 +8,9 @@ Checks src/agents/manifest.json, each ONNX against contract microban-policy-1
 (src/policy_contract.py) and runs each policy's startup self-test under ONNX
 Runtime's CPU provider, as the robot does.  When a whole-body policy is
 installed (src/agents/wholebody_manifest.json), it is checked the same way
-against microban-wholebody-1 (src/wholebody_contract.py).  Prints a JSON report; exits non-zero
+against microban-wholebody-1 (src/wholebody_contract.py); as on the robot it
+is optional: a refused one is reported (status "unavailable") without
+failing the three required policies.  Prints a JSON report; exits non-zero
 on the first failure.
 
     PYTHONPATH=src uv run --locked python tools/validate_policies.py [src/agents]
@@ -71,9 +73,15 @@ def validate_policies(agents_dir: Path = AGENTS_DIR) -> dict[str, object]:
             report["policies"][kind]["tracking_waiver"] = contract.tracking_waiver
             report.setdefault("warnings", []).extend(tracking_waiver_lines(contract))
     if (Path(agents_dir) / WHOLEBODY_MANIFEST).exists():
-        loaded = load_wholebody_policy(Path(agents_dir) / WHOLEBODY_FILE, providers=["CPUExecutionProvider"])
+        try:
+            loaded = load_wholebody_policy(Path(agents_dir) / WHOLEBODY_FILE, providers=["CPUExecutionProvider"])
+        except (OSError, PolicyContractError, PolicySelfTestError) as exc:
+            report["wholebody"] = {"status": "unavailable", "error": f"{type(exc).__name__}: {exc}"}
+            report.setdefault("warnings", []).append(f"whole-body policy unavailable: {exc}")
+            return report
         contract = loaded.contract
         report["wholebody"] = {
+            "status": "pass",
             "contract": WHOLEBODY_CONTRACT,
             "file": WHOLEBODY_FILE,
             "recipe": contract.recipe,

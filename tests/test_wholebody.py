@@ -212,6 +212,17 @@ class WireTest(unittest.TestCase):
         for flags in (0, CALIBRATED, ACTIVE):
             self.assertFalse(decode_frame(encode_frame(1, 0.0, frame_arrays(), flags=flags)).engaged)
 
+    def test_only_the_control_packets_sender_is_heard(self):
+        with tempfile.TemporaryDirectory() as directory:
+            allowlist = Path(directory) / "microban-pico-runtime"
+            allowlist.write_text("MICROBAN_NETWORK_ALLOWED_IP=192.168.1.20\n")
+            receiver = ReferenceReceiver(port=1, allowed_remote_file=str(allowlist))
+            self.assertTrue(receiver._sender_allowed("192.168.1.20"))
+            self.assertFalse(receiver._sender_allowed("192.168.1.21"))
+            allowlist.unlink()
+            receiver._allowed_checked_s = -math.inf
+            self.assertFalse(receiver._sender_allowed("192.168.1.20"))
+
     def test_the_sequence_number_wraps_around(self):
         receiver = ReferenceReceiver(port=1, clock=lambda: 0.0)
         for k, seq in enumerate((0xFFFFFFFE, 0xFFFFFFFF, 0, 1)):
