@@ -14,7 +14,9 @@ interpolated to ``--rate-hz`` as the training's MotionLib does (linear, the
 quaternions slerped), and sends each frame in the wire format of
 input/wholebody_reference.py as the PC does: CALIBRATED with the first frame
 held during ``--lead-in-s``, then CALIBRATED and ACTIVE (RESTART on the first
-active frame) while the motion plays, then CALIBRATED again for a second.
+active frame), the operator standing still at the first frame for
+``--hold-s`` (as the training's benchmark starts a piece) before the motion
+plays, then CALIBRATED again for a second.
 Only the PC's live retargeting replaces it.  ``--control-port`` also stands in
 for the PICO bridge in a simulation without a headset: control packets with
 A (torque) from the start and R3 (policy) after a second, triggers released.
@@ -118,6 +120,7 @@ def main() -> int:
     parser.add_argument("--port", type=int, default=5556)
     parser.add_argument("--rate-hz", type=float, default=50.0)
     parser.add_argument("--lead-in-s", type=float, default=3.0, help="CALIBRATED only, before ACTIVE")
+    parser.add_argument("--hold-s", type=float, default=1.2, help="Standing still at the first frame after ACTIVE")
     parser.add_argument("--control-port", type=int, default=None, help="Also send A and R3 control packets here")
     args = parser.parse_args()
     replay = MotionReplay(args.motion, args.clip)
@@ -130,7 +133,7 @@ def main() -> int:
     active = False
     while True:
         elapsed = time.perf_counter() - began
-        motion_s = args.start_s + max(0.0, elapsed - args.lead_in_s)
+        motion_s = args.start_s + max(0.0, elapsed - args.lead_in_s - args.hold_s)
         if motion_s > end_s + 1.0:
             break
         if args.lead_in_s <= elapsed and motion_s <= end_s:
@@ -138,7 +141,7 @@ def main() -> int:
             active = True
         else:
             flags = CALIBRATED
-        frame = replay.sample(min(motion_s, end_s), still=not flags & ACTIVE)
+        frame = replay.sample(min(motion_s, end_s), still=elapsed < args.lead_in_s + args.hold_s)
         sock.sendto(encode_frame(seq, time.time(), frame, flags), (args.host, args.port))
         if args.control_port is not None:
             control = {"version": 1, "session_id": "wholebody-sender", "seq": seq, "active_moves": [],
