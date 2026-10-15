@@ -38,7 +38,7 @@ from moves.move import MotorCommand, Move, MoveState
 from moves.hmd_head import HmdHeadTrackingMove
 from moves.move import WholebodyClaim
 from moves.pico_arms import PicoArmTrackingMove
-from moves.policy_selector import PolicySelectableWalkMove
+from moves.policy_selector import WHOLEBODY_START_TICKS, PolicySelectableWalkMove
 from moves.wholebody import (
     HANDOFF_TICKS,
     MAX_HELD_FLAG_S,
@@ -298,13 +298,13 @@ class FakeReceiver:
         return self.time
 
 
-def tick_obs(t, *, gravity=None, quat=None, moves=("walk",), balance_only=False, policy="wholebody"):
+def tick_obs(t, *, gravity=None, quat=None, moves=("walk",), balance_only=False, policy="wholebody", joint_speed=0.0):
     quat = list(HOME_ROOT_QUAT_WXYZ) if quat is None else quat
     return Observation(
         robot_state=RobotState(
             time_s=t, gyro=[0.0, 0.0, 0.0], body_quat=quat,
             projected_gravity=list(HOME_PROJECTED_GRAVITY) if gravity is None else gravity,
-            motor_positions=dict(NEUTRAL_POSE), motor_velocities={n: 0.0 for n in NEUTRAL_POSE},
+            motor_positions=dict(NEUTRAL_POSE), motor_velocities={n: joint_speed for n in NEUTRAL_POSE},
         ),
         user_input=UserInput(active_moves=set(moves), locomotion_policy=policy, balance_only=balance_only),
     )
@@ -544,11 +544,12 @@ class SelectorTest(unittest.TestCase):
         selector.preload()
         return selector, move, ref, standing
 
-    def tick(self, selector, ref, t, *, policy="pico_teleop", send=True, **frame):
+    def tick(self, selector, ref, t, *, policy="pico_teleop", send=True, balance_only=True, gravity=None,
+             joint_speed=0.0, **frame):
         ref.time = t
         if send:
             ref.send(**frame)
-        obs = tick_obs(t, balance_only=True, policy=policy)
+        obs = tick_obs(t, balance_only=balance_only, policy=policy, gravity=gravity, joint_speed=joint_speed)
         command = MotorCommand()
         if selector.state == MoveState.INACTIVE:
             selector.state = MoveState.STARTING
@@ -564,34 +565,63 @@ class SelectorTest(unittest.TestCase):
             self.tick(selector, ref, t, **kwargs)
         return t
 
+    def start_tracking(self, selector, ref, t, **kwargs):
+        """Ticks until tracking starts: WHOLEBODY_START_TICKS of standing still on the standing policy."""
+        began = t
+        t = self.run_until(selector, ref, t, t + 2.0, lambda: selector.effective_policy == "wholebody", **kwargs)
+        self.assertEqual(selector.effective_policy, "wholebody")
+        self.assertEqual(round((t - began) / 0.02), WHOLEBODY_START_TICKS)
+        return t
+
     def test_the_pc_starts_and_stops_tracking(self):
         selector, move, ref, standing = self.selector()
         self.tick(selector, ref, 0.0, flags=CALIBRATED)
         self.assertEqual(selector.effective_policy, "pico_teleop")
-        self.tick(selector, ref, 0.02)
-        self.assertEqual(selector.effective_policy, "wholebody")
-        t = self.run_until(selector, ref, 0.02, 2.0)
+        t = self.start_tracking(selector, ref, 0.0)
+        t = self.run_until(selector, ref, t, t + 2.0)
         self.assertEqual(move.phase, Phase.TRACK)
         # The PC stops: hold, HOME, then the standing policy.
-        t = self.run_until(selector, ref, t, 7.0, lambda: selector.effective_policy != "wholebody", flags=CALIBRATED)
+        stopped = t
+        t = self.run_until(selector, ref, t, t + 5.0, lambda: selector.effective_policy != "wholebody", flags=CALIBRATED)
         self.assertEqual(selector.effective_policy, "pico_teleop")
-        self.assertGreater(t, 2.0 + STOP_HOLD_S + RETURN_S)
+        self.assertGreater(t - stopped, STOP_HOLD_S + RETURN_S)
         self.assertIn("not tracking", selector.fallback_reason)
-        # Started again on the PC: tracking again.
-        self.tick(selector, ref, t + 0.02)
-        self.assertEqual(selector.effective_policy, "wholebody")
+        # Started again on the PC: tracking again, once the robot stood still.
+        self.start_tracking(selector, ref, t)
+
+    def test_tracking_waits_for_the_robot_to_stand_still(self):
+        """The PC starts while the PICO policy walks: the robot keeps walking, then starts once still."""
+        selector, move, ref, standing = self.selector()
+        self.tick(selector, ref, 0.0, balance_only=False)  # left trigger held: walking
+        t = self.run_until(selector, ref, 0.0, 1.0, balance_only=False)
+        self.assertEqual(selector.effective_policy, "pico_teleop")
+        self.assertIsNone(move.start_refusal())  # the activation waits, not refused
+        # Trigger released, the trunk still swaying 20 deg off HOME's attitude.
+        pitch = HOME_TRUNK_PITCH_RAD + math.radians(20.0)
+        swaying = [math.sin(pitch), 0.0, -math.cos(pitch)]
+        t = self.run_until(selector, ref, t, t + 1.0, gravity=swaying)
+        self.assertEqual(selector.effective_policy, "pico_teleop")
+        # Trunk upright, but the policy still steps (legs at 2 rad/s).
+        t = self.run_until(selector, ref, t, t + 1.0, joint_speed=2.0)
+        self.assertEqual(selector.effective_policy, "pico_teleop")
+        # One tick off the attitude starts the count again.
+        t = self.run_until(selector, ref, t, t + 0.4)
+        self.tick(selector, ref, t + 0.02, gravity=swaying)
+        t = self.start_tracking(selector, ref, t + 0.02)
+        self.assertEqual(move.phase, Phase.SETTLE)
+        self.assertEqual(standing.starts, 1)
 
     def test_a_stale_stream_stands_until_the_pc_starts_again(self):
         selector, move, ref, standing = self.selector()
         t = 0.0
         self.tick(selector, ref, t)
-        self.assertEqual(selector.effective_policy, "wholebody")
-        t = self.run_until(selector, ref, t, 1.0)
-        t = self.run_until(selector, ref, t, 6.0, lambda: selector.effective_policy != "wholebody", send=False)
+        t = self.start_tracking(selector, ref, t)
+        t = self.run_until(selector, ref, t, t + 1.0)
+        t = self.run_until(selector, ref, t, t + 6.0, lambda: selector.effective_policy != "wholebody", send=False)
         self.assertEqual(selector.effective_policy, "pico_teleop")
         self.assertIn("no reference frame", selector.fallback_reason)
         # The stream is back, but this activation was stopped: still standing.
-        t = self.run_until(selector, ref, t, t + 0.2)
+        t = self.run_until(selector, ref, t, t + 1.0)
         self.assertEqual(selector.effective_policy, "pico_teleop")
         self.tick(selector, ref, t + 0.02, flags=ENGAGED | RESTART)
         self.assertEqual(selector.effective_policy, "wholebody")
@@ -599,19 +629,22 @@ class SelectorTest(unittest.TestCase):
     def test_walk_on_the_wire_stops_tracking(self):
         selector, move, ref, standing = self.selector()
         self.tick(selector, ref, 0.0, policy="wholebody")
-        t = self.run_until(selector, ref, 0.0, 1.0, policy="wholebody")
+        t = self.start_tracking(selector, ref, 0.0, policy="wholebody")
+        t = self.run_until(selector, ref, t, t + 1.0, policy="wholebody")
         self.tick(selector, ref, t + 0.02, policy="walk")
         self.assertEqual(move.stop_reason, "walk requested")
 
     def test_policy_off_and_on_does_not_resume_the_activation(self):
         selector, move, ref, standing = self.selector()
-        t = self.run_until(selector, ref, -0.02, 1.0)
-        self.assertEqual(selector.effective_policy, "wholebody")
+        self.tick(selector, ref, 0.0)
+        t = self.start_tracking(selector, ref, 0.0)
         selector.state = MoveState.INACTIVE  # the scheduler's gate: R3 off
         self.tick(selector, ref, t + 0.02)
         self.assertEqual(selector.effective_policy, "pico_teleop")
         self.assertIn("waiting for the PC", move.start_refusal())
-        self.tick(selector, ref, t + 0.04, flags=ENGAGED | RESTART)
+        t = self.run_until(selector, ref, t + 0.02, t + 1.0)
+        self.assertEqual(selector.effective_policy, "pico_teleop")
+        self.tick(selector, ref, t + 0.02, flags=ENGAGED | RESTART)
         self.assertEqual(selector.effective_policy, "wholebody")
 
     def test_no_reference_stands(self):
@@ -628,13 +661,14 @@ class SelectorTest(unittest.TestCase):
         selector = PolicySelectableWalkMove(pico_move=StandingMove(), wholebody_move=move, wholebody_claim=claim)
         selector.preload()
         self.tick(selector, ref, 0.0)
+        t = self.start_tracking(selector, ref, 0.0)
         self.assertTrue(claim.active)
         move._session.action = lambda _: math.nan
-        self.tick(selector, ref, 0.02)
+        self.tick(selector, ref, t + 0.02)
         self.assertEqual(selector.effective_policy, "pico_teleop")
         self.assertIn("whole-body inference", selector.fallback_reason)
         self.assertFalse(claim.active)
-        self.tick(selector, ref, 0.04)
+        self.tick(selector, ref, t + 0.04)
         self.assertEqual(selector.effective_policy, "pico_teleop")
 
 
