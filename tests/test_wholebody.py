@@ -40,6 +40,7 @@ from moves.move import WholebodyClaim
 from moves.pico_arms import PicoArmTrackingMove
 from moves.policy_selector import WHOLEBODY_START_TICKS, PolicySelectableWalkMove
 from moves.wholebody import (
+    FALL_LAG_S,
     HANDOFF_TICKS,
     MAX_HELD_FLAG_S,
     MAX_SEQUENCE_GAP,
@@ -55,6 +56,7 @@ from moves.wholebody import (
 from observer import Observation, RobotState
 from policy_contract import PolicyContractError, PolicySelfTestError
 from policy_fixtures import JOINT_NAMES, home_pose_stamp, csv
+from test_getup_balance import Harness, sec
 import wholebody_contract as wc
 
 ROBOT_JOINTS = wc.OBSERVATION_JOINT_NAMES
@@ -670,6 +672,81 @@ class SelectorTest(unittest.TestCase):
         self.assertFalse(claim.active)
         self.tick(selector, ref, t + 0.04)
         self.assertEqual(selector.effective_policy, "pico_teleop")
+
+
+def pitch_gravity(pitch):
+    """The projected gravity of a trunk pitched ``pitch`` about y (HOME_TRUNK_PITCH_RAD: HOME's)."""
+    return [math.sin(pitch), 0.0, -math.cos(pitch)]
+
+
+def bow(t, deep=math.radians(75.0), start=2.0):
+    """A trunk pitch (rad): HOME, down to ``deep`` in 1 s, held 0.5 s, back up in 1 s."""
+    home = HOME_TRUNK_PITCH_RAD
+    phase = min(max(t - start, 0.0), 2.5)
+    fraction = min(phase, 1.0) if phase < 1.5 else max(0.0, 2.5 - phase)
+    return home + (deep - home) * fraction
+
+
+class FallWhileFollowingTest(unittest.TestCase):
+    """The scheduler, the selector and the move: a reference bent past the fall angle is followed."""
+
+    def run_scheduler(self, ref_pitch, robot_pitch, seconds=6.0):
+        ref = FakeReceiver()
+        session = Session(metadata())
+        move = WholebodyMove(ref, session=session)
+        standing = StandingMove()
+        standing.step = lambda obs, command: None  # writes no probe joint to the servos
+        selector = PolicySelectableWalkMove(pico_move=standing, wholebody_move=move)
+        selector.preload()
+        h = Harness(selector)
+        trace = []
+
+        def script(tick, _inhibited):
+            t = tick / 50.0
+            ref.time = t
+            ref.send(pitch=ref_pitch(t))
+            trace.append((t, move.phase, selector.effective_policy, len(session.inputs)))
+            return pitch_gravity(robot_pitch(t)), UserInput(
+                active_moves={"walk"}, locomotion_policy="pico_teleop", balance_only=True
+            )
+
+        rows = h.run(script, sec(seconds))
+        return h, rows, trace
+
+    def test_following_a_deep_bow_is_not_a_fall(self):
+        # The robot follows 0.2 s late, past 60 deg for about 1 s.
+        h, rows, trace = self.run_scheduler(bow, lambda t: bow(t - 0.2))
+        self.assertFalse(any(row["override"] for row in rows))
+        self.assertEqual(h.getup.starts, 0)
+        tracking = [(t, phase, policy, runs) for t, phase, policy, runs in trace if t >= 1.6]
+        self.assertTrue(all(phase == Phase.TRACK and policy == "wholebody" for _, phase, policy, _ in tracking))
+        # The policy ran every tick, the bow included (no measured-pose hold).
+        runs = [runs for *_, runs in tracking]
+        self.assertEqual(runs, list(range(runs[0], runs[0] + len(runs))))
+
+    def test_still_a_fall(self):
+        upright = lambda t: HOME_TRUNK_PITCH_RAD
+        for name, ref_pitch, robot_pitch, fell_at in (
+            # The reference never bends: the robot falling past 60 deg at 3 s.
+            ("reference upright", upright, lambda t: math.radians(80.0) if t >= 3.0 else upright(t), 3.0),
+            # The robot stays bent after the reference came back above 60 deg.
+            ("robot stays bent", bow, lambda t: bow(t - 0.2) if t < 3.5 else math.radians(75.0),
+             3.5 + 15.0 / 65.0 + FALL_LAG_S),
+        ):
+            with self.subTest(name):
+                h, rows, trace = self.run_scheduler(ref_pitch, robot_pitch)
+                first = next(row["tick"] for row in rows if row["override"]) / 50.0
+                # Counted from the first fallen tick, 15 ticks (0.3 s) of debounce.
+                self.assertAlmostEqual(first, fell_at + 0.3, delta=0.05)
+
+    def test_a_robot_off_the_references_attitude_is_not_following_it(self):
+        move, ref, _ = started_move()
+        run(move, ref, 0.0, 1.5, pitch=math.radians(75.0))
+        bent = pitch_gravity(math.radians(75.0))
+        self.assertTrue(move.follows_fallen_reference(1.5, bent))
+        # Gravity's z differs by more than the training's anchor_ori line.
+        self.assertFalse(move.follows_fallen_reference(1.5, pitch_gravity(math.radians(140.0))))
+        self.assertFalse(move.follows_fallen_reference(1.5 + FALL_LAG_S + 0.02, bent))
 
 
 if __name__ == "__main__":

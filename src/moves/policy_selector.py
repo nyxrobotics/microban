@@ -528,6 +528,11 @@ class PolicySelectableWalkMove(Move):
                 return learned.can_balance(user_input)
         return self._children["walk"].can_balance(user_input)
 
+    def follows_fallen_reference(self, now_s: float, projected_gravity) -> bool:
+        return self._selected_name == "wholebody" and self._selected.follows_fallen_reference(
+            now_s, projected_gravity
+        )
+
     def on_start(self, obs: Observation, command: MotorCommand) -> None:
         self._poll_reload()
         self._notice_replacement()

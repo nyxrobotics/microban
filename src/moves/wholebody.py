@@ -42,6 +42,12 @@ The stopped activation does not start again: tracking resumes only when the
 PC starts a new one (ACTIVE off then on, or RESTART).  A trunk tilted more
 than 60 deg from vertical holds the measured pose, as the
 PICO policy does: the scheduler's fall detection then starts the get-up.
+The exception is a trunk following the reference's: while the followed
+reference (live, held or returning) is itself past the fall angle, or was
+within FALL_LAG_S (the robot follows late), and the robot keeps to its
+attitude (ORIENTATION_TERMINATION), the policy keeps running and the
+scheduler does not count a fall (``follows_fallen_reference``).  A robot that
+leaves the reference's attitude stops as above and then counts as fallen.
 
 Neck: its targets are the reference's neck angles (the PC fills them from the
 operator's head), clamped to the contract's ``neck_limits_rad_json`` and
@@ -108,6 +114,10 @@ HANDOFF_TILT_DEG = 12.0
 HANDOFF_TICKS = 10
 HANDOFF_MAX_S = 3.0
 FALL_GRAVITY_Z = -0.5
+# A trunk past the fall angle is not a fall while the reference's trunk is
+# past it too, or was within FALL_LAG_S (the robot follows late), and the robot
+# keeps to its attitude (ORIENTATION_TERMINATION).
+FALL_LAG_S = 0.5
 
 
 class WholebodyPolicyRuntimeError(RuntimeError):
@@ -364,6 +374,7 @@ class WholebodyMove(Move):
         self._settled_ticks = 0
         self._neck_target: np.ndarray | None = None
         self._last_time_s: float | None = None
+        self._reference_fell_s: float | None = None  # last time the followed reference was past the fall angle
         self._stop_start_time_s: float | None = None
         self._stop_start_angles: dict[str, float] = {}
         self.handoff_ready = False
@@ -383,6 +394,18 @@ class WholebodyMove(Move):
     def can_balance(self, user_input) -> bool:
         _ = user_input
         return True
+
+    def follows_fallen_reference(self, now_s: float, projected_gravity) -> bool:
+        """The reference's trunk is past the fall angle (or was within
+        FALL_LAG_S) and the robot keeps to the reference's attitude: a trunk
+        past the fall angle is the motion followed, not a fall."""
+        return (
+            self.state == MoveState.ACTIVE
+            and self._current is not None
+            and self._reference_fell_s is not None
+            and now_s - self._reference_fell_s <= FALL_LAG_S
+            and not orientation_diverged(projected_gravity, self._current)
+        )
 
     # Freshness of the stream.
     def _stale_reason(self, snapshot, stream: int | None) -> str | None:
@@ -552,7 +575,8 @@ class WholebodyMove(Move):
         if len(gravity) != 3 or not all(math.isfinite(v) for v in gravity):
             raise WholebodyPolicyRuntimeError("projected gravity is invalid")
         measured = self._measured_positions(obs)
-        if gravity[2] > FALL_GRAVITY_Z:
+        now = float(obs.robot_state.time_s)
+        if gravity[2] > FALL_GRAVITY_Z and not self.follows_fallen_reference(now, gravity):
             # Falling: the scheduler's fall detection owns what follows; the
             # neck keeps its last target.
             for name in OBSERVATION_DOF_ORDER:
@@ -561,10 +585,11 @@ class WholebodyMove(Move):
                 for index, name in enumerate(HEAD_JOINTS):
                     command.target_angles[name] = float(self._neck_target[index])
             return
-        now = float(obs.robot_state.time_s)
         robot_quat = self._body_quat(obs)
         self._update_reference(obs, now, robot_quat)
         assert self._current is not None
+        if float(quat_apply_inverse(self._current.quat, GRAVITY_W)[2]) > FALL_GRAVITY_Z:
+            self._reference_fell_s = now
         frame = build_frame(
             self._current,
             robot_quat=robot_quat,

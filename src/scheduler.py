@@ -150,6 +150,8 @@ class Scheduler:
         # trips; a HOME-relative cone would let a backward fall go to 70 deg).
         # Stand: tilt from the HOME attitude below GETUP_STAND_TILT_DEG (at a
         # vertical-trunk HOME: projected_gravity[2] < -0.9).
+        # Not a fall: a trunk following a reference that is itself tilted
+        # that far (whole-body tracking, Move.follows_fallen_reference).
         self._fall_threshold = -0.5
         self._stand_tilt_rad = math.radians(GETUP_STAND_TILT_DEG)
         self._fall_debounce_ticks = 15  # ~0.3 s at 50 Hz
@@ -429,6 +431,13 @@ class Scheduler:
                                 and model_ready
                                 and not self._getup_auto_failed
                                 and not walk_takes_over
+                            ),
+                            followed=any(
+                                move.state == MoveState.ACTIVE
+                                and move.follows_fallen_reference(
+                                    robot_state.time_s, obs.robot_state.projected_gravity
+                                )
+                                for move in self.registered_moves.values()
                             ),
                         )
                     if self._getup_balancing and walk_ready and not walk_takes_over:
@@ -1289,6 +1298,7 @@ class Scheduler:
         projected_gravity: list[float],
         *,
         balance_when_standing: bool = False,
+        followed: bool = False,
     ) -> bool:
         """Update fall/stand debounce; return True during the pre-get-up hold.
 
@@ -1297,12 +1307,13 @@ class Scheduler:
         and the stance has settled, or when no policy may run), or, with
         ``balance_when_standing``, kept as standing balance. A new fall while
         balancing turns it back into a get-up attempt with a fresh time limit.
+        A ``followed`` tilt (Move.follows_fallen_reference) is not a fall.
         """
         if not self._finite_vector(projected_gravity, 3):
             return False
 
         gz = float(projected_gravity[2])
-        if gz > self._fall_threshold:
+        if gz > self._fall_threshold and not followed:
             self._fallen_tick_count += 1
             self._standing_tick_count = 0
         elif self._standing(projected_gravity):

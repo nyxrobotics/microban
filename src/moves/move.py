@@ -72,6 +72,15 @@ class Move(ABC):
         _ = user_input
         return False
 
+    def follows_fallen_reference(self, now_s: float, projected_gravity) -> bool:
+        """Whether a trunk tilted past the fall angle is following a reference
+        whose own trunk is tilted that far (whole-body tracking).
+
+        The scheduler does not count such a tilt as a fall.  Default: never.
+        """
+        _ = now_s, projected_gravity
+        return False
+
     def on_safety_resume(self, obs: Observation) -> None:
         """Resynchronize private transition state after a scheduler safety hold.
 
