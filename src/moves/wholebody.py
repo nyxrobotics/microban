@@ -79,7 +79,7 @@ from constants import (
     SERVO_TARGET_RANGE_RAD,
 )
 from controller import ControllerProtocol
-from input.wholebody_reference import ReferenceFrame, ReferenceReceiver
+from input.wholebody_reference import HELD, LATE, STALE, ReferenceFrame, ReferenceReceiver
 from moves.move import MotorCommand, Move, MoveState
 from observer import Observation
 from policy_contract import HEAD_JOINTS
@@ -123,6 +123,13 @@ FALL_GRAVITY_Z = -0.5
 # past it too, or was within FALL_LAG_S (the robot follows late), and the robot
 # keeps to its attitude (ORIENTATION_TERMINATION).
 FALL_LAG_S = 0.5
+# The reference stands quietly, as every piece of the training's benchmark
+# starts (mjlab_microban wholebody/benchmark.py standing_frames, its trunk
+# checks: near upright, at standing height, slow; the soles are not in the
+# stream's trunk): tracking starts only then (the selector's start).
+REFERENCE_STAND_TILT_DEG = 30.0
+REFERENCE_STAND_DROP_M = 0.02
+REFERENCE_STAND_SPEED_M_S = 0.05
 
 
 class WholebodyPolicyRuntimeError(RuntimeError):
@@ -430,6 +437,32 @@ class WholebodyMove(Move):
             return "the PC lost the operator's body (STALE)"
         if snapshot.held_flag_s > MAX_HELD_FLAG_S:
             return "the PC held an excluded pose (HELD)"
+        return None
+
+    def reference_unsteady(self) -> str | None:
+        """Why the newest reference frame does not stand quietly (None: it does).
+
+        The benchmark's standing frame on the trunk: tilted at most
+        REFERENCE_STAND_TILT_DEG from vertical, at most REFERENCE_STAND_DROP_M
+        below HOME's height and slower than REFERENCE_STAND_SPEED_M_S; and the
+        operator's own pose (not the PC's interruption reference).
+        """
+        snapshot = self._reference.read()
+        frame = snapshot.frame
+        if frame is None or self._reference.now() - snapshot.received_s > MAX_REFERENCE_AGE_S:
+            return "no fresh reference frame"
+        if frame.flags & (STALE | HELD | LATE):
+            return "the PC sends its interruption reference (STALE, HELD or LATE), not the operator"
+        _, x, y, _ = (float(v) for v in frame.anchor_quat)
+        tilt = math.degrees(math.acos(max(-1.0, min(1.0, 1.0 - 2.0 * (x * x + y * y)))))
+        if tilt > REFERENCE_STAND_TILT_DEG:
+            return f"the operator's trunk is tilted {tilt:.0f} deg"
+        height = float(frame.anchor_pos[2])
+        if height < HOME_ROOT_POS_Z_M - REFERENCE_STAND_DROP_M:
+            return f"the operator's trunk is {100.0 * (HOME_ROOT_POS_Z_M - height):.0f} cm below standing"
+        speed = float(np.linalg.norm(frame.anchor_lin_vel))
+        if speed > REFERENCE_STAND_SPEED_M_S:
+            return f"the operator's trunk moves at {speed:.2f} m/s"
         return None
 
     def start_refusal(self) -> str | None:

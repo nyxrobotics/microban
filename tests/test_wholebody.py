@@ -613,6 +613,25 @@ class SelectorTest(unittest.TestCase):
         self.assertEqual(move.phase, Phase.SETTLE)
         self.assertEqual(standing.starts, 1)
 
+    def test_tracking_waits_for_the_operator_to_stand_still(self):
+        """The robot stands still but the operator does not stand quietly: no start until they do."""
+        selector, move, ref, standing = self.selector()
+        self.tick(selector, ref, 0.0, height=0.10)  # crouching, kneeling: the trunk 7 cm below standing
+        t = self.run_until(selector, ref, 0.0, 1.0, height=0.10)
+        self.assertEqual(selector.effective_policy, "pico_teleop")
+        self.assertIsNone(move.start_refusal())  # the activation waits, not refused
+        self.assertIn("below standing", move.reference_unsteady())
+        for name, frame in (("bent", {"pitch": math.radians(40.0)}), ("moving", {"vel": 0.2}),
+                            ("the PC's interruption reference", {"flags": ENGAGED | HELD})):
+            with self.subTest(name):
+                t = self.run_until(selector, ref, t, t + 0.9, **frame)
+                self.assertEqual(selector.effective_policy, "pico_teleop")
+                self.assertIsNotNone(move.reference_unsteady())
+        # Standing quietly (a slow sway passes): tracking starts 25 ticks later.
+        t = self.start_tracking(selector, ref, t, vel=0.03)
+        self.assertEqual(move.phase, Phase.SETTLE)
+        self.assertEqual(standing.starts, 1)
+
     def test_a_stale_stream_stands_until_the_pc_starts_again(self):
         selector, move, ref, standing = self.selector()
         t = 0.0
