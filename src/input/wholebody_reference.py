@@ -10,7 +10,7 @@ a little-endian header followed by float32 arrays in the order of
 ``wholebody/data/hdf5.py`` FRAME_KEYS::
 
     magic        4s   b"MBWB"
-    version      u16  1
+    version      u16  2 (1: a PC that jumps out of HELD; refused)
     joint_count  u16  21 (head, neck_roll, neck_pitch, then OBSERVATION_DOF_ORDER)
     body_count   u16  22 (robot.xml's bodies; body 0 is the trunk, the anchor)
     seq          u32  +1 per frame from 0 at the PC's start, modulo 2^32
@@ -22,6 +22,13 @@ a little-endian header followed by float32 arrays in the order of
     body_quat_w     float32[22, 4]  w, x, y, z
     body_lin_vel_w  float32[22, 3]  m/s, world
     body_ang_vel_w  float32[22, 3]  rad/s, world
+
+Version 2 is the PC that carries the reference through an interruption
+(STALE, HELD, LATE) and back without a jump (mjlab_microban preflight-fixes,
+"途切れの扱い"): the whole-body move follows HELD for up to a second on that.
+A version-1 PC sent the held pose and then, when HELD cleared, the live one in
+one frame (up to 1 rad on a knee): its frames are refused, and the receiver
+says so once.
 
 The receiver keeps the newest frame with its arrival time, the count of
 frames lost (sequence gaps) since it started, the frame's latency above the
@@ -49,7 +56,7 @@ import numpy as np
 from input.network_input import read_allowed_ip_file
 
 MAGIC = b"MBWB"
-VERSION = 1
+VERSION = 2
 HEADER = struct.Struct("<4sHHHIdH")
 NUM_JOINTS = 21
 NUM_BODIES = 22
@@ -76,6 +83,10 @@ LATENCY_WINDOW_S = 10.0
 
 class ReferenceDecodeError(ValueError):
     """A datagram is not a whole-body reference frame."""
+
+
+class ReferenceVersionError(ReferenceDecodeError):
+    """A reference frame of another version of the stream."""
 
 
 @dataclass(frozen=True)
@@ -126,7 +137,7 @@ def decode_frame(data: bytes) -> ReferenceFrame:
     if magic != MAGIC:
         raise ReferenceDecodeError("bad magic")
     if version != VERSION:
-        raise ReferenceDecodeError(f"unsupported version {version}")
+        raise ReferenceVersionError(f"unsupported version {version}")
     if joints != NUM_JOINTS or bodies != NUM_BODIES:
         raise ReferenceDecodeError(f"{joints} joints / {bodies} bodies")
     if len(data) != frame_size(joints, bodies):
@@ -203,6 +214,7 @@ class ReferenceReceiver:
         self._flag_since: dict[int, float] = {}
         self._offsets: collections.deque[tuple[float, float]] = collections.deque()
         self.rejected = 0
+        self._version_said = False
         self._sock: socket.socket | None = None
         self._thread: threading.Thread | None = None
         self._running = False
@@ -211,8 +223,16 @@ class ReferenceReceiver:
     def accept(self, data: bytes, received_s: float | None = None) -> bool:
         try:
             frame = decode_frame(data)
-        except ReferenceDecodeError:
+        except ReferenceDecodeError as exc:
             self.rejected += 1
+            if isinstance(exc, ReferenceVersionError) and not self._version_said:
+                self._version_said = True
+                print(
+                    f"Whole-body reference refused: {exc}; this runtime takes version {VERSION} "
+                    "(the PC's live retargeting from mjlab_microban preflight-fixes on)",
+                    end="\r\n",
+                    flush=True,
+                )
             return False
         now = self._clock() if received_s is None else received_s
         with self._lock:

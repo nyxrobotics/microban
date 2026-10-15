@@ -250,6 +250,22 @@ class WireTest(unittest.TestCase):
             with self.subTest(name), self.assertRaises(ReferenceDecodeError):
                 decode_frame(data)
 
+    def test_a_pc_that_jumps_out_of_held_is_not_heard(self):
+        """Version 1 is the PC that sends the held pose, then the live one in one frame: no frame of it is used."""
+        receiver = ReferenceReceiver(port=1, clock=lambda: 0.0)
+        old = lambda seq, flags, **frame: encode_frame(seq, 0.02 * seq, frame_arrays(**frame), flags)[:4] + (
+            1).to_bytes(2, "little") + encode_frame(seq, 0.02 * seq, frame_arrays(**frame), flags)[6:]
+        with mock.patch("builtins.print") as said:
+            for seq in range(3):
+                self.assertFalse(receiver.accept(old(seq, ENGAGED | HELD), 0.02 * seq))
+            self.assertFalse(receiver.accept(old(3, ENGAGED, joint_offset=1.0), 0.06))  # HELD cleared: the jump
+        snapshot = receiver.read()
+        self.assertIsNone(snapshot.frame)
+        self.assertEqual((snapshot.activation, receiver.rejected), (0, 4))
+        self.assertEqual(said.call_count, 1)
+        self.assertIn("unsupported version 1", said.call_args.args[0])
+        self.assertTrue(receiver.accept(encode_frame(4, 0.08, frame_arrays(), ENGAGED), 0.08))
+
     def test_receiver_reports_gaps_restarts_late_frames_and_activations(self):
         receiver = ReferenceReceiver(port=1, clock=lambda: 0.0)
 

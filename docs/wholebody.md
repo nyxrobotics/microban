@@ -69,7 +69,7 @@ PYTHONPATH=src uv run --locked python tools/install_wholebody_policy.py <wholebo
 | 操縦の包みが `walk` | |
 
 HELD を 1 秒まで追うのは、PC が途切れ（STALE、HELD、LATE）の間と写しの姿勢へ戻る間に、どのフレームも 1 刻みで学習データの 99.9% 点より大きく変えない（跳ばない）ことが前提（mjlab_microban `docs/wholebody_reference_stream.md` の「途切れの扱い」、preflight-fixes から）。
-それより前の写しは、HELD が明けた 1 フレームで保った姿勢から今の姿勢へ跳ぶ（膝で最大約 1 rad、胴の向き 17〜38°、高さ 40〜60 mm）ので、組み合わせない。
+その写しはお手本の形式の版 2 を送る。それより前の写し（版 1）は、HELD が明けた 1 フレームで保った姿勢から今の姿勢へ跳ぶ（膝で最大約 1 rad、胴の向き 17〜38°、高さ 40〜60 mm）ので、受信が版 1 のフレームを捨てる（追従は始まらず、端末に一度 `Whole-body reference refused: unsupported version 1` と出る）。
 
 どれも同じ流れで止める（方策は動かしたまま）。
 

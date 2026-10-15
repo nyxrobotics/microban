@@ -109,8 +109,9 @@ MAX_STALE_FLAG_S = 0.25  # the PC sets STALE after 0.25 s without the operator's
 # HELD is followed for up to 1 s: through it the PC sends its interruption
 # reference and comes back to the operator with no frame changing more than
 # the training reference's 99.9th percentile per tick (mjlab_microban
-# docs/wholebody_reference_stream.md, from its preflight-fixes; an older PC
-# jumps from the held pose to the live one in one frame when HELD clears).
+# docs/wholebody_reference_stream.md, stream version 2; a version-1 PC jumps
+# from the held pose to the live one in one frame when HELD clears, and the
+# receiver refuses its frames).
 MAX_HELD_FLAG_S = 1.0
 ORIENTATION_TERMINATION = 1.0
 STOP_HOLD_S = 0.5
