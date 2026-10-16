@@ -129,6 +129,14 @@ class PicoArmTrackingMove(Move):
 
     def on_start(self, obs: Observation, command: MotorCommand) -> None:
         self._initialize_from_observation(obs)
+        if self._claim.active:
+            # The whole-body policy drives the arms; registered after walk,
+            # writing here would override its output for a tick.
+            self._stop_start_time_s = None
+            self._stop_start_angles = {}
+            self._suspended_for_getup = True
+            self.state = MoveState.ACTIVE
+            return
         if self._controller is not None:
             ids = [MOTOR_TO_ID[name] for name in PICO_ARM_JOINT_ORDER]
             self._controller.sync_write_kp(ids, [KP_RL] * len(ids))

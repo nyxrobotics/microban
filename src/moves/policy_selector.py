@@ -1,27 +1,25 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright 2026 nyxrobotics
 
-"""Select PICO locomotion or whole-body tracking; hold position if no actor is available.
+"""Select the whole-body policy, PICO locomotion or the position hold.
 
-Whole-body tracking (moves/wholebody.py) runs while the PC's reference stream
-says the operator started it (CALIBRATED and ACTIVE) and the wire asks for
-``pico_teleop`` or ``wholebody`` with the policy enabled (R3); the PICO
-triggers and joystick are not used meanwhile.  It starts only when the robot
-and the operator both stand still, as the training benchmark's pieces start
-(the robot at rest at HOME, the reference standing quietly): the robot on the
-standing policy with the left trigger released (``balance_only``), its trunk
-within WHOLEBODY_START_TILT_DEG of the HOME attitude and its legs still, and
-the PC's reference standing quietly (WholebodyMove.reference_unsteady), for
-WHOLEBODY_START_TICKS ticks; until then the activation waits and the standing
-policy keeps the robot (a walking or stepping robot is never switched, nor a
-robot sent into a crouching, kneeling or moving operator's pose).  When the PC
-stops, the stream goes stale, the trunk leaves the reference's attitude or ``walk`` is asked
-for, the move holds, returns to the HOME stance and hands the robot to the
-standing policy: the PICO policy when it is installed, else the position
-hold.  A stopped or refused activation is not tracked again; the PC's next
-start (ACTIVE off then on, or RESTART) is.  While tracking, the arm overlay
-(pico_arms) and the HMD head move yield (``WholebodyClaim``): the policy
-drives the arms and the move drives the neck to the reference's neck angles.
+With the whole-body policy installed (moves/wholebody.py loaded and
+self-tested), it drives the robot the whole time the policy is enabled (R3),
+whatever the wire's ``locomotion_policy``: it stands the robot on its own
+HOME reference and joins the PC's reference when the operator starts it and
+the robot and the operator stand still; when the PC stops or the stream goes
+stale it coasts, returns to HOME and stands again.  The PICO policy does not
+stand the robot then, and the PICO triggers and joystick are not used.
+``walk`` on the wire stops tracking and keeps the robot standing.  While it
+runs, the arm overlay (pico_arms) yields (``WholebodyClaim.active``: the
+policy drives the arms); the HMD head move yields only while the PC's
+reference is followed (``WholebodyClaim.neck``: the move drives the neck to
+the reference's neck angles).
+
+A whole-body policy that fails to start or to infer gives the robot to the
+standing policy (PICO when it is installed, else the position hold) until
+the next start (R3, or the hand-back after a get-up); then PICO is selected
+as without the whole-body policy.
 """
 
 from __future__ import annotations
@@ -34,31 +32,15 @@ from pathlib import Path
 
 from constants import KP_HARDWARE_NEUTRAL, MOTOR_TO_ID, NEUTRAL_POSE, OBSERVATION_DOF_ORDER
 from controller import ControllerProtocol
-from home_pose import tilt_from_home_rad
 from moves.move import MotorCommand, Move, MoveState, WholebodyClaim
-from moves.pico_arms import PICO_ARM_JOINT_ORDER, PicoArmTargetHold
+from moves.pico_arms import PicoArmTargetHold
 from moves.pico_hybrid import AGENT_NAME as PICO_AGENT_NAME
 from moves.pico_hybrid import PicoHybridMove
-from moves.wholebody import HANDOFF_TILT_DEG, WholebodyMove
+from moves.wholebody import WholebodyMove
 from observer import Observation
 from wholebody_contract import POLICY_FILE as WHOLEBODY_POLICY_FILE
 
 POLICY_NAMES = frozenset({"walk", "pico_teleop", "wholebody"})
-# Whole-body tracking starts after this many ticks (0.5 s at 50 Hz) of standing
-# still on the standing policy: the trunk within the hand-off's tilt of HOME
-# and every leg joint slower than WHOLEBODY_START_LEG_SPEED_RAD_S, while the
-# reference stands quietly too (in the runtime simulation a start into a
-# kneeling reference, the trunk 9-10 cm below standing, fell 0.9 and 3.1 s
-# later).  The PICO
-# policy keeps stepping for 0.4-1.4 s after the trigger is released with its
-# trunk within 11 deg of HOME (runtime simulation): the trunk alone does not
-# tell a step from a stand; the legs move at 1.7-4.6 rad/s while stepping and
-# below 0.4 rad/s standing.
-WHOLEBODY_START_TILT_DEG = HANDOFF_TILT_DEG
-WHOLEBODY_START_LEG_SPEED_RAD_S = 1.0
-WHOLEBODY_START_TICKS = 25
-LEG_JOINTS = tuple(name for name in OBSERVATION_DOF_ORDER if name not in PICO_ARM_JOINT_ORDER)
-
 # Builds the learned move from the installed policy (tests inject their own).
 LearnedMoveFactory = Callable[[ControllerProtocol | None, Path], Move]
 PolicyFingerprint = tuple[int, int, int, int]
@@ -239,12 +221,6 @@ class PolicySelectableWalkMove(Move):
         self._fallback_reason: str | None = None
         self._last_pico_targets: dict[str, float] | None = None
         self._last_balance_only = False
-        # Consecutive ticks the robot (on the standing policy) and the operator
-        # stood still (see _count_standing); whole-body tracking starts at
-        # WHOLEBODY_START_TICKS.  _standing_wait: why not this tick.
-        self._standing_ticks = 0
-        self._standing_wait: str | None = None
-        self._start_wait_said = False
 
         self._reload_lock = threading.Lock()
         self._reload_thread: threading.Thread | None = None
@@ -460,6 +436,7 @@ class PolicySelectableWalkMove(Move):
         )
         self._selected = child
         self._claim.active = name == "wholebody"
+        self._claim.neck = False
         self.state = MoveState.ACTIVE
 
     def _remember_pico_targets(self, command: MotorCommand) -> None:
@@ -518,16 +495,20 @@ class PolicySelectableWalkMove(Move):
     def can_balance(self, user_input) -> bool:
         """Whether on_start for ``user_input`` would select a balancing child.
 
-        Mirrors on_start's choice: a loaded learned policy when it is
-        requested and its tracking is not degraded, otherwise the fallback
-        child (the static _HoldPositionMove on the PICO runtime); for
-        ``wholebody``, the standing child (tracking never starts at on_start).
-        A finished background reload is adopted first, exactly as on_start would.
+        Mirrors on_start's choice: the whole-body policy when it is loaded
+        (on_start clears an earlier failure), else a loaded learned policy
+        when it is requested and its tracking is not degraded, otherwise the
+        fallback child (the static _HoldPositionMove on the PICO runtime);
+        for ``wholebody``, the standing child.  A finished background reload
+        is adopted first, exactly as on_start would.
         """
         requested = user_input.locomotion_policy
         if requested not in POLICY_NAMES:
             return False
         self._poll_reload()
+        wholebody = self._children.get("wholebody")
+        if wholebody is not None:
+            return wholebody.can_balance(user_input)
         if requested == "wholebody":
             return self._standing_child()[1].can_balance(user_input)
         if requested == "pico_teleop" and not user_input.learned_policy_degraded:
@@ -547,15 +528,20 @@ class PolicySelectableWalkMove(Move):
         self._fallback_latched = False
         self._last_pico_targets = None
         self._last_balance_only = bool(obs.user_input.balance_only)
-        self._standing_ticks = 0
         requested = self._requested_policy(obs)
+        self._last_learned_targets = None
+        wholebody = self._children.get("wholebody")
+        if wholebody is not None:
+            try:
+                wholebody.joins_allowed = requested != "walk"
+                self._start_child("wholebody", wholebody, obs, command)
+                self._remember_learned_targets(command)
+            except Exception as exc:  # noqa: BLE001 - learned child only
+                self._wholebody_failed(self._describe_failure("whole-body start", exc))
+                self._start_standing(obs, command, step_now=False)
+            return
         if requested == "wholebody":
-            # Tracking starts in step, once the robot stands still on the
-            # standing policy (an activation of the PC waits for it).
-            self._last_learned_targets = None
-            refusal = self._wholebody_start_refusal()
-            if refusal is not None:
-                self._fallback_reason = refusal
+            self._fallback_reason = self.wholebody_unavailable_reason or "whole-body policy unavailable"
             self._start_standing(obs, command, step_now=False)
             return
         child = self._children.get(requested)
@@ -594,21 +580,13 @@ class PolicySelectableWalkMove(Move):
             # A trigger release permits one retry, not one retry per balance tick.
             self._fallback_latched = False
         self._last_balance_only = balance_only
-        self._count_standing(obs)
 
         requested = self._requested_policy(obs)
-        wanted = (
-            requested in ("pico_teleop", "wholebody")
-            and self._selected_name != "wholebody"
-            and self._wholebody_wanted()
-        )
-        self._say_start_wait(wanted and not self._wholebody_ready())
-        if (
-            requested == "wholebody"
-            or self._selected_name == "wholebody"
-            or (requested == "pico_teleop" and wanted and self._wholebody_ready())
-        ):
-            self._step_wholebody_mode(obs, command, requested)
+        if self._selected_name == "wholebody":
+            self._step_wholebody(obs, command, requested)
+            return
+        if requested == "wholebody":
+            self._step_standing(obs, command)
             return
         if self._selected_name == "pico_teleop" and requested != "pico_teleop":
             if obs.user_input.learned_policy_degraded:
@@ -686,63 +664,6 @@ class PolicySelectableWalkMove(Move):
         pico = self._children.get("pico_teleop")
         return ("pico_teleop", pico) if pico is not None else ("walk", self._children["walk"])
 
-    def _wholebody_start_refusal(self) -> str | None:
-        child = self._children.get("wholebody")
-        if child is None:
-            return self.wholebody_unavailable_reason or "whole-body policy unavailable"
-        return child.start_refusal()
-
-    def _wholebody_wanted(self) -> bool:
-        """The PC started an activation that may be tracked now."""
-        return self._wholebody_start_refusal() is None
-
-    def _count_standing(self, obs: Observation) -> None:
-        """Count the ticks the robot and the operator have both stood still.
-
-        The robot: the standing policy with the left trigger released (no
-        velocity or foot target reaches the policy), the trunk within
-        WHOLEBODY_START_TILT_DEG of the HOME attitude and no leg joint moving
-        at WHOLEBODY_START_LEG_SPEED_RAD_S (not stepping).  The operator: the
-        PC's reference stands quietly (WholebodyMove.reference_unsteady, the
-        training benchmark's start).  Any other tick, and every tick of
-        whole-body tracking, starts the count again.
-        """
-        self._standing_wait = self._standing_wait_reason(obs)
-        self._standing_ticks = self._standing_ticks + 1 if self._standing_wait is None else 0
-
-    def _standing_wait_reason(self, obs: Observation) -> str | None:
-        """Why the robot and the operator do not both stand still this tick (None: they do)."""
-        if self._selected_name in (None, "wholebody"):
-            return "not on the standing policy"
-        if not obs.user_input.balance_only:
-            return "the left trigger is held"
-        tilt = tilt_from_home_rad(obs.robot_state.projected_gravity)
-        if tilt is None or tilt >= math.radians(WHOLEBODY_START_TILT_DEG):
-            return "the robot's trunk is off the HOME attitude"
-        speeds = [obs.robot_state.motor_velocities.get(name) for name in LEG_JOINTS]
-        if not all(speed is not None and abs(float(speed)) < WHOLEBODY_START_LEG_SPEED_RAD_S for speed in speeds):
-            return "the robot's legs move"
-        child = self._children.get("wholebody")
-        if child is None:
-            return "whole-body policy unavailable"
-        return child.reference_unsteady()
-
-    def _wholebody_ready(self) -> bool:
-        """The robot and the operator have stood still long enough for whole-body tracking to start."""
-        return self._standing_ticks >= WHOLEBODY_START_TICKS
-
-    def _say_start_wait(self, waiting: bool) -> None:
-        """Once per wait, say why the PC's start waits (the PC already said it started)."""
-        if not waiting:
-            self._start_wait_said = False
-        elif not self._start_wait_said:
-            self._start_wait_said = True
-            print(
-                "Whole-body tracking waits for the robot and the operator to stand still for "
-                f"{WHOLEBODY_START_TICKS * 0.02:.1f} s (now: {self._standing_wait or 'still, counting'})",
-                flush=True,
-            )
-
     def _remember_learned_targets(self, command: MotorCommand) -> None:
         try:
             targets = {name: float(command.target_angles[name]) for name in OBSERVATION_DOF_ORDER}
@@ -764,49 +685,28 @@ class PolicySelectableWalkMove(Move):
                 raise
             self._fallback_from_exception("start", exc, obs, command, step_now=step_now)
 
-    def _try_start_wholebody(self, obs: Observation, command: MotorCommand) -> bool:
-        """Start whole-body tracking; on refusal record why and return False.
+    def _wholebody_failed(self, reason: str) -> None:
+        self._fallback_reason = reason
+        _, child = self._standing_child()
+        on = "the PICO policy" if child is self._children.get("pico_teleop") else "the position hold"
+        print(f"Whole-body policy failed: {reason}; standing on {on} until the next start", flush=True)
 
-        An activation that may run waits, unrefused, until the robot stands
-        still (_wholebody_ready).
-        """
-        refusal = self._wholebody_start_refusal()
-        if refusal is None and not self._wholebody_ready():
-            return False
-        if refusal is None:
-            child = self._children["wholebody"]
-            try:
-                self._start_child("wholebody", child, obs, command)
-                self._remember_learned_targets(command)
-                return True
-            except Exception as exc:  # noqa: BLE001 - learned child only
-                refusal = self._describe_failure("whole-body start", exc)
-                child.refuse(refusal)
-        self._fallback_reason = refusal
-        return False
+    def _step_wholebody(self, obs: Observation, command: MotorCommand, requested: str) -> None:
+        child = self._selected
+        child.joins_allowed = requested != "walk"
+        if requested == "walk":
+            child.request_stop("walk requested", float(obs.robot_state.time_s))
+        try:
+            child.step(obs, command)
+        except Exception as exc:  # noqa: BLE001 - learned child only
+            self._wholebody_failed(self._describe_failure("whole-body inference", exc))
+            self._start_standing(obs, command, step_now=True)
+            return
+        self._claim.neck = bool(getattr(child, "drives_neck", False))
+        self._remember_learned_targets(command)
 
-    def _step_wholebody_mode(self, obs: Observation, command: MotorCommand, requested: str) -> None:
-        if self._selected_name == "wholebody":
-            child = self._selected
-            if requested not in ("wholebody", "pico_teleop"):
-                child.request_stop(f"{requested} requested", float(obs.robot_state.time_s))
-            try:
-                child.step(obs, command)
-            except Exception as exc:  # noqa: BLE001 - learned child only
-                reason = self._describe_failure("whole-body inference", exc)
-                child.refuse(reason)
-                self._fallback_reason = reason
-                print(f"Whole-body tracking failed: {reason}; standing", flush=True)
-                self._start_standing(obs, command, step_now=True)
-                return
-            self._remember_learned_targets(command)
-            if child.handoff_ready:
-                # Back at HOME: the standing policy takes the robot.
-                self._fallback_reason = child.stop_reason
-                self._start_standing(obs, command, step_now=False)
-            return
-        if self._try_start_wholebody(obs, command):
-            return
+    def _step_standing(self, obs: Observation, command: MotorCommand) -> None:
+        """``wholebody`` asked for without the whole-body policy: the standing policy."""
         if self._selected is not self._standing_child()[1]:
             self._start_standing(obs, command, step_now=True)
             return
@@ -828,25 +728,24 @@ class PolicySelectableWalkMove(Move):
             return
         if self._selected.state != MoveState.STOPPING:
             self._selected.state = MoveState.STOPPING
+        self._claim.neck = False
         self._selected.on_stop(obs, command)
         self._sync_stop_state()
 
     def _sync_stop_state(self) -> None:
         if self._selected is not None and self._selected.state == MoveState.INACTIVE:
             self._claim.active = False
+            self._claim.neck = False
             self._selected = None
             self._selected_name = None
             self._fallback_latched = False
             self._last_pico_targets = None
             self._last_balance_only = False
-            self._standing_ticks = 0
-            self._start_wait_said = False
             self.state = MoveState.INACTIVE
         else:
             self.state = MoveState.STOPPING
 
     def on_safety_resume(self, obs: Observation) -> None:
         self._last_pico_targets = None
-        self._standing_ticks = 0
         if self._selected is not None:
             self._selected.on_safety_resume(obs)

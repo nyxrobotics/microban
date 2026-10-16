@@ -1,4 +1,5 @@
-"""Whole-body tracking: contract, reference wire, stop sequence and policy selection.
+"""Whole-body policy: contract, reference wire, its own standing reference, the join, the stop sequence and policy
+selection.
 
 The observation itself is checked against the training in
 test_wholebody_observation.py.
@@ -17,6 +18,7 @@ import numpy as np
 
 from constants import (
     HOME_PROJECTED_GRAVITY,
+    HOME_ROOT_POS_Z_M,
     HOME_ROOT_QUAT_WXYZ,
     HOME_TRUNK_PITCH_RAD,
     NEUTRAL_POSE,
@@ -27,6 +29,7 @@ from input.wholebody_reference import (
     ACTIVE,
     CALIBRATED,
     HELD,
+    LATE,
     RESTART,
     STALE,
     ReferenceDecodeError,
@@ -38,20 +41,29 @@ from moves.move import MotorCommand, Move, MoveState
 from moves.hmd_head import HmdHeadTrackingMove
 from moves.move import WholebodyClaim
 from moves.pico_arms import PicoArmTrackingMove
-from moves.policy_selector import WHOLEBODY_START_TICKS, PolicySelectableWalkMove
+from moves.policy_selector import PolicySelectableWalkMove
 from moves.wholebody import (
+    COAST_S,
+    DT,
+    ENTER_S,
     FALL_LAG_S,
-    HANDOFF_TICKS,
+    HEADING_STEP_RAD,
+    JOIN_S,
     MAX_HELD_FLAG_S,
     MAX_SEQUENCE_GAP,
     MAX_STALE_FLAG_S,
     RETURN_S,
-    SETTLE_S,
+    STILL_TICKS,
     STOP_HOLD_S,
     Phase,
+    Reference,
     WholebodyMove,
+    coast_reference,
+    quat_conj,
     quat_from_yaw,
     quat_mul,
+    rotvec_from_quat,
+    yaw_of,
 )
 from observer import Observation, RobotState
 from policy_contract import PolicyContractError, PolicySelfTestError
@@ -192,7 +204,8 @@ class ContractTest(unittest.TestCase):
 ENGAGED = CALIBRATED | ACTIVE
 
 
-def frame_arrays(*, pitch=HOME_TRUNK_PITCH_RAD, height=0.17, joint_offset=0.0, yaw=0.0, vel=0.0, neck=(0.0, 0.0, 0.0)):
+def frame_arrays(*, pitch=HOME_TRUNK_PITCH_RAD, height=0.17, joint_offset=0.0, yaw=0.0, vel=0.0, turn=0.0,
+                 neck=(0.0, 0.0, 0.0)):
     quat = quat_mul(quat_from_yaw(yaw), [math.cos(pitch / 2), 0.0, math.sin(pitch / 2), 0.0])
     joints = np.array([NEUTRAL_POSE[n] for n in ROBOT_JOINTS]) + joint_offset
     joints[:3] = neck  # head, neck_roll, neck_pitch (HOME is 0)
@@ -202,7 +215,7 @@ def frame_arrays(*, pitch=HOME_TRUNK_PITCH_RAD, height=0.17, joint_offset=0.0, y
         "body_pos_w": np.vstack([[0.0, 0.0, height], others]),
         "body_quat_w": np.vstack([quat, np.tile([1.0, 0.0, 0.0, 0.0], (21, 1))]),
         "body_lin_vel_w": np.vstack([[vel, 0.0, 0.0], others]),
-        "body_ang_vel_w": np.vstack([[0.0, 0.0, vel], others]),
+        "body_ang_vel_w": np.vstack([[0.0, 0.0, vel + turn], others]),
     }
 
 
@@ -316,113 +329,193 @@ class FakeReceiver:
         return self.time
 
 
-def tick_obs(t, *, gravity=None, quat=None, moves=("walk",), balance_only=False, policy="wholebody", joint_speed=0.0):
+def pitched(pitch, yaw=0.0):
+    """(quat, projected gravity) of a trunk at heading ``yaw`` pitched ``pitch`` about y."""
+    quat = list(quat_mul(quat_from_yaw(yaw), [math.cos(pitch / 2), 0.0, math.sin(pitch / 2), 0.0]))
+    return quat, [math.sin(pitch), 0.0, -math.cos(pitch)]
+
+
+def tick_obs(t, *, gravity=None, quat=None, moves=("walk",), balance_only=True, policy="pico_teleop",
+             joint_speed=0.0, positions=None):
     quat = list(HOME_ROOT_QUAT_WXYZ) if quat is None else quat
     return Observation(
         robot_state=RobotState(
             time_s=t, gyro=[0.0, 0.0, 0.0], body_quat=quat,
             projected_gravity=list(HOME_PROJECTED_GRAVITY) if gravity is None else gravity,
-            motor_positions=dict(NEUTRAL_POSE), motor_velocities={n: joint_speed for n in NEUTRAL_POSE},
+            motor_positions=dict(NEUTRAL_POSE) if positions is None else positions,
+            motor_velocities={n: joint_speed for n in NEUTRAL_POSE},
         ),
         user_input=UserInput(active_moves=set(moves), locomotion_policy=policy, balance_only=balance_only),
     )
 
 
-def started_move(action=0.01):
+def started_move(action=0.01, obs=None):
     ref = FakeReceiver()
     session = Session(metadata(), action=action)
     move = WholebodyMove(ref, session=session)
-    ref.send()
     move.state = MoveState.STARTING
-    move.on_start(tick_obs(0.0), MotorCommand())
+    move.on_start(obs or tick_obs(0.0), MotorCommand())
     return move, ref, session
 
 
-def run(move, ref, start, end, send=True, **frame):
-    """Ticks from ``start`` to ``end`` (s), the PC sending a frame each tick when ``send``."""
-    command = MotorCommand()
-    for k in range(round((end - start) / 0.02)):
-        t = start + 0.02 * (k + 1)
+def run(move, ref, start, end, send=True, until=None, obs=None, **frame):
+    """Ticks from ``start`` to ``end`` (s), the PC sending a frame each tick when ``send``; ``obs(t)`` the robot."""
+    command, t = MotorCommand(), start
+    for k in range(round((end - start) / DT)):
+        t = start + DT * (k + 1)
         ref.time = t
         if send:
             ref.send(**frame)
         command = MotorCommand()
-        move.step(tick_obs(t), command)
-        if move.handoff_ready:
+        move.step(obs(t) if obs else tick_obs(t), command)
+        if until is not None and until():
             break
     return command, t
 
 
+def terms(session, index=-1):
+    """The newest frame's terms of the ``index``-th policy input."""
+    frame = session.inputs[index][0, -1]
+    return {name: frame[s] for name, s in wc.term_slices().items()}
+
+
+HOME_18 = np.array([NEUTRAL_POSE[n] for n in OBSERVATION_DOF_ORDER])
+
+
+def to_track(move, ref, t=0.0, **frame):
+    """Ticks (the PC sending ``frame``) until the move tracks."""
+    _, t = run(move, ref, t, t + 4.0, until=lambda: move.phase == Phase.TRACK, **frame)
+    assert move.phase == Phase.TRACK, move.phase
+    return t
+
+
 class MoveTest(unittest.TestCase):
-    def test_targets_are_home_plus_raw_and_the_neck_follows_the_reference(self):
-        move, ref, _ = started_move(action=0.25)
-        command, _ = run(move, ref, 0.0, 0.1)
-        for name in OBSERVATION_DOF_ORDER:
-            self.assertAlmostEqual(command.target_angles[name], max(-math.pi, min(math.pi, NEUTRAL_POSE[name] + 0.25)))
-        for name in ("head", "neck_roll", "neck_pitch"):
-            self.assertAlmostEqual(command.target_angles[name], NEUTRAL_POSE[name])
+    def test_r3_stands_on_its_own_home_reference_without_a_pc(self):
+        move, ref, session = started_move()
+        _, t = run(move, ref, 0.0, ENTER_S - 2 * DT, send=False)
+        self.assertEqual(move.phase, Phase.ENTER)
+        _, t = run(move, ref, t, t + 0.1, send=False)
+        self.assertEqual(move.phase, Phase.STAND)
+        first = session.inputs[0][0]
+        self.assertTrue(np.array_equal(first, np.repeat(first[-1:], wc.HISTORY_LENGTH, axis=0)))
+        self.assertEqual(float(np.abs(first[-1, wc.term_slices()["actions"]]).max()), 0.0)
+        now = terms(session)
+        np.testing.assert_allclose(now["ref_joint_pos"], HOME_18, atol=1e-6)
+        np.testing.assert_allclose(now["ref_anchor_ori_b"], [1.0, 0.0, 0.0, 1.0, 0.0, 0.0], atol=1e-6)
+        np.testing.assert_allclose(now["ref_projected_gravity_b"], HOME_PROJECTED_GRAVITY, atol=1e-6)
+        self.assertAlmostEqual(float(now["ref_anchor_height"][0]), HOME_ROOT_POS_Z_M, places=6)
+        for name in ("ref_joint_vel", "ref_anchor_lin_vel_b", "ref_anchor_ang_vel_b"):
+            self.assertEqual(float(np.abs(now[name]).max()), 0.0, name)
 
-    def test_the_neck_follows_the_references_neck_and_returns_to_home_with_it(self):
+    def test_enter_goes_smoothly_from_the_measured_pose_to_home(self):
+        quat, gravity = pitched(HOME_TRUNK_PITCH_RAD + math.radians(8.0))
+        bent = {n: v + 0.3 for n, v in NEUTRAL_POSE.items()}
+        obs = lambda t: tick_obs(t, quat=quat, gravity=gravity, positions=bent)  # noqa: E731
+        move, ref, session = started_move(obs=obs(0.0))
+        refs = []
+        for k in range(round(ENTER_S / DT) + 2):
+            run(move, ref, k * DT, (k + 1) * DT, send=False, obs=obs)
+            current = move._current
+            refs.append((current.joint_pos.copy(), current.joint_vel.copy(), current.quat.copy(), current.ang_vel.copy()))
+        # Starts at the measured pose, ends at HOME (one tick ahead), no step over the blend's slope.
+        self.assertLess(float(np.abs(refs[0][0] - [bent[n] for n in wc.OBSERVATION_JOINT_NAMES]).max()), 0.01)
+        np.testing.assert_allclose(refs[-1][0][3:], [NEUTRAL_POSE[n] for n in wc.OBSERVATION_JOINT_NAMES][3:])
+        steps = np.abs(np.diff([r[0] for r in refs], axis=0)).max()
+        self.assertLessEqual(steps, 0.3 * 1.5 * DT / ENTER_S + 1e-9)
+        # The velocities are the poses' own (central differences).
+        for k in range(1, len(refs) - 2):
+            np.testing.assert_allclose(refs[k][1], (refs[k + 1][0] - refs[k - 1][0]) / (2 * DT), atol=0.02)
+            turn = rotvec_from_quat(quat_mul(refs[k + 1][2], quat_conj(refs[k - 1][2]))) / (2 * DT)
+            np.testing.assert_allclose(refs[k][3], turn, atol=0.01)
+
+    def test_the_stand_heading_follows_the_imu_but_the_reference_does_not_turn(self):
+        move, ref, session = started_move()
+        _, t = run(move, ref, 0.0, ENTER_S + 0.1, send=False)
+        turned = list(quat_mul(quat_from_yaw(0.5), HOME_ROOT_QUAT_WXYZ))
+        _, t = run(move, ref, t, t + 10 * DT, send=False, obs=lambda t: tick_obs(t, quat=turned))
+        self.assertAlmostEqual(yaw_of(move._current.quat), 10 * HEADING_STEP_RAD, places=9)
+        self.assertEqual(float(np.abs(terms(session)["ref_anchor_ang_vel_b"]).max()), 0.0)
+        _, t = run(move, ref, t, t + 20 * DT, send=False, obs=lambda t: tick_obs(t, quat=turned))
+        self.assertAlmostEqual(yaw_of(move._current.quat), 0.5, places=9)
+        np.testing.assert_allclose(terms(session)["ref_anchor_ori_b"], [1, 0, 0, 1, 0, 0], atol=1e-6)
+        # Tilted more than HEADING_FREEZE_TILT_DEG from HOME: the heading stays.
+        quat, gravity = pitched(HOME_TRUNK_PITCH_RAD + math.radians(40.0), yaw=-0.5)
+        run(move, ref, t, t + 10 * DT, send=False, obs=lambda t: tick_obs(t, quat=quat, gravity=gravity))
+        self.assertAlmostEqual(yaw_of(move._current.quat), 0.5, places=9)
+        # The IMU's heading drifting 0.5 deg/s: the policy sees no heading difference.
+        move, ref, session = started_move()
+        drift = lambda t: tick_obs(t, quat=list(quat_mul(quat_from_yaw(math.radians(0.5) * t), HOME_ROOT_QUAT_WXYZ)))  # noqa: E731
+        run(move, ref, 0.0, 10.0, send=False, obs=drift)
+        np.testing.assert_allclose(terms(session)["ref_anchor_ori_b"], [1, 0, 0, 1, 0, 0], atol=1e-6)
+
+    def test_the_join_waits_for_the_robot_and_the_operator_to_stand_still(self):
+        tilted = pitched(HOME_TRUNK_PITCH_RAD + math.radians(13.0))
+        for name, robot, frame in (
+            ("legs moving", {"joint_speed": 1.2}, {}),
+            ("trunk off HOME", {"quat": tilted[0], "gravity": tilted[1]}, {}),
+            ("operator moving", {}, {"vel": 0.1}),
+            ("operator turning", {}, {"turn": 0.4}),
+            ("operator bent", {}, {"pitch": math.radians(40.0)}),
+            ("operator crouching", {}, {"height": HOME_ROOT_POS_Z_M - 0.03}),
+            ("PC's STALE", {}, {"flags": ENGAGED | STALE}),
+            ("PC's HELD", {}, {"flags": ENGAGED | HELD}),
+            ("PC's LATE", {}, {"flags": ENGAGED | LATE}),
+            ("PC not started", {}, {"flags": CALIBRATED}),
+        ):
+            with self.subTest(name):
+                move, ref, _ = started_move()
+                run(move, ref, 0.0, 3.0, obs=lambda t: tick_obs(t, **robot), **frame)
+                self.assertEqual(move.phase, Phase.STAND)
+        with self.subTest("walk asked for"):
+            move, ref, _ = started_move()
+            move.joins_allowed = False
+            run(move, ref, 0.0, 3.0)
+            self.assertEqual(move.phase, Phase.STAND)
+            move.joins_allowed = True
+            _, t = run(move, ref, 3.0, 3.0 + DT)
+            self.assertEqual(move.phase, Phase.JOIN)
+        with self.subTest("all still: 25 ticks of standing still"):
+            move, ref, _ = started_move()
+            _, t = run(move, ref, 0.0, 3.0, until=lambda: move.phase == Phase.STAND)
+            stand = t
+            _, t = run(move, ref, t, t + 1.0, until=lambda: move.phase == Phase.JOIN)
+            self.assertEqual(move.phase, Phase.JOIN)
+            self.assertEqual(round((t - stand) / DT), STILL_TICKS - 1)
+
+    def test_the_join_keeps_the_history_and_blends_into_the_pcs_reference(self):
+        move, ref, session = started_move(action=0.02)
+        frame = {"yaw": 1.0, "joint_offset": 0.1, "height": 0.165}
+        _, t = run(move, ref, 0.0, 3.0, until=lambda: move.phase == Phase.JOIN, **frame)
+        joined = len(session.inputs) - 1
+        before, at = session.inputs[joined - 1][0], session.inputs[joined][0]
+        np.testing.assert_array_equal(at[:-1], before[1:])  # not rebuilt
+        self.assertAlmostEqual(float(at[-1, wc.term_slices()["actions"]][0]), 0.02, places=6)
+        _, t = run(move, ref, t, t + JOIN_S, until=lambda: move.phase == Phase.TRACK, **frame)
+        refs = [i[0, -1, wc.term_slices()["ref_joint_pos"]] for i in session.inputs[joined:]]
+        self.assertLessEqual(float(np.abs(np.diff(refs, axis=0)).max()), 0.1 * 1.875 * DT / JOIN_S + 1e-6)
+        now = terms(session)
+        np.testing.assert_allclose(now["ref_joint_pos"], HOME_18 + 0.1, atol=1e-6)
+        # Turned to the stand's heading (the robot's): the PC's yaw is gone.
+        np.testing.assert_allclose(now["ref_anchor_ori_b"], [1, 0, 0, 1, 0, 0], atol=1e-6)
+        self.assertAlmostEqual(float(now["ref_anchor_height"][0]), 0.165, places=6)
+
+    def test_the_join_velocities_are_the_blends_own(self):
         move, ref, _ = started_move()
-        rate = 2.5 * 0.02
-        neck_target = lambda command: [command.target_angles[n] for n in ("head", "neck_roll", "neck_pitch")]
-        command, t = run(move, ref, 0.0, 0.1, neck=(0.6, 0.9, -0.3))
-        # Slewed at 2.5 rad/s from the measured neck (HOME) toward the reference.
-        np.testing.assert_allclose(neck_target(command), [5 * rate, 5 * rate, -5 * rate], atol=1e-9)
-        command, t = run(move, ref, t, 1.5, neck=(0.6, 0.9, -0.3))
-        # Clamped to the contract's limits (neck_roll +-0.4).
-        np.testing.assert_allclose(neck_target(command), [0.6, 0.4, -0.3], atol=1e-9)
-        # A falling tick keeps the neck's last target.
-        command = MotorCommand()
-        move.step(tick_obs(t + 0.01, gravity=[0.9, 0.0, -0.3]), command)
-        np.testing.assert_allclose(neck_target(command), [0.6, 0.4, -0.3], atol=1e-9)
-        # The PC stops: the neck holds, then returns to HOME with the reference.
-        command, t = run(move, ref, t, t + 0.3, flags=CALIBRATED, neck=(0.0, 0.0, 0.0))
-        self.assertEqual(move.phase, Phase.HOLD)
-        np.testing.assert_allclose(neck_target(command), [0.6, 0.4, -0.3], atol=1e-9)
-        command, t = run(move, ref, t, t + STOP_HOLD_S + RETURN_S, flags=CALIBRATED)
-        np.testing.assert_allclose(neck_target(command), [0.0, 0.0, 0.0], atol=1e-9)
+        frame = {"yaw": 0.6, "pitch": HOME_TRUNK_PITCH_RAD + 0.3, "joint_offset": 0.2, "height": 0.16}
+        _, t = run(move, ref, 0.0, 3.0, until=lambda: move.phase == Phase.JOIN, **frame)
+        refs = []
+        while move.phase == Phase.JOIN:
+            _, t = run(move, ref, t, t + DT, **frame)
+            c = move._current
+            refs.append((c.joint_pos.copy(), c.joint_vel.copy(), c.quat.copy(), c.ang_vel.copy(), c.height,
+                         c.lin_vel.copy()))
+        for k in range(1, len(refs) - 2):
+            np.testing.assert_allclose(refs[k][1], (refs[k + 1][0] - refs[k - 1][0]) / (2 * DT), atol=0.01)
+            turn = rotvec_from_quat(quat_mul(refs[k + 1][2], quat_conj(refs[k - 1][2]))) / (2 * DT)
+            np.testing.assert_allclose(refs[k][3], turn, atol=0.01)
+            self.assertAlmostEqual(refs[k][5][2], (refs[k + 1][4] - refs[k - 1][4]) / (2 * DT), delta=0.002)
 
-    def test_settle_then_track(self):
-        move, ref, session = started_move()
-        run(move, ref, 0.0, SETTLE_S - 0.1, vel=0.5)
-        self.assertEqual(move.phase, Phase.SETTLE)
-        # Standing still while settling: the reference velocities read 0.
-        self.assertEqual(float(np.abs(session.inputs[-1][0, -1, 18:36]).max()), 0.0)
-        run(move, ref, SETTLE_S - 0.1, SETTLE_S + 0.2, vel=0.5)
-        self.assertEqual(move.phase, Phase.TRACK)
-        self.assertAlmostEqual(float(session.inputs[-1][0, -1, 18]), 0.5, places=6)
-
-    def stop_and_hand_off(self, move, ref, t, **frame):
-        """Ticks until the hand-off; the hold and the return last their times."""
-        changes = [(t, move.phase)]
-        while not move.handoff_ready and t < changes[0][0] + 5.0:
-            _, t = run(move, ref, t, t + 0.02, **frame)
-            if move.phase != changes[-1][1]:
-                changes.append((t, move.phase))
-        self.assertTrue(move.handoff_ready)
-        self.assertEqual([phase for _, phase in changes], [Phase.HOLD, Phase.RETURN, Phase.STAND])
-        self.assertAlmostEqual(changes[2][0] - changes[1][0], RETURN_S, delta=0.03)
-        self.assertLessEqual(t - changes[2][0], (HANDOFF_TICKS + 1) * 0.02)
-        return t
-
-    def test_a_silent_sender_stops_tracking_and_returns_to_home(self):
-        move, ref, session = started_move()
-        _, t = run(move, ref, 0.0, 2.0, joint_offset=0.2)
-        _, t = run(move, ref, t, t + 0.08, send=False)
-        self.assertEqual(move.phase, Phase.TRACK)
-        _, t = run(move, ref, t, t + 0.06, send=False)
-        self.assertEqual(move.phase, Phase.HOLD)
-        self.assertIn("no reference frame", move.stop_reason)
-        # The hold keeps the last pose standing still.
-        held = session.inputs[-1][0, -1]
-        self.assertAlmostEqual(float(held[0]), NEUTRAL_POSE[OBSERVATION_DOF_ORDER[0]] + 0.2, places=5)
-        self.assertEqual(float(np.abs(held[18:36]).max()), 0.0)
-        self.stop_and_hand_off(move, ref, t, send=False)
-        # Back at HOME: the reference is HOME.
-        self.assertAlmostEqual(float(session.inputs[-1][0, -1, 0]), NEUTRAL_POSE[OBSERVATION_DOF_ORDER[0]], places=5)
-
-    def test_every_stop_reason(self):
+    def test_every_stop_coasts_holds_returns_and_stands(self):
         def restart(ref):
             ref.seq = 0
             ref.sent_offset += 60.0
@@ -432,27 +525,89 @@ class MoveTest(unittest.TestCase):
             ("restarted PC", restart, {}, 1),
             ("the PC stopped", lambda ref: None, {"flags": CALIBRATED}, 1),
             ("not calibrated", lambda ref: None, {"flags": ACTIVE}, 1),
-            ("diverged attitude", lambda ref: None, {"pitch": 2.2}, 1),
-            # The PC's held pose is followed until the line.
-            ("STALE too long", lambda ref: None, {"flags": ENGAGED | STALE, "joint_offset": 0.1},
-             round(MAX_STALE_FLAG_S / 0.02) + 2),
-            ("HELD too long", lambda ref: None, {"flags": ENGAGED | HELD, "joint_offset": 0.1},
-             round(MAX_HELD_FLAG_S / 0.02) + 2),
+            ("a new start", lambda ref: ref.send(flags=ENGAGED | RESTART), {}, 1),
+            ("STALE too long", lambda ref: None, {"flags": ENGAGED | STALE}, round(MAX_STALE_FLAG_S / DT) + 2),
+            ("HELD too long", lambda ref: None, {"flags": ENGAGED | HELD}, round(MAX_HELD_FLAG_S / DT) + 2),
         ):
             with self.subTest(name):
                 move, ref, session = started_move()
-                _, t = run(move, ref, 0.0, 1.5, joint_offset=0.1)
+                t = to_track(move, ref)  # joined on a still operator, then moving
+                _, t = run(move, ref, t, t + 0.2, vel=0.5)
                 before(ref)
                 if ticks > 1:
-                    _, t = run(move, ref, t, t + 0.02 * (ticks - 2), **frame)
+                    _, t = run(move, ref, t, t + DT * (ticks - 2), vel=0.5, **frame)
                     self.assertEqual(move.phase, Phase.TRACK)
-                _, t = run(move, ref, t, t + 0.04 if ticks > 1 else t + 0.02, **frame)
-                self.assertEqual(move.phase, Phase.HOLD, move.stop_reason)
-                # Never the stale or diverged frame: the last one followed.
-                self.assertAlmostEqual(float(session.inputs[-1][0, -1, 0]),
-                                       NEUTRAL_POSE[OBSERVATION_DOF_ORDER[0]] + 0.1, places=5)
-                gravity_z = float(session.inputs[-1][0, -1, wc.term_slices()["ref_projected_gravity_b"]][2])
-                self.assertLess(gravity_z, -0.9)
+                    _, t = run(move, ref, t, t + DT, vel=0.5, **frame)
+                last = move._current
+                _, t = run(move, ref, t, t + DT, vel=0.5, **frame)
+                self.assertEqual(move.phase, Phase.COAST, move.stop_reason)
+                stopped = t
+                phases, refs = [], []
+                while t < stopped + COAST_S + STOP_HOLD_S + RETURN_S:
+                    _, t = run(move, ref, t, t + DT, vel=0.5, **frame)
+                    phases.append(move.phase)
+                    refs.append(move._current.joint_pos.copy())
+                changes = [p for k, p in enumerate(phases) if k == 0 or p != phases[k - 1]]
+                self.assertEqual(changes, [Phase.COAST, Phase.HOLD, Phase.RETURN, Phase.STAND])
+                hold = phases.index(Phase.HOLD)
+                self.assertAlmostEqual(hold * DT, COAST_S - 2 * DT, delta=DT + 1e-9)
+                self.assertAlmostEqual(phases.index(Phase.RETURN) * DT, STOP_HOLD_S - DT, delta=DT + 1e-9)
+                # The coast goes on at the last speed (0.5 rad/s), fading to zero: 0.05 rad further.
+                np.testing.assert_allclose(refs[hold][3:] - last.joint_pos[3:], 0.5 * COAST_S / 2, atol=1e-6)
+                self.assertLessEqual(float(np.abs(np.diff(refs, axis=0)).max()), 0.5 * DT + 1e-6 + 0.1 * 1.5 * DT / RETURN_S)
+                np.testing.assert_allclose(refs[-1][3:], [NEUTRAL_POSE[n] for n in wc.OBSERVATION_JOINT_NAMES][3:])
+                # Standing again; that start is not joined again.
+                self.assertEqual(move.phase, Phase.STAND)
+
+    def test_a_joined_start_is_not_joined_again_and_the_next_one_is(self):
+        move, ref, _ = started_move()
+        t = to_track(move, ref)
+        _, t = run(move, ref, t, t + 0.2, send=False)  # stopped: no frame
+        _, t = run(move, ref, t, t + 4.0, flags=ENGAGED)  # the frames are back, the same start
+        self.assertEqual(move.phase, Phase.STAND)
+        _, t = run(move, ref, t, t + DT, flags=CALIBRATED)  # stopped on the PC
+        _, t = run(move, ref, t, t + 1.0, until=lambda: move.phase == Phase.JOIN, flags=ENGAGED)  # started again
+        self.assertEqual(move.phase, Phase.JOIN)
+
+    def test_a_trunk_off_the_references_attitude_enters_again(self):
+        for name, setup, flags in (
+            ("tracking", lambda move, ref, t: t, ENGAGED),
+            ("holding", lambda move, ref, t: run(move, ref, t, t + 0.3, flags=CALIBRATED)[1], CALIBRATED),
+        ):
+            with self.subTest(name):
+                move, ref, session = started_move()
+                t = to_track(move, ref)
+                t = setup(move, ref, t)
+                if name == "holding":
+                    self.assertEqual(move.phase, Phase.HOLD)
+                    move._hold_ref = move._hold_ref.__class__(  # the held reference bent past 90 deg
+                        move._hold_ref.joint_pos, move._hold_ref.joint_vel, pitched(2.2)[0],
+                        np.zeros(3), np.zeros(3), move._hold_ref.height)
+                    _, t = run(move, ref, t, t + DT, flags=CALIBRATED)
+                else:
+                    _, t = run(move, ref, t, t + DT, pitch=2.2)
+                self.assertEqual(move.phase, Phase.ENTER)
+                history = session.inputs[-1][0]
+                self.assertTrue(np.array_equal(history, np.repeat(history[-1:], wc.HISTORY_LENGTH, axis=0)))
+                self.assertEqual(float(np.abs(history[-1, wc.term_slices()["actions"]]).max()), 0.0)
+                _, t = run(move, ref, t, t + 4.0, flags=flags)
+                self.assertEqual(move.phase, Phase.STAND)  # that start is done
+
+    def test_the_neck_is_the_pcs_while_following_and_home_otherwise(self):
+        move, ref, _ = started_move()
+        neck = lambda command: [command.target_angles[n] for n in ("head", "neck_roll", "neck_pitch")]  # noqa: E731
+        command, t = run(move, ref, 0.0, 1.0, neck=(0.6, 0.9, -0.3))
+        np.testing.assert_allclose(neck(command), [0.0, 0.0, 0.0], atol=1e-9)
+        self.assertFalse(move.drives_neck)
+        _, t = run(move, ref, t, 3.0, until=lambda: move.phase == Phase.JOIN, neck=(0.6, 0.9, -0.3))
+        self.assertTrue(move.drives_neck)
+        command, t = run(move, ref, t, t + 1.5, neck=(0.6, 0.9, -0.3))
+        # Slewed at 2.5 rad/s toward the reference's neck, clamped to the contract's limits (neck_roll +-0.4).
+        np.testing.assert_allclose(neck(command), [0.6, 0.4, -0.3], atol=1e-9)
+        _, t = run(move, ref, t, t + DT, flags=CALIBRATED)
+        self.assertFalse(move.drives_neck)
+        command, t = run(move, ref, t, t + STOP_HOLD_S + RETURN_S + 0.1, flags=CALIBRATED)
+        np.testing.assert_allclose(neck(command), [0.0, 0.0, 0.0], atol=1e-9)
 
     def test_a_falling_trunk_holds_the_measured_pose(self):
         move, ref, session = started_move(action=0.5)
@@ -464,72 +619,57 @@ class MoveTest(unittest.TestCase):
         for name in OBSERVATION_DOF_ORDER:
             self.assertEqual(command.target_angles[name], NEUTRAL_POSE[name])
 
-    def test_a_restart_from_the_pc_aligns_again_and_rebuilds_the_history(self):
+    def test_a_safety_hold_enters_again_from_the_measured_pose(self):
         move, ref, session = started_move()
-        _, t = run(move, ref, 0.0, 1.5, yaw=0.0)
-        self.assertEqual(move.phase, Phase.TRACK)
-        _, t = run(move, ref, t, t + 0.02, yaw=0.8, flags=ENGAGED | RESTART, joint_offset=0.3)
-        self.assertEqual(move.phase, Phase.SETTLE)
+        t = to_track(move, ref)
+        move.on_safety_resume(tick_obs(t))
+        _, t = run(move, ref, t, t + DT)
+        self.assertEqual(move.phase, Phase.ENTER)
         history = session.inputs[-1][0]
-        self.assertTrue(np.array_equal(history, np.repeat(history[-1:], 10, axis=0)))
-        orientation = history[-1, wc.term_slices()["ref_anchor_ori_b"]]
-        np.testing.assert_allclose(orientation, [1.0, 0.0, 0.0, 1.0, 0.0, 0.0], atol=1e-6)
-        _, t = run(move, ref, t, t + 0.1, yaw=0.8, joint_offset=0.3)
-        self.assertEqual(move.phase, Phase.SETTLE)
+        self.assertTrue(np.array_equal(history, np.repeat(history[-1:], wc.HISTORY_LENGTH, axis=0)))
+        _, t = run(move, ref, t, t + 4.0)
+        self.assertEqual(move.phase, Phase.STAND)
 
-    def test_a_stopped_activation_is_not_started_again(self):
-        move, ref, _ = started_move()
-        _, t = run(move, ref, 0.0, 1.0, flags=ENGAGED)
-        _, t = run(move, ref, t, t + 0.02, flags=CALIBRATED)  # the PC stops
-        self.stop_and_hand_off(move, ref, t, flags=CALIBRATED)
-        move.state = MoveState.INACTIVE
-        self.assertIn("not tracking", move.start_refusal())
-        ref.send()  # started again on the PC
-        self.assertIsNone(move.start_refusal())
-        move, ref, _ = started_move()
-        move.refuse("test")
-        self.assertIn("waiting for the PC", move.start_refusal())
-
-    def test_no_start_without_a_fresh_reference(self):
-        ref = FakeReceiver()
-        move = WholebodyMove(ref, session=Session(metadata()))
-        with self.assertRaises(RuntimeError):
-            move.on_start(tick_obs(0.0), MotorCommand())
-        ref.send()
-        ref.time = 0.5
-        with self.assertRaisesRegex(RuntimeError, "no reference frame"):
-            move.on_start(tick_obs(0.5), MotorCommand())
-
-    def test_the_reference_heading_is_turned_to_the_imus(self):
-        ref = FakeReceiver()
-        session = Session(metadata())
-        move = WholebodyMove(ref, session=session)
-        ref.send(yaw=1.0)
-        robot = list(quat_mul(quat_from_yaw(-2.0), HOME_ROOT_QUAT_WXYZ))
-        move.state = MoveState.STARTING
-        move.on_start(tick_obs(0.0, quat=robot), MotorCommand())
-        ref.time = 0.02
-        ref.send(yaw=1.0)
-        move.step(tick_obs(0.02, quat=robot), MotorCommand())
-        orientation = session.inputs[-1][0, -1, wc.term_slices()["ref_anchor_ori_b"]]
-        np.testing.assert_allclose(orientation, [1.0, 0.0, 0.0, 1.0, 0.0, 0.0], atol=1e-6)
+    def test_the_coast_does_not_rise(self):
+        last = Reference(np.zeros(21), np.zeros(21), [1.0, 0.0, 0.0, 0.0], [0.0, 0.0, 0.8], np.zeros(3), 0.15)
+        heights = [coast_reference(last, tau).height for tau in np.linspace(0.0, COAST_S, 11)]
+        self.assertLessEqual(max(heights), HOME_ROOT_POS_Z_M + 1e-12)
+        high = Reference(np.zeros(21), np.zeros(21), [1.0, 0.0, 0.0, 0.0], [0.0, 0.0, 0.8], np.zeros(3), 0.2)
+        self.assertEqual(coast_reference(high, COAST_S).height, 0.2)
 
 
 class OverlayYieldTest(unittest.TestCase):
-    """While whole-body tracking runs, the arm overlay and the HMD head move write nothing."""
+    """The arm overlay yields while the whole-body policy runs; the HMD head move only while it follows the PC."""
 
-    def test_arms_and_neck_yield_then_resume_from_the_measured_pose(self):
+    def test_arms_yield_to_the_policy_and_the_neck_to_the_pcs_reference(self):
         claim = WholebodyClaim(active=True)
         arms = PicoArmTrackingMove(wholebody_claim=claim)
         head = HmdHeadTrackingMove(wholebody_claim=claim)
         obs = tick_obs(0.0, moves=("walk", "pico_arms", "hmd_head"))
         obs.user_input.head_orientation = {"roll": 0.0, "pitch": 0.0, "yaw": 0.8}
         for move in (arms, head):
-            move.state = MoveState.ACTIVE
+            command = MotorCommand(target_angles={})
+            move.state = MoveState.STARTING
+            move.on_start(obs, command)
+            self.assertEqual(move.state, MoveState.ACTIVE)
+            if move is arms:
+                self.assertEqual(command.target_angles, {})  # started while the policy drives the arms
             command = MotorCommand(target_angles={})
             move.step(obs, command)
+            if move is arms:
+                self.assertEqual(command.target_angles, {})
+            else:
+                self.assertIn("head", command.target_angles)  # standing on its own reference: the HMD's
+        claim.neck = True
+        for start in (False, True):
+            command = MotorCommand(target_angles={})
+            if start:
+                head = HmdHeadTrackingMove(wholebody_claim=claim)
+                head.on_start(obs, command)
+            else:
+                head.step(obs, command)
             self.assertEqual(command.target_angles, {})
-        claim.active = False
+        claim.active = claim.neck = False
         command = MotorCommand(target_angles={})
         head.step(tick_obs(0.02, moves=("walk", "hmd_head")), command)
         self.assertAlmostEqual(command.target_angles["head"], NEUTRAL_POSE["head"], places=6)  # from measured, slewed
@@ -552,22 +692,22 @@ class StandingMove(Move):
 
 
 class SelectorTest(unittest.TestCase):
-    """The current PICO bridge sends pico_teleop; the PC's ACTIVE flag starts tracking."""
+    """With the whole-body policy installed it stands the robot from R3 on; the PICO policy is not started."""
 
-    def selector(self):
+    def selector(self, claim=None):
         ref = FakeReceiver()
         move = WholebodyMove(ref, session=Session(metadata()))
         standing = StandingMove()
-        selector = PolicySelectableWalkMove(pico_move=standing, wholebody_move=move)
+        selector = PolicySelectableWalkMove(pico_move=standing, wholebody_move=move,
+                                            wholebody_claim=claim or WholebodyClaim())
         selector.preload()
         return selector, move, ref, standing
 
-    def tick(self, selector, ref, t, *, policy="pico_teleop", send=True, balance_only=True, gravity=None,
-             joint_speed=0.0, **frame):
+    def tick(self, selector, ref, t, *, policy="pico_teleop", send=True, **frame):
         ref.time = t
         if send:
             ref.send(**frame)
-        obs = tick_obs(t, balance_only=balance_only, policy=policy, gravity=gravity, joint_speed=joint_speed)
+        obs = tick_obs(t, policy=policy)
         command = MotorCommand()
         if selector.state == MoveState.INACTIVE:
             selector.state = MoveState.STARTING
@@ -579,134 +719,104 @@ class SelectorTest(unittest.TestCase):
 
     def run_until(self, selector, ref, t, end, until=None, **kwargs):
         while t < end and not (until and until()):
-            t += 0.02
+            t += DT
             self.tick(selector, ref, t, **kwargs)
         return t
 
-    def start_tracking(self, selector, ref, t, **kwargs):
-        """Ticks until tracking starts: WHOLEBODY_START_TICKS of standing still on the standing policy."""
-        began = t
-        t = self.run_until(selector, ref, t, t + 2.0, lambda: selector.effective_policy == "wholebody", **kwargs)
-        self.assertEqual(selector.effective_policy, "wholebody")
-        self.assertEqual(round((t - began) / 0.02), WHOLEBODY_START_TICKS)
-        return t
-
-    def test_the_pc_starts_and_stops_tracking(self):
-        selector, move, ref, standing = self.selector()
-        self.tick(selector, ref, 0.0, flags=CALIBRATED)
-        self.assertEqual(selector.effective_policy, "pico_teleop")
-        t = self.start_tracking(selector, ref, 0.0)
-        t = self.run_until(selector, ref, t, t + 2.0)
-        self.assertEqual(move.phase, Phase.TRACK)
-        # The PC stops: hold, HOME, then the standing policy.
-        stopped = t
-        t = self.run_until(selector, ref, t, t + 5.0, lambda: selector.effective_policy != "wholebody", flags=CALIBRATED)
-        self.assertEqual(selector.effective_policy, "pico_teleop")
-        self.assertGreater(t - stopped, STOP_HOLD_S + RETURN_S)
-        self.assertIn("not tracking", selector.fallback_reason)
-        # Started again on the PC: tracking again, once the robot stood still.
-        self.start_tracking(selector, ref, t)
-
-    def test_tracking_waits_for_the_robot_to_stand_still(self):
-        """The PC starts while the PICO policy walks: the robot keeps walking, then starts once still."""
-        selector, move, ref, standing = self.selector()
-        self.tick(selector, ref, 0.0, balance_only=False)  # left trigger held: walking
-        t = self.run_until(selector, ref, 0.0, 1.0, balance_only=False)
-        self.assertEqual(selector.effective_policy, "pico_teleop")
-        self.assertIsNone(move.start_refusal())  # the activation waits, not refused
-        # Trigger released, the trunk still swaying 20 deg off HOME's attitude.
-        pitch = HOME_TRUNK_PITCH_RAD + math.radians(20.0)
-        swaying = [math.sin(pitch), 0.0, -math.cos(pitch)]
-        t = self.run_until(selector, ref, t, t + 1.0, gravity=swaying)
-        self.assertEqual(selector.effective_policy, "pico_teleop")
-        # Trunk upright, but the policy still steps (legs at 2 rad/s).
-        t = self.run_until(selector, ref, t, t + 1.0, joint_speed=2.0)
-        self.assertEqual(selector.effective_policy, "pico_teleop")
-        # One tick off the attitude starts the count again.
-        t = self.run_until(selector, ref, t, t + 0.4)
-        self.tick(selector, ref, t + 0.02, gravity=swaying)
-        t = self.start_tracking(selector, ref, t + 0.02)
-        self.assertEqual(move.phase, Phase.SETTLE)
-        self.assertEqual(standing.starts, 1)
-
-    def test_tracking_waits_for_the_operator_to_stand_still(self):
-        """The robot stands still but the operator does not stand quietly: no start until they do."""
-        selector, move, ref, standing = self.selector()
-        self.tick(selector, ref, 0.0, height=0.10)  # crouching, kneeling: the trunk 7 cm below standing
-        t = self.run_until(selector, ref, 0.0, 1.0, height=0.10)
-        self.assertEqual(selector.effective_policy, "pico_teleop")
-        self.assertIsNone(move.start_refusal())  # the activation waits, not refused
-        self.assertIn("below standing", move.reference_unsteady())
-        for name, frame in (("bent", {"pitch": math.radians(40.0)}), ("moving", {"vel": 0.2}),
-                            ("the PC's interruption reference", {"flags": ENGAGED | HELD})):
-            with self.subTest(name):
-                t = self.run_until(selector, ref, t, t + 0.9, **frame)
-                self.assertEqual(selector.effective_policy, "pico_teleop")
-                self.assertIsNotNone(move.reference_unsteady())
-        # Standing quietly (a slow sway passes): tracking starts 25 ticks later.
-        t = self.start_tracking(selector, ref, t, vel=0.03)
-        self.assertEqual(move.phase, Phase.SETTLE)
-        self.assertEqual(standing.starts, 1)
-
-    def test_a_stale_stream_stands_until_the_pc_starts_again(self):
-        selector, move, ref, standing = self.selector()
-        t = 0.0
-        self.tick(selector, ref, t)
-        t = self.start_tracking(selector, ref, t)
-        t = self.run_until(selector, ref, t, t + 1.0)
-        t = self.run_until(selector, ref, t, t + 6.0, lambda: selector.effective_policy != "wholebody", send=False)
-        self.assertEqual(selector.effective_policy, "pico_teleop")
-        self.assertIn("no reference frame", selector.fallback_reason)
-        # The stream is back, but this activation was stopped: still standing.
-        t = self.run_until(selector, ref, t, t + 1.0)
-        self.assertEqual(selector.effective_policy, "pico_teleop")
-        self.tick(selector, ref, t + 0.02, flags=ENGAGED | RESTART)
-        self.assertEqual(selector.effective_policy, "wholebody")
-
-    def test_walk_on_the_wire_stops_tracking(self):
-        selector, move, ref, standing = self.selector()
-        self.tick(selector, ref, 0.0, policy="wholebody")
-        t = self.start_tracking(selector, ref, 0.0, policy="wholebody")
-        t = self.run_until(selector, ref, t, t + 1.0, policy="wholebody")
-        self.tick(selector, ref, t + 0.02, policy="walk")
-        self.assertEqual(move.stop_reason, "walk requested")
-
-    def test_policy_off_and_on_does_not_resume_the_activation(self):
-        selector, move, ref, standing = self.selector()
-        self.tick(selector, ref, 0.0)
-        t = self.start_tracking(selector, ref, 0.0)
-        selector.state = MoveState.INACTIVE  # the scheduler's gate: R3 off
-        self.tick(selector, ref, t + 0.02)
-        self.assertEqual(selector.effective_policy, "pico_teleop")
-        self.assertIn("waiting for the PC", move.start_refusal())
-        t = self.run_until(selector, ref, t + 0.02, t + 1.0)
-        self.assertEqual(selector.effective_policy, "pico_teleop")
-        self.tick(selector, ref, t + 0.02, flags=ENGAGED | RESTART)
-        self.assertEqual(selector.effective_policy, "wholebody")
-
-    def test_no_reference_stands(self):
-        selector, move, ref, standing = self.selector()
-        self.tick(selector, ref, 1.0, send=False, policy="wholebody")
-        self.assertEqual(selector.effective_policy, "pico_teleop")
-        self.assertIn("no reference frame", selector.fallback_reason)
-        self.assertTrue(selector.can_balance(UserInput(locomotion_policy="wholebody", balance_only=True)))
-
-    def test_an_inference_failure_stands_and_the_arms_and_head_return_to_the_overlays(self):
+    def test_the_policy_stands_tracks_and_stands_again_without_pico(self):
         claim = WholebodyClaim()
-        ref = FakeReceiver()
-        move = WholebodyMove(ref, session=Session(metadata()))
-        selector = PolicySelectableWalkMove(pico_move=StandingMove(), wholebody_move=move, wholebody_claim=claim)
-        selector.preload()
-        self.tick(selector, ref, 0.0)
-        t = self.start_tracking(selector, ref, 0.0)
+        selector, move, ref, standing = self.selector(claim)
+        self.tick(selector, ref, 0.0, flags=CALIBRATED)
+        self.assertEqual((selector.effective_policy, move.phase), ("wholebody", Phase.ENTER))
         self.assertTrue(claim.active)
+        self.assertFalse(claim.neck)
+        t = self.run_until(selector, ref, 0.0, 3.0, flags=CALIBRATED)
+        self.assertEqual(move.phase, Phase.STAND)
+        t = self.run_until(selector, ref, t, t + 3.0, lambda: move.phase == Phase.TRACK)
+        self.assertTrue(claim.neck)
+        for name, kwargs in (("stopped on the PC", {"flags": CALIBRATED}), ("silent PC", {"send": False}),
+                             ("walk on the wire", {"policy": "walk"})):
+            t = self.run_until(selector, ref, t, t + 4.0, lambda: move.phase == Phase.STAND, **kwargs)
+            self.assertEqual(move.phase, Phase.STAND, name)
+            self.assertFalse(claim.neck)
+            self.tick(selector, ref, t + DT, flags=CALIBRATED)
+            t = self.run_until(selector, ref, t + DT, t + 3.0, lambda: move.phase == Phase.TRACK)
+            self.assertEqual(move.phase, Phase.TRACK, name)
+        self.assertEqual(standing.starts, 0)
+        self.assertEqual(selector.effective_policy, "wholebody")
+
+    def test_walk_on_the_wire_stops_tracking_and_does_not_join(self):
+        selector, move, ref, standing = self.selector()
+        self.tick(selector, ref, 0.0)
+        t = self.run_until(selector, ref, 0.0, 4.0, lambda: move.phase == Phase.TRACK)
+        self.tick(selector, ref, t + DT, policy="walk")
+        self.assertEqual(move.stop_reason, "walk requested")
+        self.tick(selector, ref, t + 2 * DT, policy="walk", flags=CALIBRATED)
+        t = self.run_until(selector, ref, t + 2 * DT, t + 5.0, policy="walk")
+        self.assertEqual(move.phase, Phase.STAND)
+        self.assertEqual(standing.starts, 0)
+
+    def test_it_balances_for_the_get_up_hand_back(self):
+        selector, *_ = self.selector()
+        for policy in ("pico_teleop", "wholebody", "walk"):
+            self.assertTrue(selector.can_balance(UserInput(locomotion_policy=policy, balance_only=True)))
+
+    def test_policy_off_and_on_enters_again_and_does_not_rejoin(self):
+        selector, move, ref, standing = self.selector()
+        self.tick(selector, ref, 0.0)
+        t = self.run_until(selector, ref, 0.0, 4.0, lambda: move.phase == Phase.TRACK)
+        for _ in range(2):  # the scheduler's gate (R3 off, B) resets the moves
+            move.state = selector.state = MoveState.INACTIVE
+            self.tick(selector, ref, t + DT)
+            self.assertEqual((selector.effective_policy, move.phase), ("wholebody", Phase.ENTER))
+            t = self.run_until(selector, ref, t + DT, t + 4.0)
+            self.assertEqual(move.phase, Phase.STAND)
+        self.tick(selector, ref, t + DT, flags=ENGAGED | RESTART)
+        self.run_until(selector, ref, t + DT, t + 2.0, lambda: move.phase == Phase.JOIN)
+        self.assertEqual(move.phase, Phase.JOIN)
+        self.assertEqual(standing.starts, 0)
+
+    def test_a_safety_hold_that_drops_walk_stops_and_starts_the_policy_again(self):
+        """The network input drops ``walk`` while the scheduler holds for the IMU: on_stop, then on_start."""
+        selector, move, ref, standing = self.selector()
+        self.tick(selector, ref, 0.0)
+        t = self.run_until(selector, ref, 0.0, 4.0, lambda: move.phase == Phase.TRACK)
+        selector.on_safety_resume(tick_obs(t))
+        selector.state = MoveState.STOPPING
+        while selector.state != MoveState.INACTIVE:
+            t += DT
+            selector.on_stop(tick_obs(t, moves=()), MotorCommand())
+        self.tick(selector, ref, t + DT)
+        self.assertEqual((selector.effective_policy, move.phase), ("wholebody", Phase.ENTER))
+        self.run_until(selector, ref, t + DT, t + 4.0)
+        self.assertEqual(move.phase, Phase.STAND)  # the start it tracked is not joined again
+        self.assertEqual(standing.starts, 0)
+
+    def test_an_inference_failure_stands_on_pico_until_the_next_start(self):
+        claim = WholebodyClaim()
+        selector, move, ref, standing = self.selector(claim)
+        self.tick(selector, ref, 0.0)
+        t = self.run_until(selector, ref, 0.0, 4.0, lambda: move.phase == Phase.TRACK)
+        self.assertTrue(claim.active and claim.neck)
         move._session.action = lambda _: math.nan
-        self.tick(selector, ref, t + 0.02)
+        self.tick(selector, ref, t + DT)
         self.assertEqual(selector.effective_policy, "pico_teleop")
         self.assertIn("whole-body inference", selector.fallback_reason)
-        self.assertFalse(claim.active)
-        self.tick(selector, ref, t + 0.04)
-        self.assertEqual(selector.effective_policy, "pico_teleop")
+        self.assertFalse(claim.active or claim.neck)
+        self.tick(selector, ref, t + 2 * DT)
+        self.assertEqual((selector.effective_policy, standing.starts), ("pico_teleop", 1))
+        move._session.action = 0.01
+        selector.state = MoveState.INACTIVE  # the next start (R3, a get-up's hand-back)
+        self.tick(selector, ref, t + 3 * DT)
+        self.assertEqual(selector.effective_policy, "wholebody")
+
+    def test_without_the_whole_body_policy_pico_stands(self):
+        standing = StandingMove()
+        selector = PolicySelectableWalkMove(pico_move=standing)
+        selector.preload()
+        ref = FakeReceiver()
+        self.tick(selector, ref, 0.0, send=False, policy="wholebody")
+        self.assertEqual((selector.effective_policy, standing.starts), ("pico_teleop", 1))
 
 
 def pitch_gravity(pitch):
@@ -714,23 +824,25 @@ def pitch_gravity(pitch):
     return [math.sin(pitch), 0.0, -math.cos(pitch)]
 
 
-def bow(t, deep=math.radians(75.0), start=2.0):
-    """A trunk pitch (rad): HOME, down to ``deep`` in 1 s, held 0.5 s, back up in 1 s."""
+BOW_START = 3.0  # tracking from 2.5 s: entered at R3 (1 s), stood still 0.5 s, joined (1 s)
+
+
+def bow(t, deep=math.radians(75.0), start=BOW_START, height=0.17):
+    """(trunk pitch (rad), trunk height): HOME, down to ``deep`` in 1 s, held 0.5 s, back up in 1 s."""
     home = HOME_TRUNK_PITCH_RAD
     phase = min(max(t - start, 0.0), 2.5)
     fraction = min(phase, 1.0) if phase < 1.5 else max(0.0, 2.5 - phase)
-    return home + (deep - home) * fraction
+    return home + (deep - home) * fraction, 0.17 + (height - 0.17) * fraction
 
 
 class FallWhileFollowingTest(unittest.TestCase):
     """The scheduler, the selector and the move: a reference bent past the fall angle is followed."""
 
-    def run_scheduler(self, ref_pitch, robot_pitch, seconds=6.0):
+    def run_scheduler(self, ref_pose, robot_pitch, seconds=7.0, stop_s=None):
         ref = FakeReceiver()
         session = Session(metadata())
         move = WholebodyMove(ref, session=session)
         standing = StandingMove()
-        standing.step = lambda obs, command: None  # writes no probe joint to the servos
         selector = PolicySelectableWalkMove(pico_move=standing, wholebody_move=move)
         selector.preload()
         h = Harness(selector)
@@ -739,49 +851,71 @@ class FallWhileFollowingTest(unittest.TestCase):
         def script(tick, _inhibited):
             t = tick / 50.0
             ref.time = t
-            ref.send(pitch=ref_pitch(t))
+            pitch, height = ref_pose(t)
+            ref.send(pitch=pitch, height=height, flags=CALIBRATED if stop_s and t >= stop_s else ENGAGED)
             trace.append((t, move.phase, selector.effective_policy, len(session.inputs)))
             return pitch_gravity(robot_pitch(t)), UserInput(
                 active_moves={"walk"}, locomotion_policy="pico_teleop", balance_only=True
             )
 
         rows = h.run(script, sec(seconds))
+        self.assertEqual(standing.starts, 0)
         return h, rows, trace
 
     def test_following_a_deep_bow_is_not_a_fall(self):
         # The robot follows 0.2 s late, past 60 deg for about 1 s.
-        h, rows, trace = self.run_scheduler(bow, lambda t: bow(t - 0.2))
+        h, rows, trace = self.run_scheduler(bow, lambda t: bow(t - 0.2)[0])
         self.assertFalse(any(row["override"] for row in rows))
         self.assertEqual(h.getup.starts, 0)
-        tracking = [(t, phase, policy, runs) for t, phase, policy, runs in trace if t >= 1.6]
+        tracking = [(t, phase, policy, runs) for t, phase, policy, runs in trace if t >= BOW_START - 0.4]
         self.assertTrue(all(phase == Phase.TRACK and policy == "wholebody" for _, phase, policy, _ in tracking))
         # The policy ran every tick, the bow included (no measured-pose hold).
         runs = [runs for *_, runs in tracking]
         self.assertEqual(runs, list(range(runs[0], runs[0] + len(runs))))
 
     def test_still_a_fall(self):
-        upright = lambda t: HOME_TRUNK_PITCH_RAD
-        for name, ref_pitch, robot_pitch, fell_at in (
-            # The reference never bends: the robot falling past 60 deg at 3 s.
-            ("reference upright", upright, lambda t: math.radians(80.0) if t >= 3.0 else upright(t), 3.0),
+        upright = lambda t: (HOME_TRUNK_PITCH_RAD, 0.17)  # noqa: E731
+        for name, ref_pose, robot_pitch, fell_at in (
+            # The reference never bends: the robot falling past 60 deg at 4 s.
+            ("reference upright", upright, lambda t: math.radians(80.0) if t >= 4.0 else upright(t)[0], 4.0),
             # The robot stays bent after the reference came back above 60 deg.
-            ("robot stays bent", bow, lambda t: bow(t - 0.2) if t < 3.5 else math.radians(75.0),
-             3.5 + 15.0 / 65.0 + FALL_LAG_S),
+            ("robot stays bent", bow, lambda t: bow(t - 0.2)[0] if t < BOW_START + 1.5 else math.radians(75.0),
+             BOW_START + 1.5 + 15.0 / 65.0 + FALL_LAG_S),
         ):
             with self.subTest(name):
-                h, rows, trace = self.run_scheduler(ref_pitch, robot_pitch)
+                h, rows, trace = self.run_scheduler(ref_pose, robot_pitch)
                 first = next(row["tick"] for row in rows if row["override"]) / 50.0
                 # Counted from the first fallen tick, 15 ticks (0.3 s) of debounce.
                 self.assertAlmostEqual(first, fell_at + 0.3, delta=0.05)
 
+    def test_a_stop_in_mid_bow_is_not_a_fall_but_one_on_the_floor_is(self):
+        stop = BOW_START + 1.2
+        for name, height, fell in (("bow", 0.14, False), ("on the floor", 0.06, True)):
+            with self.subTest(name):
+                pose = lambda t: bow(t, height=height)  # noqa: E731
+                h, rows, trace = self.run_scheduler(pose, lambda t: bow(t - 0.2)[0], stop_s=stop)
+                overrides = [row["tick"] / 50.0 for row in rows if row["override"]]
+                if fell:
+                    # The exemption ends at the stop: 15 ticks of debounce, the stop's tick and one of the input.
+                    self.assertAlmostEqual(overrides[0], stop + 0.3 + DT, delta=0.03)
+                else:
+                    self.assertEqual(overrides, [])
+                    self.assertEqual(h.getup.starts, 0)
+
     def test_a_robot_off_the_references_attitude_is_not_following_it(self):
         move, ref, _ = started_move()
-        run(move, ref, 0.0, 1.5, pitch=math.radians(75.0))
+        t = to_track(move, ref)
+        _, t = run(move, ref, t, t + 1.0, pitch=math.radians(75.0))
         bent = pitch_gravity(math.radians(75.0))
-        self.assertTrue(move.follows_fallen_reference(1.5, bent))
+        self.assertTrue(move.follows_fallen_reference(t, bent))
         # Gravity's z differs by more than the training's anchor_ori line.
-        self.assertFalse(move.follows_fallen_reference(1.5, pitch_gravity(math.radians(140.0))))
-        self.assertFalse(move.follows_fallen_reference(1.5 + FALL_LAG_S + 0.02, bent))
+        self.assertFalse(move.follows_fallen_reference(t, pitch_gravity(math.radians(140.0))))
+        self.assertFalse(move.follows_fallen_reference(t + FALL_LAG_S + DT, bent))
+        # Standing on its own reference (the measured attitude entered): never.
+        move.on_safety_resume(tick_obs(t))
+        bent_quat, _ = pitched(math.radians(75.0))
+        move.step(tick_obs(t + DT, quat=bent_quat, gravity=bent), MotorCommand())
+        self.assertFalse(move.follows_fallen_reference(t + DT, bent))
 
 
 if __name__ == "__main__":

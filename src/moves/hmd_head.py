@@ -66,7 +66,8 @@ class HmdHeadTrackingMove(Move):
     def __init__(self, slew_rate_rad_s: float = 2.5, wholebody_claim: WholebodyClaim | None = None) -> None:
         super().__init__()
         self._slew_rate_rad_s = slew_rate_rad_s
-        # Whole-body tracking drives the neck to the reference's neck angles.
+        # Whole-body tracking drives the neck to the reference's neck angles
+        # while it follows the PC (``neck``).
         self._claim = wholebody_claim if wholebody_claim is not None else WholebodyClaim()
         self._last_targets: dict[str, float] = {}
         self._last_time_s: float | None = None
@@ -92,8 +93,12 @@ class HmdHeadTrackingMove(Move):
 
     def on_start(self, obs: Observation, command: MotorCommand) -> None:
         self._initialize_from_observation(obs)
-        for name, target in self._last_targets.items():
-            command.target_angles[name] = target
+        if self._claim.neck:
+            # Registered after walk: writing would override the reference's neck.
+            self._suspended_for_getup = True
+        else:
+            for name, target in self._last_targets.items():
+                command.target_angles[name] = target
         self.state = MoveState.ACTIVE
 
     def step(self, obs: Observation, command: MotorCommand) -> None:
@@ -104,7 +109,7 @@ class HmdHeadTrackingMove(Move):
         self._drive(obs, command)
 
     def _handle_getup_ownership(self, obs: Observation) -> bool:
-        if "getup" in obs.user_input.active_moves or self._claim.active:
+        if "getup" in obs.user_input.active_moves or self._claim.neck:
             self._suspended_for_getup = True
             return True
         if self._suspended_for_getup:

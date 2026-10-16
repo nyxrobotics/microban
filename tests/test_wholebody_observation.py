@@ -12,11 +12,9 @@ the UDP wire format, and the IMU and the PC each in their own yaw.
 import math
 import unittest
 from pathlib import Path
-from types import SimpleNamespace
 
 import numpy as np
 
-from constants import NEUTRAL_POSE
 from imu_reader import quat_apply_inverse as observer_gravity
 from input.input_source import UserInput
 from input.wholebody_reference import ACTIVE, CALIBRATED, ReferenceSnapshot, decode_frame, encode_frame
@@ -155,19 +153,27 @@ class _Receiver:
 
 
 class _Session:
-    """Answers each tick with the training policy's next action and keeps the inputs."""
+    """Answers 0 until the move tracks, then the training policy's actions in turn; keeps the tracked inputs."""
 
     def __init__(self, actions):
         self.actions = actions
+        self.move = None
         self.inputs = []
+        self.tracked = 0
 
     def run(self, _outputs, feeds):
+        if self.move.phase != Phase.TRACK:
+            return [np.zeros((1, 18), dtype=np.float32)]
         self.inputs.append(feeds["obs_history"].copy())
-        return [self.actions[len(self.inputs)][None].astype(np.float32)]
+        self.tracked += 1
+        return [self.actions[self.tracked - 1][None].astype(np.float32)]
 
 
 class MoveFeedsTrainingHistoryTest(unittest.TestCase):
     def test_the_move_gives_the_policy_the_trainings_histories(self):
+        """The move enters, stands and joins the PC's first frame (sent still),
+        then gives the policy the training's frames: the newest row from the
+        first tracked tick, the whole history from the tenth."""
         data = load_fixture()
         ticks = data["frame"].shape[1] - 1
         for piece in range(data["frame"].shape[0]):
@@ -175,28 +181,42 @@ class MoveFeedsTrainingHistoryTest(unittest.TestCase):
                 receiver = _Receiver()
                 session = _Session(data["last_action"][piece])
                 move = WholebodyMove(receiver, session=session, contract=fake_contract())
-                # The start as in the training benchmark: the robot at HOME
-                # faces the reference's heading (its trunk heading is the
-                # reference's at the start).
-                start = wire_frame(data, piece, 0, pc_yaw, 0)
-                receiver.frame = start.__class__(**{
-                    **start.__dict__,
+                session.move = move
+                # As the training benchmark starts: the robot faces the
+                # reference's heading (its trunk heading is the reference's).
+                first = wire_frame(data, piece, 0, pc_yaw, 0)
+                zero = np.zeros(3)
+                receiver.frame = first.__class__(**{
+                    **first.__dict__,
                     "anchor_quat": quat_mul(quat_from_yaw(pc_yaw), data["robot_quat"][piece, 0].astype(np.float64)),
+                    "joint_vel": np.zeros_like(first.joint_vel), "anchor_lin_vel": zero, "anchor_ang_vel": zero,
                 })
+
+                def observe(tick, t):
+                    state = robot_state(data, piece, tick, imu_yaw)
+                    state.time_s = t
+                    return Observation(robot_state=state, user_input=UserInput())
+
                 move.state = MoveState.STARTING
-                obs = Observation(robot_state=robot_state(data, piece, 0, imu_yaw), user_input=UserInput())
-                obs.robot_state.time_s = -0.02
-                move.on_start(obs, MotorCommand())
+                move.on_start(observe(0, 0.0), MotorCommand())
+                t = 0.0
+                while move.phase != Phase.TRACK and t < 5.0:
+                    t += 0.02
+                    receiver.time = t
+                    move.step(observe(0, t), MotorCommand())
+                self.assertEqual(move.phase, Phase.TRACK)
+                session.inputs.clear()
                 for tick in range(ticks):
+                    t += 0.02
                     receiver.frame = wire_frame(data, piece, tick, pc_yaw, tick + 1)
-                    receiver.time = 0.02 * tick
-                    obs = Observation(robot_state=robot_state(data, piece, tick, imu_yaw), user_input=UserInput())
-                    move.step(obs, MotorCommand())
-                self.assertIn(move.phase, (Phase.SETTLE, Phase.TRACK))
+                    receiver.time = t
+                    move.step(observe(tick, t), MotorCommand())
+                self.assertEqual(move.phase, Phase.TRACK)
                 frames = data["frame"][piece]
                 for tick, given in enumerate(session.inputs):
-                    window = [frames[max(0, k)] for k in range(tick - HISTORY_LENGTH + 1, tick + 1)]
-                    error = float(np.max(np.abs(given[0] - np.stack(window))))
+                    rows = slice(None) if tick >= HISTORY_LENGTH - 1 else slice(-1, None)
+                    window = np.stack([frames[k] for k in range(tick - HISTORY_LENGTH + 1, tick + 1)])
+                    error = float(np.max(np.abs(given[0][rows] - window[rows])))
                     self.assertLess(error, ATOL, f"piece {piece} tick {tick}")
 
 

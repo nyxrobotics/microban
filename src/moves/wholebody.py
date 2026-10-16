@@ -1,60 +1,78 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright 2026 nyxrobotics
 
-"""Whole-body tracking: the robot follows the operator's retargeted body.
+"""Whole-body policy: it stands the robot on its own reference and follows the operator's retargeted body.
 
 The policy (contract microban-wholebody-1, wholebody_contract.py) drives the
 18 body joints, arms included: target = clip(HOME + raw, -pi, +pi).  Its
 observation is built exactly as in training (mjlab_microban
 ``wholebody/observations.py`` and ``env_cfg.actor_terms``): 118 values per
 control tick, the last 10 ticks oldest first, every row the first frame after
-a start.  The reference comes from the PC (input/wholebody_reference.py),
-turned about z at the start so that its trunk heading is the IMU's
-(``reference_yaw: aligned_to_imu_yaw_at_start``); the ``*_b`` terms use the
-IMU trunk orientation with its yaw.
+a reset.  The ``*_b`` terms use the IMU trunk orientation with its yaw.
 
-Start: like the training benchmark's teleoperation start, the reference
-stands still for SETTLE_S (the newest frame's pose, velocities zero), then
-plays live.
+From R3 on, the policy drives the robot the whole time; the PICO policy does
+not stand it.  The reference is the move's own until the PC's start joins:
 
-Tracking runs while the PC's frames say CALIBRATED and ACTIVE (the operator
-started it on the PC).  A RESTART frame starts it again in place: the yaw is
-aligned again, the history rebuilt.
+1. enter: from the measured 21 joints and the IMU's attitude (velocities
+   zero, HOME's height) to the HOME stance in ENTER_S (smoothstep), its
+   heading the IMU's at the start;
+2. stand: the HOME stance (HOME's 21 joints, trunk attitude and height,
+   velocities zero), its heading following the IMU's at most
+   HEADING_STEP_RAD per tick (not while the trunk is tilted more than
+   HEADING_FREEZE_TILT_DEG from HOME's attitude); its angular velocity stays
+   zero, so a robot turned by a push is not told the reference turns too;
+3. join: the PC's reference, turned about z to the stand's heading
+   (``reference_yaw: aligned_to_imu_yaw_at_start``), replaces the stand's in
+   JOIN_S (smootherstep; the trunk's orientation offset fades as a rotation
+   vector, never a slerp between two moving attitudes);
+4. track: the PC's reference;
+5. coast: on a stop, the last reference followed goes on at its speed, which
+   fades to zero in COAST_S (the PC's Carry; its height does not rise);
+6. hold: that pose, still, until STOP_HOLD_S after the stop;
+7. return: to the HOME stance in RETURN_S (smoothstep, the heading fixed at
+   its start), then stand again.
 
-Stop: the PC ends tracking (ACTIVE or CALIBRATED off), a stale reference (no
-frame for MAX_REFERENCE_AGE_S, a jump of more than MAX_SEQUENCE_GAP frames, a
-frame later than MAX_LATENCY_EXCESS_S, a restarted PC, the PC's STALE flag
-for more than MAX_STALE_FLAG_S or its HELD flag for more than
-MAX_HELD_FLAG_S), a trunk off the reference's attitude (the z components of
-gravity in the two trunk frames differ by more than ORIENTATION_TERMINATION,
-the training's ``anchor_ori`` end) or the selector's request all lead to the
-same sequence, the policy still running:
+The join starts when, for STILL_TICKS ticks, the robot stands still (trunk
+within STILL_TILT_DEG of HOME's attitude, every leg joint slower than
+STILL_LEG_SPEED_RAD_S) and the PC's reference stands quietly (as every piece
+of the training's benchmark starts: its trunk near upright, at standing
+height, slow, not turning, and not the PC's interruption reference), and the
+PC's start (activation) is new and live (CALIBRATED and ACTIVE, fresh, no
+STALE, HELD or LATE flag) with ``walk`` not asked for on the wire.  A start
+joined once is never joined again, whatever ends it.
 
-1. hold: the last reference pose, velocities zero, for STOP_HOLD_S;
-2. return: the reference moves to the HOME stance (HOME joints, the HOME
-   trunk attitude at the robot's heading, HOME trunk height) in RETURN_S;
-3. stand: the HOME reference until the trunk is within HANDOFF_TILT_DEG of
-   the HOME attitude for HANDOFF_TICKS ticks (or HANDOFF_MAX_S passed); then
-   ``handoff_ready`` asks the selector to give the robot to the standing
-   policy.
+Stop (track or join): the PC ends tracking (ACTIVE or CALIBRATED off), a
+stale reference (no frame for MAX_REFERENCE_AGE_S, a jump of more than
+MAX_SEQUENCE_GAP frames, a frame later than MAX_LATENCY_EXCESS_S, a restarted
+PC, the PC's STALE flag for more than MAX_STALE_FLAG_S or its HELD flag for
+more than MAX_HELD_FLAG_S), a new start from the PC, or ``walk`` on the wire:
+coast, hold, return, stand.
 
-The stopped activation does not start again: tracking resumes only when the
-PC starts a new one (ACTIVE off then on, or RESTART).  A trunk tilted more
-than 60 deg from vertical holds the measured pose, as the
-PICO policy does: the scheduler's fall detection then starts the get-up.
-The exception is a trunk following the reference's: while the followed
-reference (live, held or returning) is itself past the fall angle, or was
-within FALL_LAG_S (the robot follows late), and the robot keeps to its
-attitude (ORIENTATION_TERMINATION), the policy keeps running and the
-scheduler does not count a fall (``follows_fallen_reference``).  A robot that
-leaves the reference's attitude stops as above and then counts as fallen.
+A trunk off the reference's attitude (gravity's z in the two trunk frames
+differs by more than ORIENTATION_TERMINATION, the training's ``anchor_ori``
+end) while joining, tracking, coasting, holding or returning enters again
+from the measured pose, as the training starts its next episode on the
+reference: history and previous action rebuilt.  The history is also rebuilt
+by every start of the move (R3, after a get-up) and after the scheduler's
+safety hold.
 
-Neck: its targets are the reference's neck angles (the PC fills them from the
-operator's head), clamped to the contract's ``neck_limits_rad_json`` and
-slewed at ``neck_slew_rates_rad_s_json`` from the measured neck at the start,
-as training's ReferenceNeckTarget does; the hold and the return to HOME move
-the neck with the rest of the reference.  The HMD head move yields
-(``WholebodyClaim``).
+A trunk tilted more than 60 deg from vertical holds the measured pose: the
+scheduler's fall detection then starts the get-up.  The exception is a trunk
+following the reference's while joining or tracking, or after a stop in
+mid-bow: while that reference is itself past the fall angle, or was within
+FALL_LAG_S (the robot follows late), and the robot keeps to its attitude, the
+policy keeps running and the scheduler does not count a fall
+(``follows_fallen_reference``).  A stop on a reference lying on the floor
+(its trunk lower than FLOOR_REF_HEIGHT_M) counts as a fall: the get-up takes
+the robot.
+
+Neck: while joining and tracking its targets are the reference's neck angles
+(the PC fills them from the operator's head), clamped to the contract's
+``neck_limits_rad_json`` and slewed at ``neck_slew_rates_rad_s_json``, as
+training's ReferenceNeckTarget does, and the HMD head move yields
+(``WholebodyClaim.neck``).  Otherwise the move slews the neck toward its own
+reference's (HOME standing), and the HMD head move, when it runs, drives it
+as it does on the PICO policy.
 """
 
 from __future__ import annotations
@@ -82,7 +100,7 @@ from controller import ControllerProtocol
 from input.wholebody_reference import HELD, LATE, STALE, ReferenceFrame, ReferenceReceiver
 from moves.move import MotorCommand, Move, MoveState
 from observer import Observation
-from policy_contract import HEAD_JOINTS
+from policy_contract import CONTROL_HZ, HEAD_JOINTS, SOFT_JOINT_POS_LIMITS
 from wholebody_contract import (
     ACTION_WIDTH,
     HISTORY_LENGTH,
@@ -98,10 +116,47 @@ from wholebody_contract import (
 ROBOT_JOINT_ORDER = OBSERVATION_JOINT_NAMES  # the wire's and the observation's joint order
 ACTION_COLUMNS = [ROBOT_JOINT_ORDER.index(name) for name in OBSERVATION_DOF_ORDER]
 NECK_COLUMNS = [ROBOT_JOINT_ORDER.index(name) for name in HEAD_JOINTS]
+LEG_JOINTS = tuple(name for name in OBSERVATION_DOF_ORDER if any(p in name for p in ("hip", "knee", "ankle")))
 ALL_MOTOR_IDS = list(MOTOR_TO_ID.values())
 GRAVITY_W = np.array([0.0, 0.0, -1.0])
+DT = 1.0 / CONTROL_HZ
 
-SETTLE_S = 1.0
+
+def _mjcf_range(name: str) -> tuple[float, float]:
+    """A joint's MJCF range: the soft limits divided back by 0.9 (wholebody_contract.frame_problem)."""
+    if name not in SOFT_JOINT_POS_LIMITS:
+        return -math.inf, math.inf
+    lower, upper = SOFT_JOINT_POS_LIMITS[name]
+    middle, half = 0.5 * (lower + upper), 0.5 * (upper - lower) / 0.9
+    return middle - half, middle + half
+
+
+JOINT_LOWER = np.array([_mjcf_range(name)[0] for name in ROBOT_JOINT_ORDER])
+JOINT_UPPER = np.array([_mjcf_range(name)[1] for name in ROBOT_JOINT_ORDER])
+
+ENTER_S = 1.0
+JOIN_S = 1.0
+COAST_S = 0.2
+STOP_HOLD_S = 0.5  # from the stop, the coast included
+RETURN_S = 1.5
+# The stand's heading follows the IMU's (1 rad/s), not while the trunk is tilted.
+HEADING_STEP_RAD = 0.02
+HEADING_FREEZE_TILT_DEG = 30.0
+# The robot stands still: the trunk near HOME's attitude, no leg joint moving
+# (the PICO policy's start of preflight-fixes: its legs move at 1.7-4.6 rad/s
+# stepping and below 0.4 rad/s standing).
+STILL_TILT_DEG = 12.0
+STILL_LEG_SPEED_RAD_S = 1.0
+STILL_TICKS = 25
+# The reference stands quietly, as every piece of the training's benchmark
+# starts (mjlab_microban wholebody/benchmark.py standing_frames, its trunk
+# checks: near upright, at standing height, slow; the soles are not in the
+# stream's trunk), and does not turn (a turning operator is not joined: the
+# join would carry the turn's offset).
+REFERENCE_STAND_TILT_DEG = 30.0
+REFERENCE_STAND_DROP_M = 0.02
+REFERENCE_STAND_SPEED_M_S = 0.05
+REFERENCE_STAND_TURN_RAD_S = 0.3
 MAX_REFERENCE_AGE_S = 0.1
 MAX_SEQUENCE_GAP = 5
 MAX_LATENCY_EXCESS_S = 0.15
@@ -114,23 +169,15 @@ MAX_STALE_FLAG_S = 0.25  # the PC sets STALE after 0.25 s without the operator's
 # receiver refuses its frames).
 MAX_HELD_FLAG_S = 1.0
 ORIENTATION_TERMINATION = 1.0
-STOP_HOLD_S = 0.5
-RETURN_S = 1.5
-HANDOFF_TILT_DEG = 12.0
-HANDOFF_TICKS = 10
-HANDOFF_MAX_S = 3.0
 FALL_GRAVITY_Z = -0.5
 # A trunk past the fall angle is not a fall while the reference's trunk is
 # past it too, or was within FALL_LAG_S (the robot follows late), and the robot
 # keeps to its attitude (ORIENTATION_TERMINATION).
 FALL_LAG_S = 0.5
-# The reference stands quietly, as every piece of the training's benchmark
-# starts (mjlab_microban wholebody/benchmark.py standing_frames, its trunk
-# checks: near upright, at standing height, slow; the soles are not in the
-# stream's trunk): tracking starts only then (the selector's start).
-REFERENCE_STAND_TILT_DEG = 30.0
-REFERENCE_STAND_DROP_M = 0.02
-REFERENCE_STAND_SPEED_M_S = 0.05
+# A reference whose trunk is lower than this lies on the floor (PICO
+# recordings: 0.05-0.09 m on the floor, 0.10-0.18 m bowing): a stop there
+# leaves the robot to the get-up.
+FLOOR_REF_HEIGHT_M = 0.10
 
 
 class WholebodyPolicyRuntimeError(RuntimeError):
@@ -138,11 +185,17 @@ class WholebodyPolicyRuntimeError(RuntimeError):
 
 
 class Phase(enum.Enum):
-    SETTLE = "settle"
+    ENTER = "enter"
+    STAND = "stand"
+    JOIN = "join"
     TRACK = "track"
+    COAST = "coast"
     HOLD = "hold"
     RETURN = "return"
-    STAND = "stand"
+
+
+FOLLOWING = (Phase.JOIN, Phase.TRACK)
+STOPPING = (Phase.COAST, Phase.HOLD, Phase.RETURN)
 
 
 # ------------------------------------------------------------------ quaternions (w, x, y, z)
@@ -334,9 +387,116 @@ def tilt_from_home_deg(projected_gravity: Sequence[float]) -> float:
     return math.degrees(math.acos(max(-1.0, min(1.0, cosine))))
 
 
+def wrap_angle(angle: float) -> float:
+    return (angle + math.pi) % (2.0 * math.pi) - math.pi
+
+
+def quat_from_rotvec(v: Sequence[float]) -> np.ndarray:
+    v = np.asarray(v, dtype=np.float64)
+    angle = float(np.linalg.norm(v))
+    if angle < 1.0e-12:
+        return np.array([1.0, 0.0, 0.0, 0.0])
+    return np.concatenate([[math.cos(0.5 * angle)], math.sin(0.5 * angle) * v / angle])
+
+
+def rotvec_from_quat(q: Sequence[float]) -> np.ndarray:
+    """The rotation vector of ``q``, the short way round."""
+    q = np.asarray(q, dtype=np.float64)
+    if q[0] < 0.0:
+        q = -q
+    norm = float(np.linalg.norm(q[1:]))
+    if norm < 1.0e-12:
+        return np.zeros(3)
+    return q[1:] / norm * 2.0 * math.atan2(norm, float(q[0]))
+
+
+def smootherstep(u: float) -> float:
+    u = min(max(u, 0.0), 1.0)
+    return u * u * u * (u * (6.0 * u - 15.0) + 10.0)
+
+
+def smootherstep_rate(u: float) -> float:
+    """d smootherstep / du."""
+    u = min(max(u, 0.0), 1.0)
+    return 30.0 * u * u * (1.0 - u) * (1.0 - u)
+
+
+def join_reference(start: Reference, live: Reference, offset: np.ndarray, u: float) -> Reference:
+    """From ``start`` to ``live`` at ``u`` (0..1) of JOIN_S: joints and height
+    blended, the trunk's orientation ``exp((1-s) offset) * live``; velocities
+    are the blend's own."""
+    s, ds = smootherstep(u), smootherstep_rate(u) / JOIN_S
+    dj, dh = live.joint_pos - start.joint_pos, live.height - start.height
+    turn = quat_from_rotvec((1.0 - s) * offset)
+    return Reference(
+        start.joint_pos + s * dj,
+        s * live.joint_vel + ds * dj,
+        quat_mul(turn, live.quat),
+        s * live.lin_vel + np.array([0.0, 0.0, ds * dh]),
+        -ds * offset + quat_apply(turn, live.ang_vel),
+        start.height + s * dh,
+    )
+
+
+def coast_reference(last: Reference, tau: float) -> Reference:
+    """``last`` going on at its speed, which fades to zero in COAST_S (the PC's
+    Carry): the joints stop at their MJCF ranges and the height does not rise
+    above the higher of its own and HOME's."""
+    u = min(max(tau / COAST_S, 0.0), 1.0)
+    dist = COAST_S * (u - u**3 + 0.5 * u**4)
+    fade = 1.0 - u * u * (3.0 - 2.0 * u)
+    free = last.joint_pos + last.joint_vel * dist
+    joints = np.clip(free, JOINT_LOWER, JOINT_UPPER)
+    joint_vel = np.where(joints == free, last.joint_vel * fade, 0.0)
+    ceiling = max(last.height, HOME_ROOT_POS_Z_M)
+    height = last.height + last.lin_vel[2] * dist
+    lin_vel = last.lin_vel * fade
+    if height > ceiling:
+        height, lin_vel = ceiling, np.array([lin_vel[0], lin_vel[1], 0.0])
+    return Reference(
+        joints, joint_vel, quat_mul(quat_from_rotvec(last.ang_vel * dist), last.quat), lin_vel,
+        last.ang_vel * fade, height,
+    )
+
+
+def trunk_tilt_deg(quat: Sequence[float]) -> float:
+    """The trunk's tilt from vertical."""
+    _, x, y, _ = (float(v) for v in quat)
+    return math.degrees(math.acos(max(-1.0, min(1.0, 1.0 - 2.0 * (x * x + y * y)))))
+
+
+def reference_unsteady(snapshot) -> str | None:
+    """Why the newest reference frame does not stand quietly (None: it does).
+
+    The benchmark's standing frame on the trunk (tilted at most
+    REFERENCE_STAND_TILT_DEG from vertical, at most REFERENCE_STAND_DROP_M
+    below HOME's height, slower than REFERENCE_STAND_SPEED_M_S), not turning
+    faster than REFERENCE_STAND_TURN_RAD_S, and the operator's own pose (not
+    the PC's interruption reference).  ``snapshot``: the receiver's.
+    """
+    frame = snapshot.frame
+    if frame is None:
+        return "no reference frame"
+    if frame.flags & (STALE | HELD | LATE):
+        return "the PC sends its interruption reference (STALE, HELD or LATE), not the operator"
+    tilt = trunk_tilt_deg(frame.anchor_quat)
+    if tilt > REFERENCE_STAND_TILT_DEG:
+        return f"the operator's trunk is tilted {tilt:.0f} deg"
+    height = float(frame.anchor_pos[2])
+    if height < HOME_ROOT_POS_Z_M - REFERENCE_STAND_DROP_M:
+        return f"the operator's trunk is {100.0 * (HOME_ROOT_POS_Z_M - height):.0f} cm below standing"
+    speed = float(np.linalg.norm(frame.anchor_lin_vel))
+    if speed > REFERENCE_STAND_SPEED_M_S:
+        return f"the operator's trunk moves at {speed:.2f} m/s"
+    turn = float(np.linalg.norm(frame.anchor_ang_vel))
+    if turn > REFERENCE_STAND_TURN_RAD_S:
+        return f"the operator's trunk turns at {turn:.2f} rad/s"
+    return None
+
+
 # ------------------------------------------------------------------ the move
 class WholebodyMove(Move):
-    """Run the whole-body tracking policy on the PC's reference stream."""
+    """Stand the robot with the whole-body policy and follow the PC's reference stream."""
 
     def __init__(
         self,
@@ -368,29 +528,38 @@ class WholebodyMove(Move):
         self._neck_rate = np.array([contract.neck_slew_rates_rad_s[n] for n in HEAD_JOINTS])
         self._history = ObservationHistory()
         self._last_action = np.zeros(ACTION_WIDTH, dtype=np.float32)
-        self._phase = Phase.SETTLE
         self.stop_reason: str | None = None
-        # The PC activation that stopped or was refused: never tracked again.
-        self._stopped_activation: int | None = None
+        # The selector clears it while the wire asks for ``walk``: no join.
+        self.joins_allowed = True
+        # The PC's starts (activations) up to this one are never joined (again).
+        self._done_activation = 0
         self._clear_run_state()
 
     def _clear_run_state(self) -> None:
+        self._phase = Phase.ENTER
+        self._phase_started_s = 0.0
+        self._current: Reference | None = None
+        self._start_ref: Reference | None = None
+        self._home: Reference | None = None
+        self._heading = 0.0
+        self._still_ticks = 0
+        self._join_start: Reference | None = None
+        self._join_offset = np.zeros(3)
         self._yaw_offset = quat_from_yaw(0.0)
         self._stream = -1
         self._activation = -1
         self._lost = 0
-        self._started_s = 0.0
-        self._phase_started_s = 0.0
-        self._current: Reference | None = None
-        self._phase_start_ref: Reference | None = None
-        self._home: Reference | None = None
-        self._settled_ticks = 0
+        self._last_followed: Reference | None = None
+        self._hold_ref: Reference | None = None
+        self._stop_s: float | None = None
+        self._stop_on_floor = False
         self._neck_target: np.ndarray | None = None
         self._last_time_s: float | None = None
         self._reference_fell_s: float | None = None  # last time the followed reference was past the fall angle
         self._stop_start_time_s: float | None = None
         self._stop_start_angles: dict[str, float] = {}
-        self.handoff_ready = False
+        self._enter_pending: str | None = None
+        self._wait_said: int | None = None
 
     @property
     def contract(self) -> WholebodyContract:
@@ -404,17 +573,24 @@ class WholebodyMove(Move):
     def phase(self) -> Phase:
         return self._phase
 
+    @property
+    def drives_neck(self) -> bool:
+        """The move drives the neck to the PC's reference (the HMD head move yields)."""
+        return self.state == MoveState.ACTIVE and self._phase in FOLLOWING
+
     def can_balance(self, user_input) -> bool:
         _ = user_input
         return True
 
     def follows_fallen_reference(self, now_s: float, projected_gravity) -> bool:
-        """The reference's trunk is past the fall angle (or was within
-        FALL_LAG_S) and the robot keeps to the reference's attitude: a trunk
-        past the fall angle is the motion followed, not a fall."""
+        """The PC's reference (joined, tracked, or stopped in mid-bow) has its
+        trunk past the fall angle (or had within FALL_LAG_S) and the robot
+        keeps to the reference's attitude: a trunk past the fall angle is the
+        motion followed, not a fall."""
         return (
             self.state == MoveState.ACTIVE
             and self._current is not None
+            and (self._phase in FOLLOWING or (self._phase in STOPPING and not self._stop_on_floor))
             and self._reference_fell_s is not None
             and now_s - self._reference_fell_s <= FALL_LAG_S
             and not orientation_diverged(projected_gravity, self._current)
@@ -440,76 +616,57 @@ class WholebodyMove(Move):
             return "the PC held an excluded pose (HELD)"
         return None
 
-    def reference_unsteady(self) -> str | None:
-        """Why the newest reference frame does not stand quietly (None: it does).
-
-        The benchmark's standing frame on the trunk: tilted at most
-        REFERENCE_STAND_TILT_DEG from vertical, at most REFERENCE_STAND_DROP_M
-        below HOME's height and slower than REFERENCE_STAND_SPEED_M_S; and the
-        operator's own pose (not the PC's interruption reference).
-        """
-        snapshot = self._reference.read()
-        frame = snapshot.frame
-        if frame is None or self._reference.now() - snapshot.received_s > MAX_REFERENCE_AGE_S:
-            return "no fresh reference frame"
-        if frame.flags & (STALE | HELD | LATE):
-            return "the PC sends its interruption reference (STALE, HELD or LATE), not the operator"
-        _, x, y, _ = (float(v) for v in frame.anchor_quat)
-        tilt = math.degrees(math.acos(max(-1.0, min(1.0, 1.0 - 2.0 * (x * x + y * y)))))
-        if tilt > REFERENCE_STAND_TILT_DEG:
-            return f"the operator's trunk is tilted {tilt:.0f} deg"
-        height = float(frame.anchor_pos[2])
-        if height < HOME_ROOT_POS_Z_M - REFERENCE_STAND_DROP_M:
-            return f"the operator's trunk is {100.0 * (HOME_ROOT_POS_Z_M - height):.0f} cm below standing"
-        speed = float(np.linalg.norm(frame.anchor_lin_vel))
-        if speed > REFERENCE_STAND_SPEED_M_S:
-            return f"the operator's trunk moves at {speed:.2f} m/s"
-        return None
-
-    def start_refusal(self) -> str | None:
-        """Why tracking cannot start now (None: it can)."""
-        snapshot = self._reference.read()
+    def join_refusal(self, snapshot) -> str | None:
+        """Why the PC's start cannot be joined at all now (None: it can, once
+        the robot and the operator stand still)."""
+        if not self.joins_allowed:
+            return "walk requested"
         reason = self._stale_reason(snapshot, None)
-        # An activation already run (stopped, or interrupted by the scheduler's
-        # gate without a stop) is not resumed.
-        if reason is None and snapshot.activation in (self._stopped_activation, self._activation):
-            reason = f"waiting for the PC to start tracking again (stopped: {self.stop_reason or 'interrupted'})"
+        if reason is None and snapshot.activation <= self._done_activation:
+            reason = "waiting for the PC to start tracking again"
         return reason
 
-    def refuse(self, reason: str) -> None:
-        """The selector could not run this activation: do not start it again."""
-        self._stopped_activation = self._reference.read().activation
-        self.stop_reason = reason
+    def _robot_unsteady(self, obs: Observation) -> str | None:
+        """Why the robot does not stand still this tick (None: it does)."""
+        if tilt_from_home_deg(obs.robot_state.projected_gravity) >= STILL_TILT_DEG:
+            return "the robot's trunk is off the HOME attitude"
+        speeds = [obs.robot_state.motor_velocities.get(name) for name in LEG_JOINTS]
+        if not all(speed is not None and abs(float(speed)) < STILL_LEG_SPEED_RAD_S for speed in speeds):
+            return "the robot's legs move"
+        return None
 
     def request_stop(self, reason: str, now_s: float) -> None:
-        """Begin the hold -> HOME -> hand-off sequence (no-op once begun)."""
-        if self.state == MoveState.ACTIVE and self._phase in (Phase.SETTLE, Phase.TRACK):
-            self.stop_reason = reason
-            self._stopped_activation = self._activation
-            print(f"Whole-body tracking stopped: {reason}; holding, then returning to HOME", end="\r\n", flush=True)
-            if self._current is not None:
-                self._current = self._current.still()
-            self._enter(Phase.HOLD, now_s)
+        """Stop joining or tracking: coast, hold, return, stand (no-op otherwise)."""
+        if self.state != MoveState.ACTIVE or self._phase not in FOLLOWING or self._current is None:
+            return
+        self.stop_reason = reason
+        self._last_followed = self._current
+        self._stop_s = now_s
+        self._stop_on_floor = self._current.height < FLOOR_REF_HEIGHT_M
+        self._set_phase(Phase.COAST, now_s)
+        print(
+            f"Whole-body tracking stopped: {reason}; coasting, holding, then standing at HOME"
+            + (" (the reference lies on the floor: a fall is left to the get-up)" if self._stop_on_floor else ""),
+            end="\r\n",
+            flush=True,
+        )
 
-    def _enter(self, phase: Phase, now_s: float) -> None:
+    def _set_phase(self, phase: Phase, now_s: float) -> None:
         self._phase = phase
         self._phase_started_s = now_s
-        self._phase_start_ref = self._current
 
     # Lifecycle.
     def on_start(self, obs: Observation, command: MotorCommand) -> None:
-        reason = self.start_refusal()
-        if reason is not None:
-            raise WholebodyPolicyRuntimeError(f"cannot start whole-body tracking: {reason}")
         robot_quat = self._body_quat(obs)
+        measured = self._measured_positions(obs)
         now = float(obs.robot_state.time_s)
         self._clear_run_state()
-        self._begin(self._reference.read(), robot_quat, now)
         self.stop_reason = None
-        measured = self._measured_positions(obs)
         if self._controller is not None:
             # A learned policy runs every joint at the gain it was trained with.
             self._controller.sync_write_kp(ALL_MOTOR_IDS, [KP_RL] * len(ALL_MOTOR_IDS))
+        self._enter(measured, robot_quat, now)
+        print("Whole-body policy stands the robot (from the measured pose to HOME)", end="\r\n", flush=True)
         for name in OBSERVATION_DOF_ORDER:
             command.target_angles[name] = measured[name]
         self._neck_target = np.clip(
@@ -520,27 +677,20 @@ class WholebodyMove(Move):
         self._last_time_s = now
         self.state = MoveState.ACTIVE
 
-    def _begin(self, snapshot, robot_quat: np.ndarray, now: float) -> None:
-        """Start following ``snapshot``'s activation: align, settle, fresh history."""
-        frame = snapshot.frame
-        assert frame is not None
-        # Turn the reference about z so its trunk heading is the IMU's now.
-        self._yaw_offset = yaw_alignment(robot_quat, frame.anchor_quat)
-        self._stream = snapshot.stream
-        self._activation = snapshot.activation
-        self._lost = snapshot.lost
-        self._started_s = now
-        self._phase = Phase.SETTLE
-        self._phase_started_s = now
-        self._current = Reference.aligned(frame, self._yaw_offset).still()
+    def _enter(self, measured: Mapping[str, float], robot_quat: np.ndarray, now: float) -> None:
+        """Enter from the measured pose: a fresh history, the previous action zero."""
+        joints = np.array([measured[name] for name in ROBOT_JOINT_ORDER])
+        zero = np.zeros(3)
+        self._start_ref = Reference(joints, np.zeros_like(joints), robot_quat, zero, zero, HOME_ROOT_POS_Z_M)
+        self._heading = yaw_of(robot_quat)
+        self._home = home_reference(self._heading)
+        self._current = self._start_ref
         self._history.reset()
         self._last_action.fill(0.0)
-        print(
-            f"Whole-body tracking started (PC activation {snapshot.activation}; reference turned "
-            f"{math.degrees(2.0 * math.atan2(self._yaw_offset[3], self._yaw_offset[0])):+.0f} deg to the IMU yaw)",
-            end="\r\n",
-            flush=True,
-        )
+        self._reference_fell_s = None
+        self._stop_on_floor = False
+        self._still_ticks = 0
+        self._set_phase(Phase.ENTER, now)
 
     def _body_quat(self, obs: Observation) -> np.ndarray:
         quat = np.asarray(obs.robot_state.body_quat, dtype=np.float64)
@@ -557,57 +707,134 @@ class WholebodyMove(Move):
             positions[name] = value
         return positions
 
-    def _update_reference(self, obs: Observation, now: float, robot_quat: np.ndarray) -> None:
-        """Advance the phase and set ``self._current`` for this tick."""
+    def _update_reference(
+        self, obs: Observation, now: float, robot_quat: np.ndarray, measured: Mapping[str, float]
+    ) -> None:
+        """Advance the phase and set ``self._current`` for this tick (the reference of the next one)."""
         gravity = obs.robot_state.projected_gravity
-        if self._phase in (Phase.SETTLE, Phase.TRACK):
-            snapshot = self._reference.read()
-            reason = self._stale_reason(snapshot, self._stream)
-            lost, self._lost = snapshot.lost - self._lost, snapshot.lost
-            if reason is None and lost > MAX_SEQUENCE_GAP:
-                reason = f"{lost} reference frames lost"
-            if reason is None and snapshot.activation != self._activation:
-                # RESTART (or ACTIVE again) from the PC: start following anew.
-                print("Whole-body tracking restarted by the PC", end="\r\n", flush=True)
-                self._begin(snapshot, robot_quat, now)
-            if reason is None:
-                frame = snapshot.frame
-                assert frame is not None
-                live = Reference.aligned(frame, self._yaw_offset)
-                if orientation_diverged(gravity, live):
-                    reason = "the trunk left the reference's attitude"
-                else:
-                    if self._phase == Phase.SETTLE and now - self._started_s >= SETTLE_S:
-                        self._enter(Phase.TRACK, now)
-                    self._current = live.still() if self._phase == Phase.SETTLE else live
-            if reason is not None:
-                # The hold keeps the last reference that was followed, never
-                # the stale or diverged one.
-                self.request_stop(reason, now)
-        if self._phase == Phase.HOLD and now - self._phase_started_s >= STOP_HOLD_S:
-            self._home = home_reference(yaw_of(robot_quat))
-            self._enter(Phase.RETURN, now)
+        ahead = now + DT
+        if self._enter_pending is not None:
+            print(f"Whole-body policy: {self._enter_pending}; entering again from the measured pose",
+                  end="\r\n", flush=True)
+            self._enter_pending = None
+            self._enter(measured, robot_quat, now)
+        if self._phase in FOLLOWING:
+            self._follow(now, ahead)
+        if self._phase == Phase.COAST:
+            assert self._last_followed is not None and self._stop_s is not None
+            tau = ahead - self._stop_s
+            if tau >= COAST_S:
+                self._hold_ref = coast_reference(self._last_followed, COAST_S).still()
+                self._set_phase(Phase.HOLD, now)
+            else:
+                self._current = coast_reference(self._last_followed, tau)
+        if self._phase == Phase.HOLD:
+            assert self._hold_ref is not None and self._stop_s is not None
+            self._current = self._hold_ref
+            if now - self._stop_s >= STOP_HOLD_S:
+                # HOME at the robot's heading, or the held one while the trunk is tilted.
+                upright = tilt_from_home_deg(gravity) <= HEADING_FREEZE_TILT_DEG
+                self._heading = yaw_of(robot_quat if upright else self._hold_ref.quat)
+                self._home = home_reference(self._heading)
+                self._set_phase(Phase.RETURN, now)
         if self._phase == Phase.RETURN:
-            assert self._phase_start_ref is not None and self._home is not None
-            fraction = min(1.0, (now - self._phase_started_s) / RETURN_S)
-            self._current = blend_reference(self._phase_start_ref, self._home, fraction, RETURN_S)
+            assert self._hold_ref is not None and self._home is not None
+            fraction = min(1.0, (ahead - self._phase_started_s) / RETURN_S)
+            self._current = blend_reference(self._hold_ref, self._home, fraction, RETURN_S)
             if fraction >= 1.0:
-                self._current = self._home
-                self._enter(Phase.STAND, now)
+                self._set_phase(Phase.STAND, now)
+                self._still_ticks = 0
+                print("Whole-body policy: back at the HOME stance, standing", end="\r\n", flush=True)
+        if self._phase in FOLLOWING + STOPPING and orientation_diverged(gravity, self._current):
+            # The training ends its episode here and starts the next on the
+            # reference: enter again from where the robot is.
+            self._enter(measured, robot_quat, now)
+            print("Whole-body policy: the trunk left the reference's attitude; entering again from the measured pose",
+                  end="\r\n", flush=True)
+        if self._phase == Phase.ENTER:
+            assert self._start_ref is not None and self._home is not None
+            fraction = min(1.0, (ahead - self._phase_started_s) / ENTER_S)
+            self._current = blend_reference(self._start_ref, self._home, fraction, ENTER_S)
+            if fraction >= 1.0:
+                self._set_phase(Phase.STAND, now)
+                self._still_ticks = 0
         if self._phase == Phase.STAND:
-            self._current = self._home
-            settled = tilt_from_home_deg(gravity) < HANDOFF_TILT_DEG
-            self._settled_ticks = self._settled_ticks + 1 if settled else 0
-            if not self.handoff_ready and (
-                self._settled_ticks >= HANDOFF_TICKS or now - self._phase_started_s >= HANDOFF_MAX_S
-            ):
-                self.handoff_ready = True
-                print(
-                    f"Whole-body tracking back at HOME ({tilt_from_home_deg(gravity):.1f} deg from the HOME "
-                    "attitude); the standing policy takes over",
-                    end="\r\n",
-                    flush=True,
-                )
+            self._stand(obs, now, ahead, robot_quat, measured)
+
+    def _stand(
+        self, obs: Observation, now: float, ahead: float, robot_quat: np.ndarray, measured: Mapping[str, float]
+    ) -> None:
+        """The HOME stance at the IMU's heading; join the PC's start when everything stands still."""
+        if tilt_from_home_deg(obs.robot_state.projected_gravity) <= HEADING_FREEZE_TILT_DEG:
+            turn = wrap_angle(yaw_of(robot_quat) - self._heading)
+            self._heading = wrap_angle(self._heading + max(-HEADING_STEP_RAD, min(HEADING_STEP_RAD, turn)))
+        # The heading moves, the reference does not turn: its angular velocity stays zero.
+        self._home = home_reference(self._heading)
+        self._current = self._home
+        snapshot = self._reference.read()
+        wait = self._robot_unsteady(obs) or reference_unsteady(snapshot)
+        self._still_ticks = 0 if wait is not None else self._still_ticks + 1
+        refusal = self.join_refusal(snapshot)
+        if refusal is not None:
+            return
+        if wait is None and self._still_ticks >= STILL_TICKS:
+            self._join(snapshot, now, measured)
+            self._follow(now, ahead)
+        elif self._wait_said != snapshot.activation:
+            self._wait_said = snapshot.activation
+            print(
+                f"Whole-body tracking: PC start {snapshot.activation} waits for the robot and the operator to stand "
+                f"still for {STILL_TICKS * DT:.1f} s (now: {wait or 'still, counting'})",
+                end="\r\n",
+                flush=True,
+            )
+
+    def _join(self, snapshot, now: float, measured: Mapping[str, float]) -> None:
+        frame = snapshot.frame
+        assert frame is not None and self._current is not None
+        # The PC's reference turned about z to the stand's heading.
+        self._yaw_offset = quat_from_yaw(self._heading - yaw_of(frame.anchor_quat))
+        live = Reference.aligned(frame, self._yaw_offset)
+        self._join_start = self._current
+        self._join_offset = rotvec_from_quat(quat_mul(self._join_start.quat, quat_conj(live.quat)))
+        self._stream, self._lost, self._activation = snapshot.stream, snapshot.lost, snapshot.activation
+        self._done_activation = max(self._done_activation, snapshot.activation)
+        self.stop_reason = None
+        self._set_phase(Phase.JOIN, now)
+        # The HMD head move may have had the neck: the neck slews from where it is.
+        self._neck_target = np.clip(
+            np.array([measured[name] for name in HEAD_JOINTS]), self._neck_lower, self._neck_upper
+        )
+        print(
+            f"Whole-body tracking joins PC start {snapshot.activation} (reference turned "
+            f"{math.degrees(2.0 * math.atan2(self._yaw_offset[3], self._yaw_offset[0])):+.0f} deg to the robot's "
+            "heading)",
+            end="\r\n",
+            flush=True,
+        )
+
+    def _follow(self, now: float, ahead: float) -> None:
+        """Join or track the PC's reference, or stop."""
+        snapshot = self._reference.read()
+        reason = self._stale_reason(snapshot, self._stream)
+        lost, self._lost = snapshot.lost - self._lost, snapshot.lost
+        if reason is None and lost > MAX_SEQUENCE_GAP:
+            reason = f"{lost} reference frames lost"
+        if reason is None and snapshot.activation != self._activation:
+            reason = "the PC started tracking again"
+        if reason is not None:
+            self.request_stop(reason, now)
+            return
+        assert snapshot.frame is not None
+        live = Reference.aligned(snapshot.frame, self._yaw_offset)
+        if self._phase == Phase.JOIN:
+            assert self._join_start is not None
+            u = (ahead - self._phase_started_s) / JOIN_S
+            if u < 1.0:
+                self._current = join_reference(self._join_start, live, self._join_offset, u)
+                return
+            self._set_phase(Phase.TRACK, now)
+        self._current = live
 
     def step(self, obs: Observation, command: MotorCommand) -> None:
         gravity = [float(v) for v in obs.robot_state.projected_gravity]
@@ -625,9 +852,11 @@ class WholebodyMove(Move):
                     command.target_angles[name] = float(self._neck_target[index])
             return
         robot_quat = self._body_quat(obs)
-        self._update_reference(obs, now, robot_quat)
+        self._update_reference(obs, now, robot_quat, measured)
         assert self._current is not None
-        if float(quat_apply_inverse(self._current.quat, GRAVITY_W)[2]) > FALL_GRAVITY_Z:
+        if self._phase in FOLLOWING + STOPPING and float(
+            quat_apply_inverse(self._current.quat, GRAVITY_W)[2]
+        ) > FALL_GRAVITY_Z:
             self._reference_fell_s = now
         frame = build_frame(
             self._current,
@@ -668,11 +897,10 @@ class WholebodyMove(Move):
         self._last_time_s = now
 
     def on_stop(self, obs: Observation, command: MotorCommand) -> None:
-        if self._phase in (Phase.SETTLE, Phase.TRACK) and self._activation >= 0:
-            # Interrupted (policy off, get-up): this activation is not resumed.
+        if self._phase in FOLLOWING:
+            # Interrupted (policy off, get-up): this start was joined, so it is
+            # not joined again.
             self.stop_reason = "stopped by the scheduler"
-            self._stopped_activation = self._activation
-            self._phase = Phase.HOLD
         if "getup" in obs.user_input.active_moves:
             self._finish_stop()
             return
@@ -694,14 +922,14 @@ class WholebodyMove(Move):
         self._last_action.fill(0.0)
         self._history.reset()
         self._clear_run_state()
-        self._phase = Phase.SETTLE
         self.state = MoveState.INACTIVE
 
     def on_safety_resume(self, obs: Observation) -> None:
-        # The scheduler held the goals while callbacks were skipped: restart the
-        # history and stop tracking (the reference moved on meanwhile).
+        # The scheduler held the goals while callbacks were skipped: the next
+        # step enters again from the measured pose (a fresh history); a start
+        # joined is not joined again.
         _ = obs
         self._history.reset()
         self._last_action.fill(0.0)
         if self.state == MoveState.ACTIVE:
-            self.request_stop("safety hold", float(obs.robot_state.time_s))
+            self._enter_pending = "safety hold"

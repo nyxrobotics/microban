@@ -29,13 +29,15 @@ class MotorCommand:
 
 @dataclass
 class WholebodyClaim:
-    """Set while whole-body tracking drives the robot (moves/wholebody.py).
+    """What the whole-body policy (moves/wholebody.py) drives.
 
-    Its policy drives the arms and its contract drives the neck to the
-    reference's neck angles, so the arm overlay and the HMD head move yield.
+    ``active``: it drives the robot, arms included, so the arm overlay yields.
+    ``neck``: it follows the PC's reference and its contract drives the neck to
+    the reference's neck angles, so the HMD head move yields.
     """
 
     active: bool = False
+    neck: bool = False
 
 
 class Move(ABC):
