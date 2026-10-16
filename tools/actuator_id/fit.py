@@ -21,6 +21,15 @@ bam.process, which bam.fit needs):
     uv run --with optuna --with wandb python3 tools/actuator_id/fit.py \\
         --logdir tools/actuator_id/logs_processed --actuator xc330 --model m6 \\
         --output xc330_params.json
+
+xc330_params.json is not what bam.fit makes of the 2026-09-21 logs.  record.py
+spends one 16 ms bus transaction per register, so each ~0.1 s loop writes the
+goal ~57 ms and reads the position ~39 ms before the time it logs; bam.fit
+takes those times as exact and fitted the lag as inertia and viscosity
+(armature 0.0083 kg m^2, where the 0.80 s free swing gives 0.0016).  The file
+is a refit of the same 30 logs with every write and read at its bus time and a
+fitted 6 ms servo lag, bam's m6 model simulated at 0.25 ms: a mean position
+error of 4.2 mrad in bam's simulator (bam.fit's parameters: 101 mrad).
 """
 
 import sys

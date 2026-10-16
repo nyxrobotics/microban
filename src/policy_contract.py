@@ -178,8 +178,8 @@ SELF_TEST_MAX_ROWS = 64
 SELF_TEST_ATOL = 1.0e-4
 SELF_TEST_RTOL = 1.0e-5
 SELF_TEST_GRAVITY_NORM_TOLERANCE = 0.05
-# XC330 no-load speed at a full 3S pack (12.6 V / kt 1.0425 V*s/rad).
-SELF_TEST_MAX_JOINT_SPEED_RAD_S = 12.1
+# XC330 no-load speed at a full 3S pack (12.6 V / kt 1.4904 V*s/rad).
+SELF_TEST_MAX_JOINT_SPEED_RAD_S = 8.5
 SELF_TEST_JOINT_RANGE_MARGIN_RAD = math.radians(5.0)
 
 # PICO targets: the command support of the training task.  Inference clips

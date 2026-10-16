@@ -35,8 +35,9 @@ class XC330Actuator(VoltageControlledActuator):
     def initialize(self):
         # Seed: Robotis datasheet, 1.150 Nm/A @ 11.1V
         self.model.kt = Parameter(1.150, 0.5, 2.5)
-        # Seed: the XL330 m6 fit; the fit lands near 10 Ohm, inside the bounds.
-        self.model.R = Parameter(2.811, 1.5, 12.0)
+        # Seed: the XL330 m6 fit.  The bench fixes kt / R and kt^2 / R; xc330_params.json has
+        # R = 13.3 Ohm, inside these bounds (those of its fit).
+        self.model.R = Parameter(2.811, 1.5, 40.0)
         self.model.armature = Parameter(0.005, 0.0001, 0.05)
 
     def get_extra_inertia(self) -> float:
