@@ -1,14 +1,14 @@
 {
- "benchmark_report_sha256": "8ccfbf330f9e36f4b0aef78687933801f2713801f431813cf98c42c6681941e8",
+ "benchmark_report_sha256": "fd75c80f58f310431616944dd9bcb79e512fc2017b866557f90012f2a9b75cc4",
  "checkpoint": "model_29999.pt",
- "checkpoint_sha256": "e779546345a59e20dc4f99c33449165b254d1e507ec9da1af582ba9ab046f2b1",
+ "checkpoint_sha256": "92467539381a8b9b6aca8f30ab392b698d6b47ad0301db575ce388825e8e7fb8",
  "contract": "microban-wholebody-1",
- "created": "2026-10-15 14:21:31",
+ "created": "2026-10-16 23:05:35",
  "dry_run": false,
- "eval_only_benchmark_report_sha256": "423c5ef64c19ac23e9ca5d4e46c6082070279bd7956a16f6f9745799fb201bc1",
+ "eval_only_benchmark_report_sha256": "bf1d98fbe293f83541017c29c2a7b18e533b843d21806cb9be99b1af8a275f4f",
  "file": "wholebody.onnx",
  "home_tag": "forward_lean_home",
  "self_test_rows": 32,
- "sha256": "424cf49326a4b3e53c40de3e82637bb411650269c3e4a1866a042847e8868d53",
- "source": "mjlab_microban 659471f 2026-10-15_02-24-28_wholebody_final2 model_29999.pt"
+ "sha256": "4b1a149eb7a5453ff3d87d618ca07517d8c89769ae8436c15832c4bcc799e88c",
+ "source": "mjlab_microban db1b998 2026-10-16_10-05-01_wholebody_servo1 model_29999.pt"
 }
