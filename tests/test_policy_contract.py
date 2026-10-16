@@ -60,12 +60,39 @@ class ContractMetadataTest(unittest.TestCase):
         self.assertEqual(set(pc.RECIPES), {"walk", "getup", "pico"})
         self.assertEqual({WIDTHS[kind] for kind in ("walk", "getup", "pico")}, {63, 60, 81})
 
-    def test_pico_without_the_residual_mlp_is_refused(self):
-        self.assertEqual(pc.RECIPES["pico"], "microban-pico-arm-overlay-residual-track-velocity-1")
-        metadata = contract_metadata("pico")
-        metadata["microban_recipe"] = "microban-pico-arm-overlay-track-velocity-1"
-        with self.assertRaisesRegex(pc.PolicyContractError, "microban_recipe"):
-            parse("pico", metadata)
+    def test_pico_without_the_residual_mlp_or_the_crouch_offsets_is_refused(self):
+        self.assertEqual(
+            pc.RECIPES["pico"], "microban-pico-arm-overlay-residual-crouch-feedforward-track-velocity-1"
+        )
+        for old in (
+            "microban-pico-arm-overlay-track-velocity-1",
+            "microban-pico-arm-overlay-residual-track-velocity-1",
+        ):
+            metadata = contract_metadata("pico")
+            metadata["microban_recipe"] = old
+            with self.subTest(recipe=old), self.assertRaisesRegex(pc.PolicyContractError, "microban_recipe"):
+                parse("pico", metadata)
+
+    def test_pico_crouch_offsets_must_be_this_robots(self):
+        key = "pico_crouch_feedforward_json"
+        record = json.loads(contract_metadata("pico")[key])
+        cases = {
+            "offset": lambda r: r["leg_offsets_rad"][1].__setitem__(3, r["leg_offsets_rad"][1][3] + 1e-5),
+            "contract": lambda r: r.__setitem__("contract", "microban_pico_crouch_feedforward_v0"),
+            "joints": lambda r: r["joint_names"].reverse(),
+            "no_crouch_probe": lambda r: r.update(foot_targets=[[0.0] * 6], leg_offsets_rad=[[0.0] * 12]),
+            "rows": lambda r: r["leg_offsets_rad"].pop(),
+            "rate": lambda r: r.__setitem__("max_step_rad", 0.3),
+            "period": lambda r: r.__setitem__("policy_dt_s", 0.01),
+            "unbounded": lambda r: r.pop("max_step_rad"),
+        }
+        for name, change in cases.items():
+            changed = json.loads(json.dumps(record))
+            change(changed)
+            metadata = contract_metadata("pico")
+            metadata[key] = json.dumps(changed)
+            with self.subTest(case=name), self.assertRaisesRegex(pc.PolicyContractError, key):
+                parse("pico", metadata)
 
     def test_missing_fields_fail_closed(self):
         for kind in pc.KINDS:

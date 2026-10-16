@@ -30,6 +30,9 @@ FIXTURES = Path(__file__).resolve().parent / "fixtures"
 POLICY_PACKAGE = FIXTURES / "policies"
 LEAN_HOME_YAML = FIXTURES / "home_pose_forward_lean.yaml"
 CENTERED_HOME_YAML = FIXTURES / "home_pose_centered.yaml"
+# The crouch offsets at the probe targets as the training exporter records
+# them (mjlab_microban policy_contract.pico_crouch_record at this HOME).
+CROUCH_PROBES = json.loads((FIXTURES / "crouch_feedforward_probes.json").read_text(encoding="utf-8"))
 
 # mjlab's natural joint order (robot.joint_names) as in exported Microban ONNX.
 JOINT_NAMES = ["head", "neck_roll", "neck_pitch", *OBSERVATION_DOF_ORDER]
@@ -156,6 +159,7 @@ def contract_metadata(
                     }
                 ),
                 "pico_active_adapter_columns_json": json.dumps(list(pc.PICO_ADAPTER_COLUMNS)),
+                "pico_crouch_feedforward_json": json.dumps(CROUCH_PROBES, separators=(",", ":")),
             }
         )
     return metadata

@@ -10,7 +10,14 @@ policy shares: target = clip(HOME + raw, -pi, +pi), the raw output of all 18
 body joints fed back as the previous action.  The arms are never driven by the
 policy: they hold the overlay's last targets (``PicoArmTargetHold``), which the
 overlay then overwrites in the same cycle while it runs, exactly as in
-training.  Its contract (src/policy_contract.py)
+training.  On a two-foot target the legs work around its crouch pose
+(crouch_feedforward, the training's code): the leg targets are
+clip(HOME + offset + raw, -pi, +pi) and the policy observes the leg joints
+minus HOME and the same offset; the previous action stays the raw output.
+The offset in use follows the target offset of the received foot targets at
+a bounded rate per policy step (``crouch_feedforward.follow``), from zero at
+the start: the observation uses the offset the same cycle's action keeps.
+Its contract (src/policy_contract.py)
 is checked before any torque is used; an unusable output raises
 ``PicoHybridPolicyRuntimeError`` before any target is written so the selector
 can hold the body in the same control cycle.
@@ -25,6 +32,7 @@ from typing import Any
 
 import numpy as np
 
+import crouch_feedforward
 from constants import (
     KP_HARDWARE_NEUTRAL,
     KP_RL,
@@ -39,6 +47,7 @@ from moves.pico_arms import PICO_ARM_JOINT_ORDER, PicoArmTargetHold
 from observer import Observation
 from policy_contract import (
     ACTION_WIDTH,
+    crouch_table,
     load_installed_policy,
     parse_policy,
     tracking_waiver_lines,
@@ -46,6 +55,7 @@ from policy_contract import (
 
 AGENT_NAME = "pico_teleop.onnx"
 OBSERVATION_WIDTH = 81
+FOOT_TARGET_COLUMNS = slice(69, 75)
 ARM_TARGET_COLUMNS = slice(75, 81)
 # Live simultaneous-both-feet targets must stay inside this fraction of the
 # (conservative, stationary) training support.
@@ -130,6 +140,11 @@ class PicoHybridMove(Move):
             float(NEUTRAL_POSE[name]) for name in OBSERVATION_DOF_ORDER
         )
         self._last_action = np.zeros(ACTION_WIDTH, dtype=np.float32)
+        self._crouch_table = crouch_table()
+        # The offsets in use (crouch_feedforward.LEG_JOINT_NAMES order) and
+        # those of this cycle's observation, kept by its action.
+        self._crouch_offsets = np.zeros((1, len(crouch_feedforward.LEG_JOINT_NAMES)))
+        self._crouch_next = self._crouch_offsets
         self._stop_start_time_s: float | None = None
         self._stop_start_angles: dict[str, float] = {}
 
@@ -183,9 +198,7 @@ class PicoHybridMove(Move):
             self._controller.sync_write_kp(ALL_MOTOR_IDS, [KP_RL] * len(ALL_MOTOR_IDS))
         for name in OBSERVATION_DOF_ORDER:
             command.target_angles[name] = self._physical_target(measured_positions[name])
-        self._last_action.fill(0.0)
-        self._stop_start_time_s = None
-        self._stop_start_angles = {}
+        self._reset_recurrence()
         self.state = MoveState.ACTIVE
 
     def _foot_targets(self, obs: Observation) -> list[float]:
@@ -240,6 +253,19 @@ class PicoHybridMove(Move):
             self._targets.arm_upper,
         )
 
+    def _next_crouch_offsets(self, foot_values: Sequence[float]) -> dict[str, float]:
+        """The leg offsets of this cycle: the offsets in use one step towards
+        the crouch pose of the observed foot targets (zero unless both feet
+        have one inside the two-foot support).  ``step`` keeps them."""
+
+        target = crouch_feedforward.leg_offsets(
+            self._crouch_table, np.asarray([foot_values], dtype=np.float64)
+        )
+        self._crouch_next = crouch_feedforward.follow(self._crouch_offsets, target)
+        return dict(
+            zip(crouch_feedforward.LEG_JOINT_NAMES, (float(v) for v in self._crouch_next[0]), strict=True)
+        )
+
     def build_observation(self, obs: Observation) -> list[float]:
         try:
             gyro_policy = [
@@ -255,18 +281,22 @@ class PicoHybridMove(Move):
                 "gyro and projected gravity must be 3-vectors"
             )
 
+        foot_values = self._foot_targets(obs)
+        crouch = self._next_crouch_offsets(foot_values)
         values: list[float] = gyro_policy + gravity
         for name, default in zip(
             self._contract.observation_joint_names, self._observation_defaults
         ):
-            values.append(float(obs.robot_state.motor_positions[name]) - default)
+            values.append(
+                float(obs.robot_state.motor_positions[name]) - default - crouch.get(name, 0.0)
+            )
         for name in self._contract.observation_joint_names:
             values.append(float(obs.robot_state.motor_velocities[name]))
         values.extend(float(value) for value in self._last_action)
         values.extend(
             float(obs.user_input.velocity[axis]) for axis in ("vx", "vy", "vtheta")
         )
-        values.extend(self._foot_targets(obs))
+        values.extend(foot_values)
         values.extend(self._arm_targets())
         if len(values) != OBSERVATION_WIDTH or not all(
             math.isfinite(value) for value in values
@@ -316,7 +346,12 @@ class PicoHybridMove(Move):
             )
         # No actor transform: the same raw float32 action recurs in the next
         # observation, and the absolute target is clipped like every other
-        # policy: target = clip(HOME + raw * 1.0, -pi, +pi).
+        # policy: target = clip(HOME + raw * 1.0, -pi, +pi), with the legs'
+        # HOME moved by the crouch offsets the observation used.
+        crouch_next = self._crouch_next
+        crouch = dict(
+            zip(crouch_feedforward.LEG_JOINT_NAMES, (float(v) for v in crouch_next[0]), strict=True)
+        )
         with np.errstate(over="ignore", invalid="ignore"):
             raw_action = action[0].astype(np.float32)
         if not np.isfinite(raw_action).all():
@@ -335,8 +370,8 @@ class PicoHybridMove(Move):
                     f"for {name} at action index {index}"
                 )
         targets = [
-            self._action_defaults[index] + float(raw_action[index])
-            for index in range(ACTION_WIDTH)
+            self._action_defaults[index] + crouch.get(name, 0.0) + float(raw_action[index])
+            for index, name in enumerate(OBSERVATION_DOF_ORDER)
         ]
         if not all(math.isfinite(target) for target in targets):
             raise PicoHybridPolicyRuntimeError("raw action produced a non-finite target")
@@ -351,6 +386,7 @@ class PicoHybridMove(Move):
                 float(NEUTRAL_POSE[name]) + value
             )
         self._last_action = raw_action.copy()
+        self._crouch_offsets = crouch_next
 
     def on_stop(self, obs: Observation, command: MotorCommand) -> None:
         if "getup" in obs.user_input.active_moves:
@@ -380,14 +416,17 @@ class PicoHybridMove(Move):
                 )
             self._finish_stop()
 
-    def _finish_stop(self) -> None:
+    def _reset_recurrence(self) -> None:
         self._last_action.fill(0.0)
+        self._crouch_offsets = np.zeros_like(self._crouch_offsets)
+        self._crouch_next = self._crouch_offsets
         self._stop_start_time_s = None
         self._stop_start_angles = {}
+
+    def _finish_stop(self) -> None:
+        self._reset_recurrence()
         self.state = MoveState.INACTIVE
 
     def on_safety_resume(self, obs: Observation) -> None:
         _ = obs
-        self._last_action.fill(0.0)
-        self._stop_start_time_s = None
-        self._stop_start_angles = {}
+        self._reset_recurrence()
