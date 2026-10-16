@@ -22,8 +22,9 @@ from bam.testbench import Pendulum
 
 # tools/actuator_id/ isn't a package on PYTHONPATH=src, so reach it directly to
 # register "xc330" (bam has no built-in definition for it) before load_model()
-# below needs it.
-sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "tools" / "actuator_id"))
+# below needs it, and to load its identification (the same file training loads).
+ACTUATOR_ID_DIR = Path(__file__).resolve().parents[2] / "tools" / "actuator_id"
+sys.path.insert(0, str(ACTUATOR_ID_DIR))
 from xc330_actuator import XC330Actuator  # noqa: E402
 
 bam.actuators.actuators["xc330"] = lambda: XC330Actuator(Pendulum)
@@ -126,7 +127,7 @@ class MuJoCoController:
 
         # BAM motor model — XC330-T288-T m6 (DC motor + Stribeck + load-dependent friction),
         # identified against a real servo (see tools/actuator_id/).
-        bam_model = bam_load_model(json_file="tools/actuator_id/xc330_params.json")
+        bam_model = bam_load_model(json_file=str(ACTUATOR_ID_DIR / "xc330_params.json"))
         bam_model.actuator.kp = KP_HARDWARE_NEUTRAL
         bam_model.actuator.vin = BAM_VIN
         self._bam = BamController(

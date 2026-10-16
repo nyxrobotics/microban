@@ -157,8 +157,9 @@ KP_GAIN_PRM: float = 0.0022  # Nm/rad per register unit (for Xl330)
 
 # BAM motor model (bam package) of the XC330-T288-T servos on a 3S pack. bam has
 # no published XC330-T288-T identification: tools/actuator_id/ defines the
-# actuator and records and fits a pendulum identification (xc330_params.json).
-# PROXY_KT / PROXY_R below are that fit (m6 model, 30 logs, score 0.064 rad).
+# actuator and records and fits a pendulum identification (xc330_params.json,
+# the same file training loads). PROXY_KT / PROXY_R below are its kt and R (m6
+# model, 30 logs, mean position error 4.2 mrad in bam's simulator).
 # BAM_MAX_CURRENT is the Robotis datasheet current limit.
 BAM_VIN: float = 11.1        # 3S nominal (3x3.7V); matches XC330-T288-T's own rated voltage
 BAM_VIN_MIN: float = 9.0     # 3S practical minimum (3x3.0V/cell)
@@ -184,8 +185,8 @@ OVERCURRENT_DEBOUNCE_TICKS: int = 2     # consecutive over-threshold ticks befor
 # data already read (present_position, present_velocity) and the command target:
 #   duty = clip(PROXY_KP * PROXY_ERROR_GAIN * (target - q), ±PROXY_MAX_PWM)
 #   I    = (PROXY_VIN * duty - PROXY_KT * dq) / PROXY_R      then |I| capped at BAM_MAX_CURRENT
-PROXY_KT: float = 1.043                  # XC330-T288-T torque constant [Nm/A] (tools/actuator_id fit)
-PROXY_R: float = 10.007                  # XC330-T288-T coil resistance [Ohm] (tools/actuator_id fit)
+PROXY_KT: float = 1.490                  # XC330-T288-T torque constant [Nm/A] (tools/actuator_id fit)
+PROXY_R: float = 13.318                  # XC330-T288-T coil resistance [Ohm] (tools/actuator_id fit)
 PROXY_VIN: float = BAM_VIN               # supply voltage [V]
 PROXY_ERROR_GAIN: float = 0.0028773775   # duty cycle per (kp * rad), XL330 encoder/gain scaling
 PROXY_MAX_PWM: float = 1.0               # max duty cycle magnitude
