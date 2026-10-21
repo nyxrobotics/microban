@@ -2,243 +2,282 @@
  "checkpoints": {
   "getup": "model_17999.pt",
   "pico": "model_14999.pt",
-  "walk": "model_29000.pt"
+  "walk": "model_29999.pt"
  },
  "contract": "microban-policy-1",
- "created": "2026-10-08 23:25:37",
+ "created": "2026-10-22 00:27:33",
  "dry_run": false,
  "home_joint_hash": "481503d292",
  "home_tag": "forward_lean_home",
- "home_yaml_sha256": "db382ae3596ecdff473bcd1be183df09c3e8e6210a7491a57e59280977073c68",
+ "home_yaml_sha256": "5ce21e779bbb2b0834bd190c2ebe953f0aba18ca3a7da7db3d832d078850bd05",
  "judgments": {
   "getup": {
    "failures": [],
    "passed": true,
    "summary": {
-    "final_tilt_deg": 2.6781277656555176,
-    "min_fallen_standing_fraction": 0.9649122807017544,
-    "posture_standing_fraction": 0.96875,
-    "push_fall_fraction": 0.0,
-    "standing_joint_abs_vel_rad_s": 0.08805691450834274,
-    "standing_targets_beyond_1p57": 0.03937757760286331,
-    "standing_targets_on_clip": 0.02710503153502941
+    "final_tilt_deg": 7.143103122711182,
+    "floors": {
+     "slippery_0.3": {
+      "min_fallen_standing_fraction": 0.9473684210526315,
+      "push_fall_fraction": 0.01639344262295082,
+      "stand_still_envs": 360,
+      "stand_still_falls": 1,
+      "stand_still_judged_envs": 337,
+      "stand_still_leg_speed_rms_rad_s": 0.0635,
+      "stand_still_worst_delay_ms": 30,
+      "standing_joint_abs_vel_rad_s": 0.10463166981935501
+     },
+     "soft_0.05": {
+      "min_fallen_standing_fraction": 0.9818181818181818,
+      "push_fall_fraction": 0.015625,
+      "stand_still_envs": 360,
+      "stand_still_falls": 1,
+      "stand_still_judged_envs": 356,
+      "stand_still_leg_speed_rms_rad_s": 0.044,
+      "stand_still_worst_delay_ms": 40,
+      "standing_joint_abs_vel_rad_s": 0.10571779310703278
+     },
+     "soft_slippery": {
+      "min_fallen_standing_fraction": 0.9649122807017544,
+      "push_fall_fraction": 0.03225806451612903,
+      "stand_still_envs": 360,
+      "stand_still_falls": 1,
+      "stand_still_judged_envs": 346,
+      "stand_still_leg_speed_rms_rad_s": 0.0439,
+      "stand_still_worst_delay_ms": 40,
+      "standing_joint_abs_vel_rad_s": 0.10211436450481415
+     }
+    },
+    "min_fallen_standing_fraction": 0.9818181818181818,
+    "posture_standing_fraction": 0.984375,
+    "push_fall_fraction": 0.015625,
+    "stand_still_envs": 360,
+    "stand_still_falls": 2,
+    "stand_still_judged_envs": 349,
+    "stand_still_leg_speed_rms_rad_s": 0.0442,
+    "stand_still_worst_delay_ms": 40,
+    "standing_joint_abs_vel_rad_s": 0.1128845289349556,
+    "standing_targets_on_clip": 0.01252148300409317
    }
   },
   "pico": {
-   "checkpoint": "model_14999.pt",
-   "checkpoint_sha256": "88ef866e6da8da4dee77477fe626c172ada6f936cec3f9304fac18a2e2c83fce",
    "failures": [
-    "foot_error",
-    "foot_lift",
-    "no_falls_without_push",
-    "push_falls",
-    "support_foot_still"
+    "tracking:foot_error",
+    "tracking:foot_lift",
+    "tracking:standing_still",
+    "soft_0.05_tracking:foot_error",
+    "soft_0.05_tracking:foot_lift",
+    "slippery_0.3_tracking:foot_error",
+    "soft_slippery_tracking:foot_error"
    ],
-   "gate_report_sha256": "42660156b0d8e985a123df30d1a6ae219cd792c428b1b150d31b00e905128e7a",
-   "passed": false,
-   "tracking_waiver": {
-    "approval": "User approved on 2026-10-12 installing the tracking-v13g2 model (trained from scratch for 15000 updates at mjlab_microban tracking-v13g 6182d36, support_zmp) on the robot tracking branch in place of tracking-v13c if the comparison showed it better, with the failing tracking checks waived as for tracking-v13c, to test it on the robot. Better than tracking-v13c in this judgment: standing still 0.00 touchdowns/s in every neutral arm scenario (v13c 0.95 arms raised, 1.34 reach left; standing_still now passes); support foot moves 0.2-0.9 mm in 13 of 14 single-foot scenarios (v13c four over 10 mm, up to 28.9 mm); falls without push 3 in one scenario (v13c 10 in four); walking speed off the command by 18 % on average (v13c 28 %; yaw left 0.5 rad/s: 0.44 vs 0.19). Still failing: foot_error just over its limit in 4 scenarios (worst 16.2 mm vs 15.7 mm); foot_lift: both-feet targets do not lower the trunk (0.3 mm vs 11.2 mm), as in v13c; support_foot_still: right_back_in/arms_reach_right 20.0 mm; no_falls_without_push: forward_0p1/arms_home 3 of 128; push_falls: 7.9 % vs the walker's 1.8 % + 5 % (v13c 6.5 %, passed by 0.1 point). The safety checks, the 9x300 locomotion and the ONNX gate pass.",
-    "checks": {
-     "foot_error": [
-      {
-       "limit": 0.008,
-       "measured": 0.008554873056709766,
-       "quantity": "relative_error_rms_m",
-       "rule": "at_most",
-       "scenario": "left_up20"
-      },
-      {
-       "limit": 0.011999999731779098,
-       "measured": 0.012048895470798016,
-       "quantity": "relative_error_rms_m",
-       "rule": "at_most",
-       "scenario": "left_up40"
-      },
-      {
-       "limit": 0.015737852454185484,
-       "measured": 0.016231173649430275,
-       "quantity": "relative_error_rms_m",
-       "rule": "at_most",
-       "scenario": "right_front_in"
-      },
-      {
-       "limit": 0.008,
-       "measured": 0.008444109931588173,
-       "quantity": "relative_error_rms_m",
-       "rule": "at_most",
-       "scenario": "both_back_right"
-      }
-     ],
-     "foot_lift": [
-      {
-       "limit": 0.0112,
-       "measured": 0.0002586337213870138,
-       "quantity": "trunk_drop_median_m",
-       "rule": "at_least",
-       "scenario": "both_front_left"
-      },
-      {
-       "limit": 0.0112,
-       "measured": 0.000233389888308011,
-       "quantity": "trunk_drop_median_m",
-       "rule": "at_least",
-       "scenario": "both_back_right"
-      }
-     ],
-     "no_falls_without_push": [
-      {
-       "limit": 0.0,
-       "measured": 3.0,
-       "quantity": "falls",
-       "rule": "at_most",
-       "scenario": "forward_0p1/arms_home"
-      }
-     ],
-     "push_falls": [
-      {
-       "limit": 0.06822916666666667,
-       "measured": 0.07899305555555555,
-       "quantity": "pico_fall_rate",
-       "rule": "at_most",
-       "scenario": "all_push_scenarios"
-      }
-     ],
-     "support_foot_still": [
-      {
-       "limit": 0.01,
-       "measured": 0.019966406747698784,
-       "quantity": "support_move_median_m",
-       "rule": "at_most",
-       "scenario": "right_back_in/arms_reach_right"
-      }
-     ]
-    }
-   },
-   "waived_by_user": true
+   "passed": true
   },
-  "walk_source_probe": {
-   "below": [],
-   "falls": 0,
-   "margins": {
-    "backward_0p1": 0.08326632845401763,
-    "backward_0p2": 0.08622550863027573,
-    "forward_0p1": 0.06604238507151602,
-    "forward_0p2": 0.07097962027788161,
-    "lateral_left_0p1": 0.03616367182129761,
-    "lateral_right_0p1": 0.04698094688728452,
-    "yaw_left_0p5": 0.25753507101535794,
-    "yaw_right_0p5": 0.3087544803023338
-   },
-   "minimums": {
-    "backward_0p1": 0.02,
-    "backward_0p2": 0.04,
-    "forward_0p1": 0.04,
-    "forward_0p2": 0.08,
-    "lateral_left_0p1": 0.02,
-    "lateral_right_0p1": 0.02,
-    "yaw_left_0p5": 0.2,
-    "yaw_right_0p5": 0.2
-   },
-   "ok": true,
-   "receipt": "artifacts/legacy_teleop_probe/velocity_a7c28c8abaf038d8_teleop83_raw_9x300.json",
-   "receipt_sha256": "c6516ff07409cbfbfb19740d2c4cdb235a8033535a346fc2ce23913c57969870",
-   "responses": {
-    "backward_0p1": 0.10326632845401763,
-    "backward_0p2": 0.12622550863027573,
-    "forward_0p1": 0.10604238507151603,
-    "forward_0p2": 0.15097962027788162,
-    "lateral_left_0p1": 0.05616367182129761,
-    "lateral_right_0p1": 0.06698094688728452,
-    "yaw_left_0p5": 0.45753507101535795,
-    "yaw_right_0p5": 0.5087544803023338
-   },
-   "soft_limit_overshoot_rad": 0.0,
-   "twists": {
-    "backward_0p1": [
-     -0.10326632845401763,
-     0.03147453646222129,
-     -0.053274241933599115
+  "walk": {
+   "failures": [],
+   "passed": true,
+   "summary": {
+    "9x300": true,
+    "9x300_signed": {
+     "backward_0p1": 0.0887,
+     "backward_0p2": 0.1703,
+     "forward_0p1": 0.1165,
+     "forward_0p2": 0.2216,
+     "lateral_left_0p1": 0.0259,
+     "lateral_right_0p1": 0.0447,
+     "yaw_left_0p5": 0.4105,
+     "yaw_right_0p5": 0.4575
+    },
+    "9x300_soft_limit_rad": 0.0,
+    "9x300_twist": {
+     "backward_0p1": [
+      -0.0887,
+      0.009,
+      -0.0402
+     ],
+     "backward_0p2": [
+      -0.1703,
+      0.0214,
+      -0.168
+     ],
+     "neutral": [
+      0.0002,
+      -0.0001,
+      -0.0002
+     ]
+    },
+    "9x300_worst_margin": [
+     "lateral_left_0p1",
+     0.0059
     ],
-    "backward_0p2": [
-     -0.12622550863027573,
-     -0.007601479652803392,
-     0.008105740906205028
+    "falls": [
+     0,
+     0,
+     0
     ],
-    "forward_0p1": [
-     0.10604238507151603,
-     -0.026510598507942632,
-     -0.03448284509393852
-    ],
-    "forward_0p2": [
-     0.15097962027788162,
-     -0.012174064025166444,
-     -0.008333288453170098
-    ],
-    "lateral_left_0p1": [
-     -0.025815468606189825,
-     0.05616367182129761,
-     -0.03623170984908938
-    ],
-    "lateral_right_0p1": [
-     -0.005703939314000308,
-     -0.06698094688728452,
-     -0.03480954546690918
-    ],
-    "neutral": [
-     0.00043171294983983445,
-     0.000382055561701236,
-     -0.0039413608948816545
-    ],
-    "yaw_left_0p5": [
-     0.0207177772782743,
-     0.016547891879454255,
-     0.45753507101535795
-    ],
-    "yaw_right_0p5": [
-     -0.0029348742589354517,
-     -0.04901166117750108,
-     -0.5087544803023338
+    "floors": {
+     "slippery_0.3": {
+      "9x300": true,
+      "9x300_worst_margin": [
+       "lateral_left_0p1",
+       0.0101
+      ],
+      "falls": [
+       0,
+       0,
+       0
+      ],
+      "rules": {
+       "direction": true,
+       "falls": true,
+       "standing_still": true
+      },
+      "single_signed": {
+       "BK": 0.143,
+       "F": 0.208,
+       "LL": 0.038,
+       "LR": 0.033,
+       "YL": 0.414,
+       "YR": 0.43
+      },
+      "still_touchdowns_per_s": 0.0
+     },
+     "soft_0.05": {
+      "9x300": true,
+      "9x300_worst_margin": [
+       "lateral_left_0p1",
+       0.0246
+      ],
+      "falls": [
+       0,
+       0,
+       0
+      ],
+      "rules": {
+       "direction": true,
+       "falls": true,
+       "standing_still": true
+      },
+      "single_signed": {
+       "BK": 0.158,
+       "F": 0.202,
+       "LL": 0.04,
+       "LR": 0.047,
+       "YL": 0.407,
+       "YR": 0.432
+      },
+      "still_touchdowns_per_s": 0.0
+     },
+     "soft_0.1": {
+      "9x300": true,
+      "9x300_worst_margin": [
+       "lateral_left_0p1",
+       0.0079
+      ],
+      "falls": [
+       0,
+       1,
+       0
+      ],
+      "rules": {
+       "direction": true,
+       "falls": true,
+       "standing_still": true
+      },
+      "single_signed": {
+       "BK": 0.162,
+       "F": 0.166,
+       "LL": 0.024,
+       "LR": 0.039,
+       "YL": 0.418,
+       "YR": 0.446
+      },
+      "still_touchdowns_per_s": 0.0
+     },
+     "soft_slippery": {
+      "9x300": true,
+      "9x300_worst_margin": [
+       "lateral_left_0p1",
+       0.0056
+      ],
+      "falls": [
+       0,
+       0,
+       0
+      ],
+      "rules": {
+       "direction": true,
+       "falls": true,
+       "standing_still": true
+      },
+      "single_signed": {
+       "BK": 0.144,
+       "F": 0.17,
+       "LL": 0.024,
+       "LR": 0.036,
+       "YL": 0.428,
+       "YR": 0.44
+      },
+      "still_touchdowns_per_s": 0.0
+     },
+     "stand_still_soft": {
+      "envs": 160,
+      "falls": 0,
+      "judged_envs": 160,
+      "leg_speed_rms_rad_s": 0.0477,
+      "time_constants_s": [
+       0.05,
+       0.1
+      ],
+      "worst_delay_ms": 20
+     }
+    },
+    "rules": {
+     "direction": true,
+     "falls": true,
+     "standing_still": true
+    },
+    "single_signed": {
+     "BK": 0.157,
+     "F": 0.211,
+     "LL": 0.041,
+     "LR": 0.04,
+     "YL": 0.412,
+     "YR": 0.439
+    },
+    "stand_still": {
+     "envs": 80,
+     "falls": 0,
+     "judged_envs": 80,
+     "leg_speed_rms_rad_s": 0.0472,
+     "worst_delay_ms": 20
+    },
+    "still_touchdowns_per_s": 0.0,
+    "still_twist": [
+     -0.0,
+     -0.0,
+     -0.002
     ]
-   },
-   "worst": "lateral_left_0p1",
-   "worst_margin": 0.03616367182129761
-  }
+   }
+  },
+  "walk_source_probe": null
  },
  "policies": {
   "getup": {
-   "checkpoint_sha256": "e115a8cd2b6e191a436922a2932e52c9747d4c713ab985f24c627ac5b6f3568a",
+   "checkpoint_sha256": "c3d1b1b7a618cf8fbfcc4381a051d50ff418c60808d3a4e38cabd91d0336d058",
    "file": "getup.onnx",
-   "sha256": "adcb8db1a46fda5cb64383e48057f7d908ee0801632c16f84871873f48d659df"
+   "sha256": "32d11d43542b20955cbc1483080ce8765a7b87721a09e95b8cdcc51a8f30cbe3"
   },
   "pico": {
-   "checkpoint_sha256": "88ef866e6da8da4dee77477fe626c172ada6f936cec3f9304fac18a2e2c83fce",
+   "checkpoint_sha256": "9d865f5a7bd01d4003559ce45c99cac7c5b198aa5e217bba89b0184c31ee9ebb",
    "file": "pico_teleop.onnx",
-   "sha256": "c594d132898dd7f7ab112c58ca9f5d3a7a06efa9eb00348ebc390dcde44ce8b3"
+   "sha256": "70da5f245a1f227eb4090a088a0a5007bcec9834014da074bf77180ae2c3042f"
   },
   "walk": {
-   "checkpoint_sha256": "a7c28c8abaf038d85c9c773bdaa2cc6bbe3c9bb2af6135622a4949c38a0401ff",
+   "checkpoint_sha256": "45e277bf41bb23b5353cf516d83521c2f1d1b0713fad321ff750cd2340a4145b",
    "file": "walk.onnx",
-   "sha256": "3eb45da7581cfd680d1a2e93795ced368e9d18cbc5a34560f01ab72147414056"
+   "sha256": "fc4b9a256e6a76c6bd79f71410a8b780ca6d514abf716374e8ed2a5b076d05ba"
   }
  },
- "policy_provenance": {
-  "pico": {
-   "checkpoint": "model_14999.pt",
-   "checkpoint_path": "logs/rsl_rl/mjlab_microban_teleop_v12/2026-10-11_23-19-20_home_481503d292_pico_v13_v13g2/model_14999.pt",
-   "checkpoint_sha256": "88ef866e6da8da4dee77477fe626c172ada6f936cec3f9304fac18a2e2c83fce",
-   "installed_at": "2026-10-12 05:34:13",
-   "policy_sha256": "c594d132898dd7f7ab112c58ca9f5d3a7a06efa9eb00348ebc390dcde44ce8b3",
-   "run_git_snapshot": "logs/rsl_rl/mjlab_microban_teleop_v12/2026-10-11_23-19-20_home_481503d292_pico_v13_v13g2/git/mjlab_microban.diff",
-   "run_git_snapshot_sha256": "93ee5856955f8d2f3fda45c3b5382a2c4570bbd314967b24d0585ea803b30972",
-   "scope": "pico_only",
-   "stage_gate_sha256": "42660156b0d8e985a123df30d1a6ae219cd792c428b1b150d31b00e905128e7a",
-   "training_branch": "tracking-v13g",
-   "training_branch_ref": "refs/heads/tracking-v13g",
-   "training_branch_tip_at_install": "6182d369e901520dfd75e374f59a4bd6b78b33c3",
-   "training_commit": "6182d369e901520dfd75e374f59a4bd6b78b33c3",
-   "training_home_yaml_sha256": "5ce21e779bbb2b0834bd190c2ebe953f0aba18ca3a7da7db3d832d078850bd05"
-  }
- },
- "training_branch": "home-config",
- "training_commit": "fb37dd5ad8f21e975768541d89bf08c205f4f106"
+ "training_branch": "retrain-servo-floor",
+ "training_commit": "6d1d3d5ead135ffc2884769a3e3cd576b4038d9f"
 }
