@@ -78,6 +78,10 @@ POLICY_FILES: Mapping[str, str] = {
     "pico": "pico_teleop.onnx",
 }
 
+# What messages call each kind.  The kind itself (contract.kind, POLICY_FILES,
+# the models' metadata) keeps its recorded value: "pico" is IK tracking.
+KIND_LABELS: Mapping[str, str] = {"walk": "walking", "getup": "get-up", "pico": "IK tracking"}
+
 # A dry run of the training pipeline (a few updates, gates forced) marks its
 # package; only the pipeline's own validator and test calls accept it.
 DRY_RUN_METADATA_KEY = "dry_run_not_deployable"
@@ -430,7 +434,7 @@ def parse_policy(kind: str, session: Any) -> PolicyContract:
     # Observation layout.
     schema = OBSERVATION_SCHEMAS[kind]
     if _json(metadata, "observation_schema_json") != [list(term) for term in schema]:
-        raise PolicyContractError(f"observation_schema_json is not the {kind} layout")
+        raise PolicyContractError(f"observation_schema_json is not the {KIND_LABELS[kind]} layout")
     observation_joints = _csv_names(metadata, "observation_joint_names")
     if observation_joints != OBSERVATION_JOINT_NAMES[kind]:
         raise PolicyContractError("observation_joint_names drifted")
@@ -440,7 +444,7 @@ def parse_policy(kind: str, session: Any) -> PolicyContract:
     if len(inputs) != 1 or len(outputs) != 1:
         raise PolicyContractError("policy must have exactly one input and one output")
     if _tensor_width(inputs[0], "obs", "input") != width:
-        raise PolicyContractError(f"{kind} policy input width must be {width}")
+        raise PolicyContractError(f"{KIND_LABELS[kind]} policy input width must be {width}")
     if _tensor_width(outputs[0], "actions", "output") != ACTION_WIDTH:
         raise PolicyContractError(f"policy output width must be {ACTION_WIDTH}")
 
@@ -546,7 +550,7 @@ def tracking_waiver_lines(contract: PolicyContract) -> list[str]:
     if waiver is None:
         return []
     lines = [
-        f"WARNING: {contract.kind} policy {contract.checkpoint_filename} was installed with "
+        f"WARNING: {KIND_LABELS[contract.kind]} policy {contract.checkpoint_filename} was installed with "
         f"failing tracking checks waived: {', '.join(sorted(waiver['checks']))}",
         f"  approval: {waiver['approval']}",
     ]
@@ -765,14 +769,14 @@ def run_self_test(session: Any, contract: PolicyContract) -> int:
             outputs = session.run(None, {contract.input_name: observation})
             output = np.asarray(outputs[0], dtype=np.float64)
         except Exception as exc:  # noqa: BLE001 - ORT boundary
-            raise PolicySelfTestError(f"{contract.kind} self-test failed to run row {index}") from exc
+            raise PolicySelfTestError(f"{KIND_LABELS[contract.kind]} self-test failed to run row {index}") from exc
         if len(outputs) != 1 or output.shape != (1, ACTION_WIDTH) or not np.isfinite(output).all():
-            raise PolicySelfTestError(f"{contract.kind} self-test row {index} returned an unsafe output")
+            raise PolicySelfTestError(f"{KIND_LABELS[contract.kind]} self-test row {index} returned an unsafe output")
         error = float(np.max(np.abs(output[0] - expected)))
         bound = SELF_TEST_ATOL + SELF_TEST_RTOL * float(np.max(np.abs(expected)))
         if error > bound:
             raise PolicySelfTestError(
-                f"{contract.kind} self-test row {index}: ONNX Runtime differs from the "
+                f"{KIND_LABELS[contract.kind]} self-test row {index}: ONNX Runtime differs from the "
                 f"recorded training output by {error:.3g} (limit {bound:.3g})"
             )
         if guard is not None and np.any(np.abs(output[0]) > guard):
