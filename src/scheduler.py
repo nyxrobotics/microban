@@ -144,7 +144,7 @@ class Scheduler:
 
         # Fall / getup auto-switch (only relevant when a "getup" move is registered).
         # Fall: projected_gravity[2] > -0.5, a trunk tilt above 60 deg from vertical
-        # (-1 is upright, 0 on its side). It matches WalkMove's and PicoHybridMove's own
+        # (-1 is upright, 0 on its side). It matches WalkMove's and IkTrackingMove's own
         # safety-stop criterion and stays measured from vertical at every HOME: a fall
         # is a physical attitude (a 10 deg HOME lean still leaves 50 deg before it
         # trips; a HOME-relative cone would let a backward fall go to 70 deg).

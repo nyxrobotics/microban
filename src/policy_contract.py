@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright 2026 nyxrobotics
 
-"""The one contract every learned policy (walk, get-up, PICO) is checked against.
+"""The one contract every learned policy (walk, get-up, IK tracking) is checked against.
 
 The training repository (mjlab_microban) writes the ONNX metadata described
 here and ``src/agents/manifest.json``; the robot reads them with this module
@@ -15,7 +15,8 @@ only.  Compatibility is established by
   evaluation rollouts are run through ONNX Runtime here and must reproduce the
   actions the training actor produced for them;
 * the manifest, which binds the installed files of one release together (file
-  and checkpoint SHA-256, and PICO's frozen walker to the installed walk).
+  and checkpoint SHA-256, and IK tracking's frozen walker to the installed
+  walk).
 
 Run-specific values live only in the manifest: the installer writes data
 files and never edits robot code.
@@ -44,22 +45,22 @@ from home_pose import (
     HOME_TRUNK_PITCH_RAD,
     home_pose_stamp_matches,
 )
-from pico_arm_contract import (
-    PICO_ARM_JOINT_NAMES,
-    PICO_ARM_LOWER_RAD,
-    PICO_ARM_SIDES,
-    PICO_ARM_SLEW_RATE_RAD_S,
-    PICO_ARM_UPPER_RAD,
+from ik_tracking_arm_contract import (
+    IK_TRACKING_ARM_JOINT_NAMES,
+    IK_TRACKING_ARM_LOWER_RAD,
+    IK_TRACKING_ARM_SIDES,
+    IK_TRACKING_ARM_SLEW_RATE_RAD_S,
+    IK_TRACKING_ARM_UPPER_RAD,
 )
 
 POLICY_CONTRACT = "microban-policy-1"
 # The training recipe each kind must come from.  A recipe id changes when the
 # reward or the target meaning changes (one reviewed line here); fixing a
-# failed run inside the same recipe family does not change it.  PICO's also
-# names its structure: the frozen walker plus a residual MLP added to its
-# output (the robot runs the ONNX graph as it is; the id keeps the two
-# structures apart), with the leg targets and the observed leg joints offset
-# by the crouch pose of a two-foot target, which the robot computes
+# failed run inside the same recipe family does not change it.  IK
+# tracking's also names its structure: the frozen walker plus a residual MLP
+# added to its output (the robot runs the ONNX graph as it is; the id keeps
+# the two structures apart), with the leg targets and the observed leg joints
+# offset by the crouch pose of a two-foot target, which the robot computes
 # (crouch_feedforward, pico_crouch_feedforward_json).
 RECIPES: Mapping[str, str] = {
     "walk": "microban-walk-track-velocity-1",
@@ -82,8 +83,8 @@ POLICY_FILES: Mapping[str, str] = {
 DRY_RUN_METADATA_KEY = "dry_run_not_deployable"
 DRY_RUN_POLICY_ALLOW_ENV = "MICROBAN_ALLOW_DRYRUN_POLICY"
 
-# A PICO policy whose behaviour checks failed may be installed when the user
-# approved it.  Its gate status is GATE_STATUS_WAIVED and
+# An IK tracking policy whose behaviour checks failed may be installed when
+# the user approved it.  Its gate status is GATE_STATUS_WAIVED and
 # TRACKING_WAIVER_METADATA_KEY records the approval and every failing
 # measurement of each waived check; the robot shows them at start and in
 # tools/validate_policies.py.  Only behaviour checks can be waived: a policy
@@ -91,7 +92,7 @@ DRY_RUN_POLICY_ALLOW_ENV = "MICROBAN_ALLOW_DRYRUN_POLICY"
 GATE_STATUS_PASS = "pass"
 GATE_STATUS_WAIVED = "pass_with_waiver"
 TRACKING_WAIVER_METADATA_KEY = "gate_tracking_waiver_json"
-PICO_WAIVABLE_TRACKING_CHECKS = (
+IK_TRACKING_WAIVABLE_TRACKING_CHECKS = (
     "no_falls_without_push",
     "foot_lift",
     "foot_error",
@@ -100,7 +101,7 @@ PICO_WAIVABLE_TRACKING_CHECKS = (
     "standing_still",
     "walking_with_arms",
 )
-PICO_UNWAIVABLE_TRACKING_CHECKS = (
+IK_TRACKING_UNWAIVABLE_TRACKING_CHECKS = (
     "finite",
     "actual_soft_limits",
     "raw_action_recurrence",
@@ -186,46 +187,46 @@ SELF_TEST_GRAVITY_NORM_TOLERANCE = 0.05
 SELF_TEST_MAX_JOINT_SPEED_RAD_S = 8.5
 SELF_TEST_JOINT_RANGE_MARGIN_RAD = math.radians(5.0)
 
-# PICO targets: the command support of the training task.  Inference clips
-# the live targets to these, never to model-provided values.
-PICO_FOOT_TARGET_LOWER = (-0.03, -0.03, 0.0) * 2
-PICO_FOOT_TARGET_UPPER = (0.03, 0.03, 0.05) * 2
-PICO_BOTH_FEET_TARGET_LOWER = (-0.01, -0.01, 0.0) * 2
-PICO_BOTH_FEET_TARGET_UPPER = (0.01, 0.01, 0.02) * 2
-# PICO arm targets: the six arm servo targets of the direct-arm overlay
-# (moves/pico_arms.py) minus HOME, left then right, each pitch, roll, elbow.
-# The policy's arm outputs never reach the servos; it is trained with its arms
-# driven inside the same box at the same slew rate.
-PICO_ARM_TARGET_CONTRACT = "microban_pico_arm_target_rel_home_v1"
-PICO_ARM_TARGET_JOINTS = tuple(
-    name for side in PICO_ARM_SIDES for name in PICO_ARM_JOINT_NAMES[side]
+# IK tracking targets: the command support of the training task.  Inference
+# clips the live targets to these, never to model-provided values.
+IK_TRACKING_FOOT_TARGET_LOWER = (-0.03, -0.03, 0.0) * 2
+IK_TRACKING_FOOT_TARGET_UPPER = (0.03, 0.03, 0.05) * 2
+IK_TRACKING_BOTH_FEET_TARGET_LOWER = (-0.01, -0.01, 0.0) * 2
+IK_TRACKING_BOTH_FEET_TARGET_UPPER = (0.01, 0.01, 0.02) * 2
+# IK tracking arm targets: the six arm servo targets of the direct-arm
+# overlay (moves/ik_tracking_arms.py) minus HOME, left then right, each pitch,
+# roll, elbow.  The policy's arm outputs never reach the servos; it is trained
+# with its arms driven inside the same box at the same slew rate.
+IK_TRACKING_ARM_TARGET_CONTRACT = "microban_pico_arm_target_rel_home_v1"
+IK_TRACKING_ARM_TARGET_JOINTS = tuple(
+    name for side in IK_TRACKING_ARM_SIDES for name in IK_TRACKING_ARM_JOINT_NAMES[side]
 )
-PICO_ARM_TARGET_LOWER_RAD = tuple(
-    value for side in PICO_ARM_SIDES for value in PICO_ARM_LOWER_RAD[side]
+IK_TRACKING_ARM_TARGET_LOWER_RAD = tuple(
+    value for side in IK_TRACKING_ARM_SIDES for value in IK_TRACKING_ARM_LOWER_RAD[side]
 )
-PICO_ARM_TARGET_UPPER_RAD = tuple(
-    value for side in PICO_ARM_SIDES for value in PICO_ARM_UPPER_RAD[side]
+IK_TRACKING_ARM_TARGET_UPPER_RAD = tuple(
+    value for side in IK_TRACKING_ARM_SIDES for value in IK_TRACKING_ARM_UPPER_RAD[side]
 )
-PICO_ARM_OBSERVATION_LOWER = tuple(
+IK_TRACKING_ARM_OBSERVATION_LOWER = tuple(
     lower - float(NEUTRAL_POSE[name])
-    for name, lower in zip(PICO_ARM_TARGET_JOINTS, PICO_ARM_TARGET_LOWER_RAD, strict=True)
+    for name, lower in zip(IK_TRACKING_ARM_TARGET_JOINTS, IK_TRACKING_ARM_TARGET_LOWER_RAD, strict=True)
 )
-PICO_ARM_OBSERVATION_UPPER = tuple(
+IK_TRACKING_ARM_OBSERVATION_UPPER = tuple(
     upper - float(NEUTRAL_POSE[name])
-    for name, upper in zip(PICO_ARM_TARGET_JOINTS, PICO_ARM_TARGET_UPPER_RAD, strict=True)
+    for name, upper in zip(IK_TRACKING_ARM_TARGET_JOINTS, IK_TRACKING_ARM_TARGET_UPPER_RAD, strict=True)
 )
 SELF_TEST_ARM_TARGET_TOLERANCE_RAD = 1.0e-6
 # This robot's crouch offsets must reproduce the policy's recorded probes.
-PICO_CROUCH_TOLERANCE_RAD = 1.0e-6
-# Observation columns the PICO adapter learns on top of the frozen walker
-# (head/neck joint_pos and joint_vel, foot and arm targets); all of them must
-# have been trainable when the deployed checkpoint was saved.
-PICO_ADAPTER_COLUMNS = (6, 7, 8, 27, 28, 29, *range(69, 81))
-PICO_CURRICULUM_KEYS = ("critic_warmup", "arm_start", "foot_start", "foot_tighten", "total")
-# Frame of the PICO foot target columns: the trunk frame with HOME's
+IK_TRACKING_CROUCH_TOLERANCE_RAD = 1.0e-6
+# Observation columns the IK tracking adapter learns on top of the frozen
+# walker (head/neck joint_pos and joint_vel, foot and arm targets); all of them
+# must have been trainable when the deployed checkpoint was saved.
+IK_TRACKING_ADAPTER_COLUMNS = (6, 7, 8, 27, 28, 29, *range(69, 81))
+IK_TRACKING_CURRICULUM_KEYS = ("critic_warmup", "arm_start", "foot_start", "foot_tighten", "total")
+# Frame of the IK tracking foot target columns: the trunk frame with HOME's
 # forward lean rotated out (gravity-levelled at HOME), which is what the PICO
 # bridge sends.  With a vertical trunk it is the trunk frame itself.
-PICO_TARGET_FRAME = (
+IK_TRACKING_TARGET_FRAME = (
     "robot_trunk_xyz_forward_left_up"
     if HOME_TRUNK_PITCH_RAD == 0.0
     else "robot_home_levelled_trunk_xyz_forward_left_up"
@@ -244,15 +245,15 @@ class PolicySelfTestError(RuntimeError):
 
 
 @dataclass(frozen=True)
-class PicoTargets:
-    """The PICO-only part of the contract."""
+class IkTrackingTargets:
+    """The IK-tracking-only part of the contract."""
 
     walk_checkpoint_sha256: str
     foot_lower: tuple[float, ...]
     foot_upper: tuple[float, ...]
     both_feet_lower: tuple[float, ...]
     both_feet_upper: tuple[float, ...]
-    # Arm target observation range (box minus HOME, PICO_ARM_TARGET_JOINTS).
+    # Arm target observation range (box minus HOME, IK_TRACKING_ARM_TARGET_JOINTS).
     arm_lower: tuple[float, ...]
     arm_upper: tuple[float, ...]
     raw_action_guard: tuple[float, ...]
@@ -273,8 +274,8 @@ class PolicyContract:
     dry_run: bool
     self_test_observations: np.ndarray  # (N, 1, input_width) float32
     self_test_actions: np.ndarray  # (N, 18) float64
-    pico: PicoTargets | None = None
-    # The user-approved waiver of failing PICO behaviour checks, if any.
+    ik_tracking: IkTrackingTargets | None = None
+    # The user-approved waiver of failing IK tracking behaviour checks, if any.
     tracking_waiver: Mapping[str, Any] | None = None
 
 
@@ -453,7 +454,7 @@ def parse_policy(kind: str, session: Any) -> PolicyContract:
     gate_report_sha256 = _sha256_value(metadata, "gate_report_sha256")
 
     observations, actions = _parse_self_test(kind, metadata, width, observation_joints)
-    pico = _parse_pico(metadata, int(match.group(1))) if kind == "pico" else None
+    ik_tracking = _parse_ik_tracking(metadata, int(match.group(1))) if kind == "pico" else None
     return PolicyContract(
         kind=kind,
         recipe=RECIPES[kind],
@@ -467,13 +468,13 @@ def parse_policy(kind: str, session: Any) -> PolicyContract:
         dry_run=dry_run,
         self_test_observations=observations,
         self_test_actions=actions,
-        pico=pico,
+        ik_tracking=ik_tracking,
         tracking_waiver=tracking_waiver,
     )
 
 
 def _parse_gate_status(kind: str, metadata: Mapping[str, str]) -> dict[str, Any] | None:
-    """The gate passed, or (PICO only) passed under a user-approved waiver."""
+    """The gate passed, or (IK tracking only) passed under a user-approved waiver."""
 
     status = metadata.get("gate_status")
     if status == GATE_STATUS_PASS:
@@ -503,10 +504,10 @@ def check_tracking_waiver(value: Any) -> dict[str, Any]:
     checks = value["checks"]
     if not isinstance(checks, dict) or not checks:
         raise PolicyContractError("tracking waiver must name at least one check")
-    unwaivable = sorted(set(checks) & set(PICO_UNWAIVABLE_TRACKING_CHECKS))
+    unwaivable = sorted(set(checks) & set(IK_TRACKING_UNWAIVABLE_TRACKING_CHECKS))
     if unwaivable:
         raise PolicyContractError(f"safety checks cannot be waived: {', '.join(unwaivable)}")
-    unknown = sorted(set(checks) - set(PICO_WAIVABLE_TRACKING_CHECKS))
+    unknown = sorted(set(checks) - set(IK_TRACKING_WAIVABLE_TRACKING_CHECKS))
     if unknown:
         raise PolicyContractError(f"tracking waiver names unknown checks: {', '.join(unknown)}")
     for name, entries in checks.items():
@@ -616,41 +617,41 @@ def _parse_self_test(
         arm = observations[:, slice(*offsets["arm_target"])]
         feet = observations[:, slice(*offsets["foot_target"])]
         if np.any(
-            arm < np.asarray(PICO_ARM_OBSERVATION_LOWER) - SELF_TEST_ARM_TARGET_TOLERANCE_RAD
+            arm < np.asarray(IK_TRACKING_ARM_OBSERVATION_LOWER) - SELF_TEST_ARM_TARGET_TOLERANCE_RAD
         ) or np.any(
-            arm > np.asarray(PICO_ARM_OBSERVATION_UPPER) + SELF_TEST_ARM_TARGET_TOLERANCE_RAD
+            arm > np.asarray(IK_TRACKING_ARM_OBSERVATION_UPPER) + SELF_TEST_ARM_TARGET_TOLERANCE_RAD
         ):
-            raise PolicyContractError("self-test arm targets leave the PICO arm box")
+            raise PolicyContractError("self-test arm targets leave the IK tracking arm box")
         # The self-test must exercise the target columns, not only HOME rows.
         if not np.any(arm != 0.0) or not np.any(feet != 0.0):
             raise PolicyContractError(
-                "PICO self-test must record rows with arm targets and with foot targets"
+                "IK tracking self-test must record rows with arm targets and with foot targets"
             )
     return observations.astype(np.float32).reshape(-1, 1, width), actions
 
 
-def _parse_pico(metadata: Mapping[str, str], checkpoint_iteration: int) -> PicoTargets:
-    _exact(metadata, "pico_target_frame", PICO_TARGET_FRAME)
+def _parse_ik_tracking(metadata: Mapping[str, str], checkpoint_iteration: int) -> IkTrackingTargets:
+    _exact(metadata, "pico_target_frame", IK_TRACKING_TARGET_FRAME)
     bounds = {}
     for key, expected in (
-        ("pico_foot_target_lower_json", PICO_FOOT_TARGET_LOWER),
-        ("pico_foot_target_upper_json", PICO_FOOT_TARGET_UPPER),
-        ("pico_both_feet_target_lower_json", PICO_BOTH_FEET_TARGET_LOWER),
-        ("pico_both_feet_target_upper_json", PICO_BOTH_FEET_TARGET_UPPER),
+        ("pico_foot_target_lower_json", IK_TRACKING_FOOT_TARGET_LOWER),
+        ("pico_foot_target_upper_json", IK_TRACKING_FOOT_TARGET_UPPER),
+        ("pico_both_feet_target_lower_json", IK_TRACKING_BOTH_FEET_TARGET_LOWER),
+        ("pico_both_feet_target_upper_json", IK_TRACKING_BOTH_FEET_TARGET_UPPER),
     ):
         values = _numbers(_json(metadata, key), key, 6)
         if not np.allclose(values, expected, rtol=0.0, atol=1.0e-9):
             raise PolicyContractError(f"{key} differs from the trained command support")
         bounds[key] = tuple(float(value) for value in expected)
-    _check_pico_arm_target(_json(metadata, "pico_arm_target_json"))
-    _check_pico_crouch(_json(metadata, "pico_crouch_feedforward_json"))
+    _check_ik_tracking_arm_target(_json(metadata, "pico_arm_target_json"))
+    _check_ik_tracking_crouch(_json(metadata, "pico_crouch_feedforward_json"))
     guard = _numbers(_json(metadata, "pico_raw_action_guard_json"), "pico_raw_action_guard_json", ACTION_WIDTH)
     with np.errstate(over="ignore"):
         guard_float32 = np.asarray(guard, dtype=np.float32)
     if any(value <= 0.0 for value in guard) or not np.isfinite(guard_float32).all():
         raise PolicyContractError("pico_raw_action_guard_json must be positive finite float32 values")
     curriculum = _json(metadata, "pico_curriculum_json")
-    keys = PICO_CURRICULUM_KEYS
+    keys = IK_TRACKING_CURRICULUM_KEYS
     if (
         not isinstance(curriculum, dict)
         or set(curriculum) != set(keys)
@@ -660,23 +661,23 @@ def _parse_pico(metadata: Mapping[str, str], checkpoint_iteration: int) -> PicoT
     ):
         raise PolicyContractError("pico_curriculum_json is malformed")
     if not curriculum["foot_tighten"] <= checkpoint_iteration + 1 <= curriculum["total"]:
-        raise PolicyContractError("PICO checkpoint is not from the final curriculum stage")
-    if _json(metadata, "pico_active_adapter_columns_json") != list(PICO_ADAPTER_COLUMNS):
-        raise PolicyContractError("PICO checkpoint did not train every adapter column")
-    return PicoTargets(
+        raise PolicyContractError("IK tracking checkpoint is not from the final curriculum stage")
+    if _json(metadata, "pico_active_adapter_columns_json") != list(IK_TRACKING_ADAPTER_COLUMNS):
+        raise PolicyContractError("IK tracking checkpoint did not train every adapter column")
+    return IkTrackingTargets(
         walk_checkpoint_sha256=_sha256_value(metadata, "pico_walk_checkpoint_sha256"),
         foot_lower=bounds["pico_foot_target_lower_json"],
         foot_upper=bounds["pico_foot_target_upper_json"],
         both_feet_lower=bounds["pico_both_feet_target_lower_json"],
         both_feet_upper=bounds["pico_both_feet_target_upper_json"],
-        arm_lower=PICO_ARM_OBSERVATION_LOWER,
-        arm_upper=PICO_ARM_OBSERVATION_UPPER,
+        arm_lower=IK_TRACKING_ARM_OBSERVATION_LOWER,
+        arm_upper=IK_TRACKING_ARM_OBSERVATION_UPPER,
         raw_action_guard=guard,
         curriculum=dict(curriculum),
     )
 
 
-def _check_pico_arm_target(value: Any) -> None:
+def _check_ik_tracking_arm_target(value: Any) -> None:
     """The policy was trained with this robot's direct-arm box and slew rate."""
 
     key = "pico_arm_target_json"
@@ -688,21 +689,21 @@ def _check_pico_arm_target(value: Any) -> None:
         "slew_rad_s",
     }:
         raise PolicyContractError(f"{key} is malformed")
-    if value["contract"] != PICO_ARM_TARGET_CONTRACT:
-        raise PolicyContractError(f"{key} contract is not {PICO_ARM_TARGET_CONTRACT!r}")
-    if value["joint_names"] != list(PICO_ARM_TARGET_JOINTS):
+    if value["contract"] != IK_TRACKING_ARM_TARGET_CONTRACT:
+        raise PolicyContractError(f"{key} contract is not {IK_TRACKING_ARM_TARGET_CONTRACT!r}")
+    if value["joint_names"] != list(IK_TRACKING_ARM_TARGET_JOINTS):
         raise PolicyContractError(f"{key} joint_names drifted")
     for field, expected in (
-        ("lower_rad", PICO_ARM_TARGET_LOWER_RAD),
-        ("upper_rad", PICO_ARM_TARGET_UPPER_RAD),
+        ("lower_rad", IK_TRACKING_ARM_TARGET_LOWER_RAD),
+        ("upper_rad", IK_TRACKING_ARM_TARGET_UPPER_RAD),
     ):
         values = _numbers(value[field], f"{key}.{field}", len(expected))
         if not np.allclose(values, expected, rtol=0.0, atol=1.0e-9):
             raise PolicyContractError(f"{key}.{field} differs from the robot's arm box")
     slew = value["slew_rad_s"]
-    if isinstance(slew, bool) or slew != PICO_ARM_SLEW_RATE_RAD_S:
+    if isinstance(slew, bool) or slew != IK_TRACKING_ARM_SLEW_RATE_RAD_S:
         raise PolicyContractError(
-            f"{key}.slew_rad_s must be the overlay's {PICO_ARM_SLEW_RATE_RAD_S!r} rad/s"
+            f"{key}.slew_rad_s must be the overlay's {IK_TRACKING_ARM_SLEW_RATE_RAD_S!r} rad/s"
         )
 
 
@@ -713,7 +714,7 @@ def crouch_table() -> dict[str, np.ndarray]:
     return crouch_feedforward.build_table(NEUTRAL_POSE, HOME_TRUNK_PITCH_RAD)
 
 
-def _check_pico_crouch(value: Any) -> None:
+def _check_ik_tracking_crouch(value: Any) -> None:
     """The policy was trained with the crouch offsets this robot computes."""
 
     key = "pico_crouch_feedforward_json"
@@ -744,7 +745,7 @@ def _check_pico_crouch(value: Any) -> None:
     if not np.any(recorded != 0.0):
         raise PolicyContractError(f"{key} records no two-foot probe")
     offsets = crouch_feedforward.leg_offsets(crouch_table(), targets)
-    if np.max(np.abs(offsets - recorded)) > PICO_CROUCH_TOLERANCE_RAD:
+    if np.max(np.abs(offsets - recorded)) > IK_TRACKING_CROUCH_TOLERANCE_RAD:
         raise PolicyContractError(f"{key} differs from this robot's crouch offsets")
 
 
@@ -753,8 +754,8 @@ def run_self_test(session: Any, contract: PolicyContract) -> int:
     """Run the recorded observations through ONNX Runtime; return the row count."""
 
     guard = (
-        np.asarray(contract.pico.raw_action_guard, dtype=np.float64)
-        if contract.pico is not None
+        np.asarray(contract.ik_tracking.raw_action_guard, dtype=np.float64)
+        if contract.ik_tracking is not None
         else None
     )
     for index, (observation, expected) in enumerate(
@@ -776,7 +777,7 @@ def run_self_test(session: Any, contract: PolicyContract) -> int:
             )
         if guard is not None and np.any(np.abs(output[0]) > guard):
             raise PolicySelfTestError(
-                f"pico self-test row {index} exceeds the raw-action guard"
+                f"IK tracking self-test row {index} exceeds the raw-action guard"
             )
     return len(contract.self_test_observations)
 
@@ -846,12 +847,12 @@ def check_manifest(
     if contract.dry_run != manifest["dry_run"]:
         raise PolicyContractError("the manifest and the ONNX disagree about the dry run")
     if (
-        contract.pico is not None
-        and contract.pico.walk_checkpoint_sha256
+        contract.ik_tracking is not None
+        and contract.ik_tracking.walk_checkpoint_sha256
         != manifest["policies"]["walk"]["checkpoint_sha256"]
     ):
         raise PolicyContractError(
-            "the PICO policy was not trained on the installed walking checkpoint"
+            "the IK tracking policy was not trained on the installed walking checkpoint"
         )
 
 

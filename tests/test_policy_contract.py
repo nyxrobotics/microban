@@ -53,14 +53,14 @@ class ContractMetadataTest(unittest.TestCase):
                 self.assertEqual(contract.recipe, pc.RECIPES[kind])
                 self.assertEqual(contract.input_width, WIDTHS[kind])
                 self.assertEqual(contract.self_test_observations.shape, (8, 1, WIDTHS[kind]))
-                self.assertEqual(contract.pico is not None, kind == "pico")
+                self.assertEqual(contract.ik_tracking is not None, kind == "pico")
 
     def test_one_contract_and_recipe_per_kind(self):
         self.assertEqual(pc.POLICY_CONTRACT, "microban-policy-1")
         self.assertEqual(set(pc.RECIPES), {"walk", "getup", "pico"})
         self.assertEqual({WIDTHS[kind] for kind in ("walk", "getup", "pico")}, {63, 60, 81})
 
-    def test_pico_without_the_residual_mlp_or_the_crouch_offsets_is_refused(self):
+    def test_ik_tracking_without_the_residual_mlp_or_the_crouch_offsets_is_refused(self):
         self.assertEqual(
             pc.RECIPES["pico"], "microban-pico-arm-overlay-residual-crouch-feedforward-track-velocity-1"
         )
@@ -73,7 +73,7 @@ class ContractMetadataTest(unittest.TestCase):
             with self.subTest(recipe=old), self.assertRaisesRegex(pc.PolicyContractError, "microban_recipe"):
                 parse("pico", metadata)
 
-    def test_pico_crouch_offsets_must_be_this_robots(self):
+    def test_ik_tracking_crouch_offsets_must_be_this_robots(self):
         key = "pico_crouch_feedforward_json"
         record = json.loads(contract_metadata("pico")[key])
         cases = {
@@ -150,7 +150,7 @@ class ContractMetadataTest(unittest.TestCase):
             with self.subTest(case=case), self.assertRaises(pc.PolicyContractError):
                 parse("walk", **kwargs)
 
-    def test_pico_fields_fail_closed(self):
+    def test_ik_tracking_fields_fail_closed(self):
         curriculum = json.loads(contract_metadata("pico")["pico_curriculum_json"])
         arm = json.loads(contract_metadata("pico")["pico_arm_target_json"])
 
@@ -205,7 +205,7 @@ class ContractMetadataTest(unittest.TestCase):
                 parse("pico", {**contract_metadata("pico"), **change})
 
     def test_v12_hand_target_policy_is_refused(self):
-        """The 83-wide hand-target PICO policy cannot run on this contract."""
+        """The 83-wide hand-target IK tracking policy cannot run on this contract."""
         v12_schema = [list(term) for term in pc.OBSERVATION_SCHEMAS["pico"][:-1]]
         v12_schema.append(["hand_target", 8])
         v12 = {
@@ -254,7 +254,7 @@ def waived_metadata(kind="pico", waiver=WAIVER, status=pc.GATE_STATUS_WAIVED):
 
 
 class TrackingWaiverTest(unittest.TestCase):
-    def test_a_waived_pico_policy_is_accepted_and_shown(self):
+    def test_a_waived_ik_tracking_policy_is_accepted_and_shown(self):
         self.assertIsNone(parse("pico").tracking_waiver)
         self.assertEqual(pc.tracking_waiver_lines(parse("pico")), [])
         contract = parse("pico", waived_metadata())
@@ -304,10 +304,10 @@ class SelfTestTest(unittest.TestCase):
             mutate(row)
         return json.dumps(rows)
 
-    def test_pico_rows_with_targets_inside_the_box_pass(self):
+    def test_ik_tracking_rows_with_targets_inside_the_box_pass(self):
         offsets = pc._term_offsets("pico")
-        lower = pc.PICO_ARM_OBSERVATION_LOWER
-        upper = pc.PICO_ARM_OBSERVATION_UPPER
+        lower = pc.IK_TRACKING_ARM_OBSERVATION_LOWER
+        upper = pc.IK_TRACKING_ARM_OBSERVATION_UPPER
         self.assertEqual(lower[1], 0.0)  # left roll: HOME is the box edge
         self.assertEqual(upper[4], 0.0)  # right roll: HOME is the box edge
         rows = self_test_rows("pico")
@@ -316,8 +316,8 @@ class SelfTestTest(unittest.TestCase):
         contract = parse(
             "pico", {**contract_metadata("pico"), "self_test_observations_json": json.dumps(rows)}
         )
-        self.assertEqual(contract.pico.arm_lower, lower)
-        self.assertEqual(contract.pico.arm_upper, upper)
+        self.assertEqual(contract.ik_tracking.arm_lower, lower)
+        self.assertEqual(contract.ik_tracking.arm_upper, upper)
 
     def test_recorded_observations_must_be_physical(self):
         offsets = pc._term_offsets("pico")
@@ -373,7 +373,7 @@ class SelfTestTest(unittest.TestCase):
                     with self.assertRaises(pc.PolicySelfTestError):
                         pc.run_self_test(session, contract)
 
-    def test_pico_self_test_respects_the_raw_action_guard(self):
+    def test_ik_tracking_self_test_respects_the_raw_action_guard(self):
         big = [30.0] * ACTION_COUNT
         session = fake_session(
             "pico", contract_metadata("pico", self_test_actions=[big] * 8), outputs=[big]
@@ -412,7 +412,7 @@ class ManifestTest(unittest.TestCase):
             "dry_run_type": self.manifest(dry_run="no"),
             "dry_run": self.manifest(dry_run=True),
             "kinds": self.manifest(policies={"walk": base["policies"]["walk"]}),
-            "file": self.manifest(policies={**base["policies"], "pico": {**base["policies"]["pico"], "file": "pico.onnx"}}),
+            "file": self.manifest(policies={**base["policies"], "pico": {**base["policies"]["pico"], "file": "ik_tracking.onnx"}}),
             "sha": self.manifest(policies={**base["policies"], "walk": {**base["policies"]["walk"], "sha256": "z"}}),
         }
         for case, manifest in cases.items():
@@ -424,19 +424,19 @@ class ManifestTest(unittest.TestCase):
 
     def test_installed_file_checkpoint_and_walker_must_match(self):
         manifest = self.manifest()
-        pico = parse("pico")
-        pc.check_manifest(pico, Path("pico_teleop.onnx"), manifest, "a" * 64)
-        self.assertEqual(pico.pico.walk_checkpoint_sha256, WALK_CHECKPOINT_SHA256)
+        ik_tracking = parse("pico")
+        pc.check_manifest(ik_tracking, Path("pico_teleop.onnx"), manifest, "a" * 64)
+        self.assertEqual(ik_tracking.ik_tracking.walk_checkpoint_sha256, WALK_CHECKPOINT_SHA256)
         other_walker = json.loads(json.dumps(manifest))
         other_walker["policies"]["walk"]["checkpoint_sha256"] = "9" * 64
         other_checkpoint = json.loads(json.dumps(manifest))
         other_checkpoint["policies"]["pico"]["checkpoint_sha256"] = "9" * 64
         for case, (contract, path, document, digest) in {
-            "file_sha": (pico, "pico_teleop.onnx", manifest, "b" * 64),
-            "file_name": (pico, "other.onnx", manifest, "a" * 64),
-            "checkpoint": (pico, "pico_teleop.onnx", other_checkpoint, "a" * 64),
-            "walker": (pico, "pico_teleop.onnx", other_walker, "a" * 64),
-            "dry_run": (pico, "pico_teleop.onnx", {**manifest, "dry_run": True}, "a" * 64),
+            "file_sha": (ik_tracking, "pico_teleop.onnx", manifest, "b" * 64),
+            "file_name": (ik_tracking, "other.onnx", manifest, "a" * 64),
+            "checkpoint": (ik_tracking, "pico_teleop.onnx", other_checkpoint, "a" * 64),
+            "walker": (ik_tracking, "pico_teleop.onnx", other_walker, "a" * 64),
+            "dry_run": (ik_tracking, "pico_teleop.onnx", {**manifest, "dry_run": True}, "a" * 64),
         }.items():
             with self.subTest(case=case), self.assertRaises(pc.PolicyContractError):
                 pc.check_manifest(contract, Path(path), document, digest)
@@ -451,7 +451,7 @@ from constants import NEUTRAL_POSE, MOTOR_TO_ID, HOME_PROJECTED_GRAVITY
 from input.input_source import UserInput
 from moves.getup import GetupMove
 from moves.move import MotorCommand
-from moves.pico_hybrid import PicoHybridMove
+from moves.ik_tracking import IkTrackingMove
 from moves.walk import WalkMove
 from observer import Observation, RobotState
 
@@ -460,7 +460,7 @@ result = {}
 try:
     walk = WalkMove(controller=None, policy_path=agents / "walk.onnx")
     getup = GetupMove(controller=None, policy_path=agents / "getup.onnx")
-    pico = PicoHybridMove(controller=None, policy_path=agents / "pico_teleop.onnx")
+    ik_tracking = IkTrackingMove(controller=None, policy_path=agents / "pico_teleop.onnx")
 except Exception as exc:
     print(json.dumps({"error": f"{type(exc).__name__}: {exc}"}))
     sys.exit(0)
@@ -472,13 +472,13 @@ obs = Observation(
     ),
     user_input=UserInput(active_moves={"walk", "getup"}, torque_enabled=True, getup_armed=True),
 )
-for name, move in (("walk", walk), ("getup", getup), ("pico", pico)):
+for name, move in (("walk", walk), ("getup", getup), ("pico", ik_tracking)):
     command = MotorCommand()
     move.on_start(obs, command)
     move.step(obs, command)
     result[name] = all(np.isfinite(list(command.target_angles.values())))
 result["getup_ready"] = getup.model_ready
-result["pico_self_test_rows"] = pico.self_test_rows
+result["ik_tracking_self_test_rows"] = ik_tracking.self_test_rows
 print(json.dumps(result))
 """
 
@@ -519,7 +519,7 @@ class DryRunPackageTest(unittest.TestCase):
         self.assertEqual(completed.returncode, 0, completed.stderr[-3000:])
         result = json.loads(completed.stdout.strip().splitlines()[-1])
         self.assertEqual(
-            result, {"walk": True, "getup": True, "pico": True, "getup_ready": True, "pico_self_test_rows": 16}
+            result, {"walk": True, "getup": True, "pico": True, "getup_ready": True, "ik_tracking_self_test_rows": 16}
         )
 
     def test_package_is_refused_at_another_home_or_outside_the_dry_run(self):

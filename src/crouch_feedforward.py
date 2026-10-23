@@ -1,4 +1,4 @@
-"""PICO crouch feed-forward: the leg joint offsets of a two-foot target.
+"""IK tracking crouch feed-forward: the leg joint offsets of a two-foot target.
 
 The same file is ``mjlab_microban/robot/crouch_feedforward.py`` (training) and
 ``src/crouch_feedforward.py`` on the robot (microban); both repositories test
@@ -9,7 +9,7 @@ crouches: the trunk goes down (and sideways) with both soles left where HOME
 has them.  The leg angles of that pose are solved here (``solve_offsets``,
 both soles at their HOME pose relative to a trunk moved by -(dx, dy, dz) in
 the HOME-levelled trunk frame, the trunk's orientation that of HOME) and
-tabulated once (``build_table``).  The PICO policy (the frozen walker plus its
+tabulated once (``build_table``).  The IK tracking policy (the frozen walker plus its
 residual) then works around that pose instead of HOME:
 
 * action: leg target = HOME + offset + raw output;
@@ -60,7 +60,7 @@ LEG_JOINT_NAMES = tuple(
 # floor band).
 FLOOR_BAND_M = 0.0025
 # The tabulated two-foot targets: the trained support (|dx|, |dy| <= 10 mm,
-# dz <= 20 mm, PICO_BOTH_FEET_TARGET_*); a foot target outside it gives zero.
+# dz <= 20 mm, IK_TRACKING_BOTH_FEET_TARGET_*); a foot target outside it gives zero.
 XY_LIMIT_M = 0.01
 Z_MAX_M = 0.02
 XY_NODES = 9

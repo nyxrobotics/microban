@@ -39,7 +39,7 @@ PYTHONPATH=src .venv/bin/python src/main.py
 - 起動・新session・許可する送信元の変更の後、一度`walk`なしpacketを受けるまで歩行を禁止。
 - 受信が途切れても、最後に受けた操作を保つ。止めるのはB（トルクOFF）のpacketだけ。
 - malformed JSON、NaN/Inf、未知moveを破棄し、受信threadを継続。
-- `pico_teleop`は固定contract tag、安全余裕0.8、左右の手足pair、80% target範囲をrobot側でも検証。
+- IK トラッキングのpacket（`locomotion_policy`が`pico_teleop`）は固定contract tag、安全余裕0.8、左右の手足pair、80% target範囲をrobot側でも検証。
   違反packetは速度・targetを即時clearし、左triggerのreleaseまで再armしない。
 - IMUがinvalid、100 ms超のstale、または非finiteになった瞬間から、直前の関節目標とトルクを保持し、
   ポリシー出力を止める。

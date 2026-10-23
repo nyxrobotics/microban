@@ -55,7 +55,7 @@ class GetupMove(Move):
     actively drive the neck to anything, just holds it. No velocity command:
     this move doesn't walk anywhere, it only gets the robot upright (or calm,
     if held in the air) and then hands off -- or, when the requested walk move
-    cannot balance (the PICO static hold), keeps standing in place as the
+    cannot balance (the position hold of main.py), keeps standing in place as the
     balancer. See scheduler.py for the fall-detection switch to/from WalkMove.
     """
 

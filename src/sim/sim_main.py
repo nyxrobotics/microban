@@ -16,7 +16,7 @@ from input.wholebody_reference import ReferenceReceiver
 from moves.getup import GetupMove
 from moves.move import WholebodyClaim
 from moves.hmd_head import HmdHeadTrackingMove
-from moves.pico_arms import PicoArmTargetHold, PicoArmTrackingMove
+from moves.ik_tracking_arms import IkTrackingArmTargetHold, IkTrackingArmMove
 from moves.policy_selector import PolicySelectableWalkMove
 from moves.rotate_head import RotateHeadMove
 from moves.squat import SquatMove
@@ -79,7 +79,7 @@ def main() -> None:
     if isinstance(input_source, MuJoCoInputSource):
         input_source.set_viewer_opt(controller.viewer_opt)
 
-    arm_target_hold = PicoArmTargetHold()
+    arm_target_hold = IkTrackingArmTargetHold()
     wholebody_claim = WholebodyClaim()
     scheduler = Scheduler(
         frequency_hz=args.hz,
@@ -95,8 +95,9 @@ def main() -> None:
                 wholebody_claim=wholebody_claim,
             ),
             # Match production ordering: direct controller arms overwrite only
-            # the six arm joints, and the PICO policy observes their targets.
-            "pico_arms": PicoArmTrackingMove(
+            # the six arm joints, and the IK tracking policy observes their
+            # targets.
+            "pico_arms": IkTrackingArmMove(
                 controller=controller,
                 arm_target_hold=arm_target_hold,
                 wholebody_claim=wholebody_claim,

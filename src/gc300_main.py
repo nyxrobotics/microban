@@ -2,7 +2,7 @@
 # Copyright 2026 nyxrobotics
 
 """Run the robot-local GC300: main.py with the GC300 input source and the
-walking policy (``WalkMove``) in place of the PICO policy selector.
+walking policy (``WalkMove``) in place of main.py's policy selector.
 """
 
 import main as robot_main

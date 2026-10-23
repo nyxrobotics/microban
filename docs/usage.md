@@ -97,7 +97,7 @@ joints and every value is `0.0` by default.
 - Convention: `servo command = MOTOR_SIGN * (logical target + offset)` and
   `logical measurement = MOTOR_SIGN * servo reading - offset`.
 - Scope: applied only inside `RobotController` (the real servo bus), on every goal
-  write and every position read. Every move (walk, PICO tracking, get-up, the A /
+  write and every position read. Every move (walk, IK tracking, get-up, the A /
   policy-off neutral pose, arms, head and neck) and every input source (keyboard,
   gamepad, GC300, PICO) gets it automatically, and the policies keep observing
   training coordinates. Velocities and currents are unchanged. MuJoCo / placo
@@ -161,7 +161,7 @@ To add a move:
 The walk move runs an ONNX policy trained in simulation. 
 
 PICO 4 Ultra network control is documented in [Teleoperation](teleop.md). The
-left-trigger-held PICO policy and the contract, installation and validation of
+left-trigger-held IK tracking policy and the contract, installation and validation of
 every learned policy are documented in [learned policies](policies.md).
 You can train your own walking — or other learned skills — and drop the resulting `.onnx` file into [src/agents/](../src/agents/) to use it on the robot. Check the repository [MarcDcls/mjlab_microban](https://github.com/MarcDcls/mjlab_microban) for the training pipeline. 
 

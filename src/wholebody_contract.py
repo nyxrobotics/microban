@@ -3,8 +3,8 @@
 
 """Contract ``microban-wholebody-1``: the whole-body tracking policy.
 
-A contract of its own beside ``microban-policy-1`` (walk, get-up, PICO; see
-policy_contract.py), written by mjlab_microban
+A contract of its own beside ``microban-policy-1`` (walk, get-up, IK
+tracking; see policy_contract.py), written by mjlab_microban
 ``src/mjlab_microban/wholebody/contract.py`` and
 ``scripts/wholebody_export.py``.  It reuses that contract's parts: the HOME
 stamp, the SHA-256 records and the startup self-test (recorded observation
@@ -22,7 +22,7 @@ angles clamped to ``neck_limits_rad_json`` and slewed at
 
 The installed file is ``src/agents/wholebody.onnx`` with its own manifest
 ``src/agents/wholebody_manifest.json`` (tools/install_wholebody_policy.py
-writes both); the walk/get-up/PICO manifest is not touched.
+writes both); the walk/get-up/IK tracking manifest is not touched.
 """
 
 from __future__ import annotations

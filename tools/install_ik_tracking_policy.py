@@ -2,14 +2,15 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright 2026 nyxrobotics
 
-"""Install one judged PICO policy without replacing walk or get-up.
+"""Install one judged IK tracking policy without replacing walk or get-up.
 
 The full HOME pipeline installs all three policies together.  This tool is
-for a later PICO-only run: it checks the packaged ONNX and its stage gate,
-builds a complete candidate agents directory around the already-installed
-walk/get-up files, and validates that bundle before changing the worktree.
+for a later IK-tracking-only run: it checks the packaged ONNX and its stage
+gate, builds a complete candidate agents directory around the
+already-installed walk/get-up files, and validates that bundle before
+changing the worktree.
 
-    PYTHONPATH=src uv run --locked python tools/install_pico_policy.py \
+    PYTHONPATH=src uv run --locked python tools/install_ik_tracking_policy.py \
         <release>/pico_teleop.onnx <release>/model_14999_gate.json \
         --training-repo ../mjlab_microban \
         --training-branch tracking-v13c \
@@ -57,11 +58,11 @@ from policy_contract import (
 _GIT_COMMIT_RE = re.compile(r"[0-9a-f]{40}\Z")
 _SHA256_RE = re.compile(r"[0-9a-f]{64}\Z")
 # The training side writes in-repository paths as repo://<relative path>
-# (mjlab_microban teleop_v12_bootstrap.portable_bootstrap_artifact_path).
+# (mjlab_microban microban_ik_tracking_v12_bootstrap.portable_bootstrap_artifact_path).
 _REPO_PATH_PREFIX = "repo://"
 _TRANSACTION_SCHEMA_VERSION = 1
 _TRANSACTION_FILE = ".pico-policy-install.json"
-_PICO_BACKUP_FILE = ".pico-policy-install.pico.bak"
+_IK_TRACKING_BACKUP_FILE = ".pico-policy-install.pico.bak"
 _MANIFEST_BACKUP_FILE = ".pico-policy-install.manifest.bak"
 _TRAINING_GIT_METADATA_KEYS = (
     "training_git_commit",
@@ -183,16 +184,16 @@ def _training_branch_tip(repository: Path, branch: str, commit: str) -> tuple[st
     )
 
 
-def _load_pico(path: Path) -> tuple[bytes, PolicyContract, int, dict[str, str]]:
+def _load_ik_tracking(path: Path) -> tuple[bytes, PolicyContract, int, dict[str, str]]:
     if not path.is_file() or path.is_symlink():
-        raise ValueError(f"PICO policy must be a regular file, not a symlink: {path}")
+        raise ValueError(f"IK tracking policy must be a regular file, not a symlink: {path}")
     data = path.read_bytes()
     session = open_session(data, providers=["CPUExecutionProvider"])
     if session.get_providers() != ["CPUExecutionProvider"]:
-        raise RuntimeError("PICO installation check requires CPUExecutionProvider only")
+        raise RuntimeError("IK tracking installation check requires CPUExecutionProvider only")
     contract = parse_policy("pico", session)
     if contract.dry_run:
-        raise PolicyContractError("a dry-run PICO policy cannot be installed")
+        raise PolicyContractError("a dry-run IK tracking policy cannot be installed")
     rows = run_self_test(session, contract)
     metadata = dict(session.get_modelmeta().custom_metadata_map)
     provenance = {key: metadata.get(key, "") for key in _TRAINING_GIT_METADATA_KEYS}
@@ -201,7 +202,7 @@ def _load_pico(path: Path) -> tuple[bytes, PolicyContract, int, dict[str, str]]:
         or not provenance["training_git_branch"].strip()
         or _SHA256_RE.fullmatch(provenance["training_git_record_sha256"]) is None
     ):
-        raise PolicyContractError("PICO ONNX lacks its training Git provenance")
+        raise PolicyContractError("IK tracking ONNX lacks its training Git provenance")
     return data, contract, rows, provenance
 
 
@@ -209,14 +210,14 @@ def _load_stage_gate(path: Path, contract: PolicyContract) -> dict[str, Any]:
     try:
         gate_data = path.read_bytes()
     except OSError as exc:
-        raise PolicyContractError(f"cannot read PICO stage gate {path}: {exc}") from exc
+        raise PolicyContractError(f"cannot read IK tracking stage gate {path}: {exc}") from exc
     gate_sha256 = sha256_bytes(gate_data)
     if gate_sha256 != contract.gate_report_sha256:
         raise PolicyContractError(
-            "PICO ONNX gate_report_sha256 does not match the supplied stage gate"
+            "IK tracking ONNX gate_report_sha256 does not match the supplied stage gate"
         )
-    gate = _strict_json_object(gate_data, f"PICO stage gate {path}")
-    assert contract.pico is not None
+    gate = _strict_json_object(gate_data, f"IK tracking stage gate {path}")
+    assert contract.ik_tracking is not None
     waiver = contract.tracking_waiver
     expected = {
         "schema_version": 3,
@@ -225,14 +226,14 @@ def _load_stage_gate(path: Path, contract: PolicyContract) -> dict[str, Any]:
         "tracking_waiver": waiver,
         "checkpoint_sha256": contract.checkpoint_sha256,
         "iteration": contract.checkpoint_iteration,
-        "completed_updates": contract.pico.curriculum["total"],
+        "completed_updates": contract.ik_tracking.curriculum["total"],
     }
     wrong = [key for key, value in expected.items() if gate.get(key) != value]
     if waiver is None and "tracking_waiver" in gate:
         wrong.append("tracking_waiver")
     if wrong or contract.checkpoint_iteration + 1 != gate.get("completed_updates"):
         raise PolicyContractError(
-            "PICO stage gate does not describe the packaged final checkpoint"
+            "IK tracking stage gate does not describe the packaged final checkpoint"
             + (f" ({', '.join(wrong)})" if wrong else "")
         )
     return gate
@@ -243,12 +244,12 @@ def _gate_checkpoint_path(training_repo: Path, gate: dict[str, Any]) -> tuple[Pa
 
     value = gate.get("checkpoint")
     if not isinstance(value, str) or not value:
-        raise PolicyContractError("PICO stage gate lacks its checkpoint path")
+        raise PolicyContractError("IK tracking stage gate lacks its checkpoint path")
     repository = training_repo.resolve()
     if value.startswith(_REPO_PATH_PREFIX):
         relative = Path(value.removeprefix(_REPO_PATH_PREFIX))
         if relative.is_absolute() or ".." in relative.parts:
-            raise PolicyContractError("PICO stage gate checkpoint path is unsafe")
+            raise PolicyContractError("IK tracking stage gate checkpoint path is unsafe")
         checkpoint = (repository / relative).resolve()
     else:
         checkpoint = Path(value).expanduser().resolve()
@@ -256,7 +257,7 @@ def _gate_checkpoint_path(training_repo: Path, gate: dict[str, Any]) -> tuple[Pa
         relative = checkpoint.relative_to(repository)
     except ValueError as exc:
         raise PolicyContractError(
-            "PICO stage gate checkpoint is outside --training-repo"
+            "IK tracking stage gate checkpoint is outside --training-repo"
         ) from exc
     return checkpoint, relative.as_posix()
 
@@ -268,10 +269,10 @@ def _training_provenance(
     commit: str,
     gate: dict[str, Any],
     contract: PolicyContract,
-    pico_sha256: str,
+    ik_tracking_sha256: str,
     onnx_provenance: dict[str, str],
 ) -> dict[str, Any]:
-    """Bind the PICO artifact to its checkpoint and captured run Git state."""
+    """Bind the IK tracking artifact to its checkpoint and captured run Git state."""
 
     if _GIT_COMMIT_RE.fullmatch(commit) is None:
         raise ValueError("--training-commit must be a lowercase 40-digit Git commit")
@@ -292,11 +293,11 @@ def _training_provenance(
         or checkpoint.name != contract.checkpoint_filename
     ):
         raise PolicyContractError(
-            "PICO stage gate checkpoint is missing, a symlink, or has the wrong filename"
+            "IK tracking stage gate checkpoint is missing, a symlink, or has the wrong filename"
         )
     if sha256_file(checkpoint) != contract.checkpoint_sha256:
         raise PolicyContractError(
-            "PICO stage gate checkpoint bytes differ from the packaged ONNX"
+            "IK tracking stage gate checkpoint bytes differ from the packaged ONNX"
         )
 
     git_snapshot = checkpoint.parent / "git" / "mjlab_microban.diff"
@@ -334,12 +335,12 @@ def _training_provenance(
     }
     if onnx_provenance != expected_onnx_provenance:
         raise PolicyContractError(
-            "PICO ONNX training provenance differs from its run Git snapshot"
+            "IK tracking ONNX training provenance differs from its run Git snapshot"
         )
 
     return {
         "scope": "pico_only",
-        "policy_sha256": pico_sha256,
+        "policy_sha256": ik_tracking_sha256,
         "checkpoint": contract.checkpoint_filename,
         "checkpoint_path": checkpoint_relative,
         "checkpoint_sha256": contract.checkpoint_sha256,
@@ -358,9 +359,9 @@ def _training_provenance(
 def _updated_manifest(
     current: dict[str, Any],
     *,
-    pico_sha256: str,
+    ik_tracking_sha256: str,
     contract: PolicyContract,
-    pico_provenance: dict[str, Any],
+    ik_tracking_provenance: dict[str, Any],
 ) -> dict[str, Any]:
     """Return a mixed release manifest while preserving walk/get-up entries."""
 
@@ -368,7 +369,7 @@ def _updated_manifest(
     result["dry_run"] = False
     result["policies"]["pico"] = {
         "file": POLICY_FILES["pico"],
-        "sha256": pico_sha256,
+        "sha256": ik_tracking_sha256,
         "checkpoint_sha256": contract.checkpoint_sha256,
     }
     checkpoints = result.setdefault("checkpoints", {})
@@ -395,7 +396,7 @@ def _updated_manifest(
     policy_provenance = result.setdefault("policy_provenance", {})
     if not isinstance(policy_provenance, dict):
         raise PolicyContractError("manifest policy_provenance record is malformed")
-    policy_provenance["pico"] = copy.deepcopy(pico_provenance)
+    policy_provenance["pico"] = copy.deepcopy(ik_tracking_provenance)
     return result
 
 
@@ -438,7 +439,7 @@ def _installation_lock(agents_dir: Path) -> Iterator[None]:
     try:
         information = os.fstat(descriptor)
         if not stat.S_ISREG(information.st_mode) or information.st_uid != os.geteuid():
-            raise RuntimeError(f"unsafe PICO installer lock file: {lock_path}")
+            raise RuntimeError(f"unsafe IK tracking installer lock file: {lock_path}")
         fcntl.flock(descriptor, fcntl.LOCK_EX)
         yield
     finally:
@@ -449,7 +450,7 @@ def _remove_stale_atomic_temps(agents_dir: Path) -> None:
     """Remove harmless incomplete temp files left before an atomic rename."""
 
     bases = (
-        _PICO_BACKUP_FILE,
+        _IK_TRACKING_BACKUP_FILE,
         _MANIFEST_BACKUP_FILE,
         _TRANSACTION_FILE,
         POLICY_FILES["pico"],
@@ -465,7 +466,7 @@ def _remove_stale_atomic_temps(agents_dir: Path) -> None:
         ):
             continue
         if path.is_symlink() or not path.is_file():
-            raise RuntimeError(f"unsafe stale PICO installer temporary: {path}")
+            raise RuntimeError(f"unsafe stale IK tracking installer temporary: {path}")
         path.unlink()
         changed = True
     if changed:
@@ -492,57 +493,57 @@ def _atomic_write(path: Path, data: bytes) -> None:
 def _transaction_paths(agents_dir: Path) -> tuple[Path, Path, Path]:
     return (
         agents_dir / _TRANSACTION_FILE,
-        agents_dir / _PICO_BACKUP_FILE,
+        agents_dir / _IK_TRACKING_BACKUP_FILE,
         agents_dir / _MANIFEST_BACKUP_FILE,
     )
 
 
 def _transaction_document(
-    *, old_pico: bytes, old_manifest: bytes, new_pico: bytes, new_manifest: bytes
+    *, old_policy: bytes, old_manifest: bytes, new_policy: bytes, new_manifest: bytes
 ) -> dict[str, Any]:
     return {
         "schema_version": _TRANSACTION_SCHEMA_VERSION,
         "operation": "install_pico_policy",
         "old": {
-            "pico_sha256": sha256_bytes(old_pico),
+            "pico_sha256": sha256_bytes(old_policy),
             "manifest_sha256": sha256_bytes(old_manifest),
         },
         "new": {
-            "pico_sha256": sha256_bytes(new_pico),
+            "pico_sha256": sha256_bytes(new_policy),
             "manifest_sha256": sha256_bytes(new_manifest),
         },
     }
 
 
 def _validated_transaction(data: bytes, path: Path) -> dict[str, Any]:
-    transaction = _strict_json_object(data, f"PICO install transaction {path}")
+    transaction = _strict_json_object(data, f"IK tracking install transaction {path}")
     if set(transaction) != {"schema_version", "operation", "old", "new"} or (
         transaction.get("schema_version") != _TRANSACTION_SCHEMA_VERSION
         or transaction.get("operation") != "install_pico_policy"
     ):
-        raise PolicyContractError("PICO install transaction header is malformed")
+        raise PolicyContractError("IK tracking install transaction header is malformed")
     for state in ("old", "new"):
         value = transaction.get(state)
         if not isinstance(value, dict) or set(value) != {
             "pico_sha256",
             "manifest_sha256",
         }:
-            raise PolicyContractError(f"PICO install transaction {state} state is malformed")
+            raise PolicyContractError(f"IK tracking install transaction {state} state is malformed")
         if any(
             not isinstance(digest, str) or _SHA256_RE.fullmatch(digest) is None
             for digest in value.values()
         ):
             raise PolicyContractError(
-                f"PICO install transaction {state} hashes are malformed"
+                f"IK tracking install transaction {state} hashes are malformed"
             )
     return transaction
 
 
 def _remove_transaction_files(agents_dir: Path) -> None:
-    journal, pico_backup, manifest_backup = _transaction_paths(agents_dir)
+    journal, ik_tracking_backup, manifest_backup = _transaction_paths(agents_dir)
     changed = False
     # The journal is the commit marker: remove backups first and it last.
-    for path in (pico_backup, manifest_backup, journal):
+    for path in (ik_tracking_backup, manifest_backup, journal):
         try:
             path.unlink()
             changed = True
@@ -555,56 +556,56 @@ def _remove_transaction_files(agents_dir: Path) -> None:
 def _restore_transaction_old(
     agents_dir: Path, transaction: dict[str, Any]
 ) -> None:
-    journal, pico_backup, manifest_backup = _transaction_paths(agents_dir)
+    journal, ik_tracking_backup, manifest_backup = _transaction_paths(agents_dir)
     del journal
     try:
-        old_pico = pico_backup.read_bytes()
+        old_policy = ik_tracking_backup.read_bytes()
         old_manifest = manifest_backup.read_bytes()
     except OSError as exc:
-        raise RuntimeError("PICO install recovery lacks an intact backup") from exc
+        raise RuntimeError("IK tracking install recovery lacks an intact backup") from exc
     expected = transaction["old"]
     if (
-        sha256_bytes(old_pico) != expected["pico_sha256"]
+        sha256_bytes(old_policy) != expected["pico_sha256"]
         or sha256_bytes(old_manifest) != expected["manifest_sha256"]
     ):
-        raise RuntimeError("PICO install recovery backup hash differs from its journal")
-    pico_path = agents_dir / POLICY_FILES["pico"]
+        raise RuntimeError("IK tracking install recovery backup hash differs from its journal")
+    ik_tracking_path = agents_dir / POLICY_FILES["pico"]
     manifest_path = agents_dir / "manifest.json"
-    _atomic_write(pico_path, old_pico)
+    _atomic_write(ik_tracking_path, old_policy)
     _atomic_write(manifest_path, old_manifest)
     if (
-        sha256_file(pico_path) != expected["pico_sha256"]
+        sha256_file(ik_tracking_path) != expected["pico_sha256"]
         or sha256_file(manifest_path) != expected["manifest_sha256"]
     ):
-        raise RuntimeError("PICO install recovery could not restore the previous pair")
+        raise RuntimeError("IK tracking install recovery could not restore the previous pair")
 
 
 def _recover_pending_install(agents_dir: Path) -> str:
     """Finish or roll back a durable transaction left by an interrupted run."""
 
-    journal, pico_backup, manifest_backup = _transaction_paths(agents_dir)
-    pico_path = agents_dir / POLICY_FILES["pico"]
+    journal, ik_tracking_backup, manifest_backup = _transaction_paths(agents_dir)
+    ik_tracking_path = agents_dir / POLICY_FILES["pico"]
     manifest_path = agents_dir / "manifest.json"
     if not journal.exists():
-        orphans = [path for path in (pico_backup, manifest_backup) if path.exists()]
+        orphans = [path for path in (ik_tracking_backup, manifest_backup) if path.exists()]
         if not orphans:
             return "none"
         live_by_backup = {
-            pico_backup: pico_path,
+            ik_tracking_backup: ik_tracking_path,
             manifest_backup: manifest_path,
         }
         for backup in orphans:
             live = live_by_backup[backup]
             if not live.is_file() or sha256_file(backup) != sha256_file(live):
                 raise RuntimeError(
-                    "orphaned PICO install backup differs from the live file; refusing to guess"
+                    "orphaned IK tracking install backup differs from the live file; refusing to guess"
                 )
         _remove_transaction_files(agents_dir)
         return "discarded_orphan_backups"
 
     transaction = _validated_transaction(journal.read_bytes(), journal)
     actual = {
-        "pico_sha256": sha256_file(pico_path) if pico_path.is_file() else None,
+        "pico_sha256": sha256_file(ik_tracking_path) if ik_tracking_path.is_file() else None,
         "manifest_sha256": sha256_file(manifest_path) if manifest_path.is_file() else None,
     }
     if actual == transaction["new"]:
@@ -628,40 +629,40 @@ def _recover_pending_install(agents_dir: Path) -> str:
 def _publish_bundle(
     *,
     agents_dir: Path,
-    pico_data: bytes,
+    ik_tracking_data: bytes,
     manifest_data: bytes,
-    expected_old_pico_sha256: str,
+    expected_old_ik_tracking_sha256: str,
     expected_old_manifest_sha256: str,
 ) -> dict[str, dict[str, Any]]:
     """Publish the model/manifest pair with a durable recovery journal."""
 
-    journal, pico_backup, manifest_backup = _transaction_paths(agents_dir)
-    if any(path.exists() for path in (journal, pico_backup, manifest_backup)):
-        raise RuntimeError("PICO install recovery must run before publication")
-    pico_path = agents_dir / POLICY_FILES["pico"]
+    journal, ik_tracking_backup, manifest_backup = _transaction_paths(agents_dir)
+    if any(path.exists() for path in (journal, ik_tracking_backup, manifest_backup)):
+        raise RuntimeError("IK tracking install recovery must run before publication")
+    ik_tracking_path = agents_dir / POLICY_FILES["pico"]
     manifest_path = agents_dir / "manifest.json"
-    old_pico = pico_path.read_bytes()
+    old_policy = ik_tracking_path.read_bytes()
     old_manifest = manifest_path.read_bytes()
     if (
-        sha256_bytes(old_pico) != expected_old_pico_sha256
+        sha256_bytes(old_policy) != expected_old_ik_tracking_sha256
         or sha256_bytes(old_manifest) != expected_old_manifest_sha256
     ):
         raise RuntimeError("installed policy bundle changed while the candidate was checked")
 
     transaction = _transaction_document(
-        old_pico=old_pico,
+        old_policy=old_policy,
         old_manifest=old_manifest,
-        new_pico=pico_data,
+        new_policy=ik_tracking_data,
         new_manifest=manifest_data,
     )
     transaction_data = (
         json.dumps(transaction, indent=1, sort_keys=True) + "\n"
     ).encode("utf-8")
     try:
-        _atomic_write(pico_backup, old_pico)
+        _atomic_write(ik_tracking_backup, old_policy)
         _atomic_write(manifest_backup, old_manifest)
         _atomic_write(journal, transaction_data)
-        _atomic_write(pico_path, pico_data)
+        _atomic_write(ik_tracking_path, ik_tracking_data)
         _atomic_write(manifest_path, manifest_data)
         policies = _validate_bundle(agents_dir)
     except Exception:
@@ -669,7 +670,7 @@ def _publish_bundle(
             _recover_pending_install(agents_dir)
         except Exception as recovery_error:
             raise RuntimeError(
-                "PICO publication failed and automatic rollback also failed; "
+                "IK tracking publication failed and automatic rollback also failed; "
                 f"keep {journal} and its backups for recovery"
             ) from recovery_error
         raise
@@ -694,13 +695,13 @@ def _install_locked(
 
     current = load_manifest(agents_dir)
     if current["dry_run"]:
-        raise PolicyContractError("cannot base a production PICO release on a dry-run bundle")
+        raise PolicyContractError("cannot base a production IK tracking release on a dry-run bundle")
     manifest_path = agents_dir / "manifest.json"
     current_manifest_data = manifest_path.read_bytes()
     if _strict_json_object(current_manifest_data, f"policy manifest {manifest_path}") != current:
         raise RuntimeError("installed manifest changed while it was validated")
-    pico_path = agents_dir / POLICY_FILES["pico"]
-    old_pico_sha256 = sha256_file(pico_path)
+    ik_tracking_path = agents_dir / POLICY_FILES["pico"]
+    old_ik_tracking_sha256 = sha256_file(ik_tracking_path)
     old_manifest_sha256 = sha256_bytes(current_manifest_data)
     # Validate the two files that this tool promises not to replace.
     preserved: dict[str, bytes] = {}
@@ -712,30 +713,30 @@ def _install_locked(
             raise RuntimeError(f"installed {kind} changed while it was validated")
         preserved[kind] = data
 
-    pico_data, contract, source_self_test_rows, onnx_provenance = _load_pico(source)
+    ik_tracking_data, contract, source_self_test_rows, onnx_provenance = _load_ik_tracking(source)
     gate = _load_stage_gate(stage_gate, contract)
-    assert contract.pico is not None
+    assert contract.ik_tracking is not None
     installed_walker = current["policies"]["walk"]["checkpoint_sha256"]
-    if contract.pico.walk_checkpoint_sha256 != installed_walker:
+    if contract.ik_tracking.walk_checkpoint_sha256 != installed_walker:
         raise PolicyContractError(
-            "PICO frozen-walker checkpoint differs from the installed walk policy"
+            "IK tracking frozen-walker checkpoint differs from the installed walk policy"
         )
 
-    pico_sha256 = sha256_bytes(pico_data)
-    pico_provenance = _training_provenance(
+    ik_tracking_sha256 = sha256_bytes(ik_tracking_data)
+    ik_tracking_provenance = _training_provenance(
         repository=training_repo,
         branch=training_branch,
         commit=training_commit,
         gate=gate,
         contract=contract,
-        pico_sha256=pico_sha256,
+        ik_tracking_sha256=ik_tracking_sha256,
         onnx_provenance=onnx_provenance,
     )
     candidate_manifest = _updated_manifest(
         current,
-        pico_sha256=pico_sha256,
+        ik_tracking_sha256=ik_tracking_sha256,
         contract=contract,
-        pico_provenance=pico_provenance,
+        ik_tracking_provenance=ik_tracking_provenance,
     )
     manifest_data = (
         json.dumps(candidate_manifest, indent=1, sort_keys=True, ensure_ascii=False) + "\n"
@@ -749,16 +750,16 @@ def _install_locked(
         candidate.mkdir()
         for kind in ("walk", "getup"):
             (candidate / POLICY_FILES[kind]).write_bytes(preserved[kind])
-        (candidate / POLICY_FILES["pico"]).write_bytes(pico_data)
+        (candidate / POLICY_FILES["pico"]).write_bytes(ik_tracking_data)
         (candidate / "manifest.json").write_bytes(manifest_data)
         policies = _validate_bundle(candidate)
 
     if not check_only:
         policies = _publish_bundle(
             agents_dir=agents_dir,
-            pico_data=pico_data,
+            ik_tracking_data=ik_tracking_data,
             manifest_data=manifest_data,
-            expected_old_pico_sha256=old_pico_sha256,
+            expected_old_ik_tracking_sha256=old_ik_tracking_sha256,
             expected_old_manifest_sha256=old_manifest_sha256,
         )
 
@@ -769,8 +770,8 @@ def _install_locked(
         "agents_dir": str(agents_dir.resolve()),
         "training_branch": training_branch,
         "training_commit": training_commit,
-        "training_home_yaml_sha256": pico_provenance["training_home_yaml_sha256"],
-        "training_git_record_sha256": pico_provenance["run_git_snapshot_sha256"],
+        "training_home_yaml_sha256": ik_tracking_provenance["training_home_yaml_sha256"],
+        "training_git_record_sha256": ik_tracking_provenance["run_git_snapshot_sha256"],
         "stage_gate_sha256": contract.gate_report_sha256,
         "source_self_test_rows": source_self_test_rows,
         "policies": policies,

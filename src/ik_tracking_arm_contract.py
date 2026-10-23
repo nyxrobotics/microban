@@ -1,11 +1,12 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright 2026 nyxrobotics
 
-"""Robot-local direct-arm contract for PICO controller teleoperation.
+"""Robot-local direct-arm contract of IK tracking.
 
 This is the joint envelope and slew rate of the direct six-joint overlay
-(``moves/pico_arms.py``).  The PICO policy is trained with its arms driven the
-same way and observes the overlay's targets, so the policy metadata must carry
+(``moves/ik_tracking_arms.py``) that drives the arms to the PICO controllers'
+IK targets.  The IK tracking policy is trained with its arms driven the same
+way and observes the overlay's targets, so the policy metadata must carry
 these exact values (``policy_contract``).  Keeping this contract on the robot
 means a wire sender cannot widen the arm range by supplying different limits
 or a different home pose.
@@ -19,30 +20,30 @@ from typing import Any
 
 from constants import NEUTRAL_POSE
 
-PICO_ARM_SIDES = ("left", "right")
-PICO_ARM_JOINT_NAMES = {
+IK_TRACKING_ARM_SIDES = ("left", "right")
+IK_TRACKING_ARM_JOINT_NAMES = {
     "left": ("left_shoulder_pitch", "left_shoulder_roll", "left_elbow"),
     "right": ("right_shoulder_pitch", "right_shoulder_roll", "right_elbow"),
 }
-PICO_ARM_LOWER_RAD = {
+IK_TRACKING_ARM_LOWER_RAD = {
     "left": tuple(math.radians(value) for value in (-100.0, 10.0, -110.0)),
     "right": tuple(math.radians(value) for value in (-100.0, -120.0, -110.0)),
 }
-PICO_ARM_UPPER_RAD = {
+IK_TRACKING_ARM_UPPER_RAD = {
     "left": tuple(math.radians(value) for value in (100.0, 120.0, 0.0)),
     "right": tuple(math.radians(value) for value in (100.0, -10.0, 0.0)),
 }
 # Per-joint slew limit of the overlay's servo targets.
-PICO_ARM_SLEW_RATE_RAD_S = 4.0
+IK_TRACKING_ARM_SLEW_RATE_RAD_S = 4.0
 # The arm part of the one shared HOME (constants.NEUTRAL_POSE).
-PICO_ARM_HOME_RAD = {
-    side: tuple(float(NEUTRAL_POSE[name]) for name in PICO_ARM_JOINT_NAMES[side])
-    for side in PICO_ARM_SIDES
+IK_TRACKING_ARM_HOME_RAD = {
+    side: tuple(float(NEUTRAL_POSE[name]) for name in IK_TRACKING_ARM_JOINT_NAMES[side])
+    for side in IK_TRACKING_ARM_SIDES
 }
 _BOUND_EPSILON_RAD = 1.0e-12
 
 
-def parse_pico_arm_joint_target(
+def parse_ik_tracking_arm_joint_target(
     value: Any,
 ) -> dict[str, tuple[float, float, float]]:
     """Parse one exact paired target inside the compiled-in reachable box.
@@ -52,11 +53,11 @@ def parse_pico_arm_joint_target(
     snapshot rather than retaining any target from an earlier datagram.
     """
 
-    if not isinstance(value, Mapping) or set(value) != set(PICO_ARM_SIDES):
+    if not isinstance(value, Mapping) or set(value) != set(IK_TRACKING_ARM_SIDES):
         raise TypeError("arm_joint_target must contain exactly left and right")
 
     parsed: dict[str, tuple[float, float, float]] = {}
-    for side in PICO_ARM_SIDES:
+    for side in IK_TRACKING_ARM_SIDES:
         vector = value[side]
         if (
             not isinstance(vector, Sequence)
@@ -80,8 +81,8 @@ def parse_pico_arm_joint_target(
                 raise ValueError(
                     f"arm_joint_target.{side}[{index}] must be finite"
                 )
-            lower = PICO_ARM_LOWER_RAD[side][index]
-            upper = PICO_ARM_UPPER_RAD[side][index]
+            lower = IK_TRACKING_ARM_LOWER_RAD[side][index]
+            upper = IK_TRACKING_ARM_UPPER_RAD[side][index]
             if (
                 number < lower - _BOUND_EPSILON_RAD
                 or number > upper + _BOUND_EPSILON_RAD

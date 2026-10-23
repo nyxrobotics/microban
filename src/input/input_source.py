@@ -39,11 +39,12 @@ class UserInput:
     # gate.  It is intentionally not accepted over the PICO/network protocol.
     getup_armed: bool = False
 
-    # Locomotion selected by the PICO controller: "pico_teleop" runs the PICO
-    # policy; "walk" is the move registered as walk (a position hold in main.py,
-    # the walking policy in gc300_main.py).  The network receiver accepts only
-    # these named modes; invalid optional body tracking is downgraded to "walk"
-    # without dropping joystick input.  Other input sources always send "walk".
+    # Locomotion selected by the PICO controller: "pico_teleop" runs the IK
+    # tracking policy; "walk" is the move registered as walk (a position hold in
+    # main.py, the walking policy in gc300_main.py).  The network receiver
+    # accepts only these named modes; invalid optional body tracking is
+    # downgraded to "walk" without dropping joystick input.  Other input sources
+    # always send "walk".
     locomotion_policy: str = "walk"
 
     # Receiver-only degradation signal. True means ``pico_teleop`` was requested
@@ -76,10 +77,11 @@ class UserInput:
 
     # Direct-arm overlay driven by the right controller trigger.
     # ``pico_arms`` in active_moves means a live, validated PICO session owns
-    # the six arm joints (the PICO policy observes the targets it writes).  While enabled, this is a paired bounded IK joint
-    # target in (shoulder_pitch, shoulder_roll, elbow) order.  While released,
-    # the wire target must be the exact robot-local PICO home; the overlay also
-    # derives that home locally instead of trusting the sender to define it.
+    # the six arm joints (the IK tracking policy observes the targets it
+    # writes).  While enabled, this is a paired bounded IK joint target in
+    # (shoulder_pitch, shoulder_roll, elbow) order.  While released, the wire
+    # target must be the exact robot-local arm HOME; the overlay also derives
+    # that HOME locally instead of trusting the sender to define it.
     arm_tracking_enabled: bool = False
     arm_joint_target: dict[str, tuple[float, float, float]] | None = None
 

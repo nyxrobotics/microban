@@ -8,7 +8,7 @@ from constants import KP_HARDWARE_NEUTRAL, KP_RL, MOTOR_TO_ID, NEUTRAL_POSE, OBS
 from input.input_source import UserInput
 from input.network_input import NetworkInputSource
 from moves.move import MotorCommand, Move, MoveState
-from moves.pico_arms import PicoArmTargetHold
+from moves.ik_tracking_arms import IkTrackingArmTargetHold
 from moves.policy_selector import PolicySelectableWalkMove
 from moves.walk import WalkMove
 from observer import Observation, RobotState
@@ -74,7 +74,7 @@ def observation(policy="walk", active=True, vx=0.0):
     )
 
 
-def bridge_pico_packet(seq: int, *, trigger_held: bool) -> dict:
+def bridge_ik_tracking_packet(seq: int, *, trigger_held: bool) -> dict:
     """Current bridge wire shape: policy is fixed; only deadman state changes."""
 
     return {
@@ -107,21 +107,21 @@ def bridge_pico_packet(seq: int, *, trigger_held: bool) -> dict:
 
 
 class PolicySelectorTest(unittest.TestCase):
-    def test_default_pico_move_shares_the_arm_target_hold(self):
-        hold = PicoArmTargetHold()
+    def test_default_ik_tracking_move_shares_the_arm_target_hold(self):
+        hold = IkTrackingArmTargetHold()
         selector = PolicySelectableWalkMove(arm_target_hold=hold)
-        with mock.patch("moves.policy_selector.PicoHybridMove") as built:
+        with mock.patch("moves.policy_selector.IkTrackingMove") as built:
             selector._learned_move_factory(None, Path("pico_teleop.onnx"))
         self.assertIs(built.call_args.kwargs["arm_target_hold"], hold)
 
     def test_bridge_packet_to_selector_is_trigger_only_without_x(self):
         source = NetworkInputSource()
-        released_packet = bridge_pico_packet(0, trigger_held=False)
+        released_packet = bridge_ik_tracking_packet(0, trigger_held=False)
         self.assertNotIn("primary_button", released_packet)
         source._apply(released_packet)
         released = source.read()
         # Released (no left-trigger walk request) with R3 still enabled keeps
-        # the selected PICO standing actor active at zero velocity (see
+        # the selected IK tracking actor standing at zero velocity (see
         # NetworkInputSource's balance_only).
         self.assertEqual(released.locomotion_policy, "pico_teleop")
         self.assertTrue(released.balance_only)
@@ -129,17 +129,17 @@ class PolicySelectorTest(unittest.TestCase):
         self.assertEqual(released.velocity, {"vx": 0.0, "vy": 0.0, "vtheta": 0.0})
 
         walk = FakeMove(marker=10.0)
-        pico = FakeMove(marker=20.0)
-        selector = PolicySelectableWalkMove(fallback_move=walk, pico_move=pico)
+        ik_tracking = FakeMove(marker=20.0)
+        selector = PolicySelectableWalkMove(fallback_move=walk, ik_tracking_move=ik_tracking)
         selector.on_start(
             Observation(robot_state=RobotState(time_s=0.0), user_input=released),
             MotorCommand(),
         )
         self.assertEqual(selector.effective_policy, "pico_teleop")
-        self.assertEqual(pico.start_count, 1)
+        self.assertEqual(ik_tracking.start_count, 1)
         self.assertEqual(walk.start_count, 0)
 
-        source._apply(bridge_pico_packet(1, trigger_held=True))
+        source._apply(bridge_ik_tracking_packet(1, trigger_held=True))
         held = source.read()
         self.assertEqual(held.locomotion_policy, "pico_teleop")
         self.assertIn("walk", held.active_moves)
@@ -148,17 +148,17 @@ class PolicySelectorTest(unittest.TestCase):
             MotorCommand(),
         )
         self.assertEqual(selector.effective_policy, "pico_teleop")
-        self.assertEqual(pico.step_count, 1)
+        self.assertEqual(ik_tracking.step_count, 1)
         self.assertEqual(walk.start_count, 0)
 
     def test_selects_exactly_one_policy_per_activation(self):
         walk = FakeMove(marker=10.0)
-        pico = FakeMove(marker=20.0)
-        selector = PolicySelectableWalkMove(fallback_move=walk, pico_move=pico)
+        ik_tracking = FakeMove(marker=20.0)
+        selector = PolicySelectableWalkMove(fallback_move=walk, ik_tracking_move=ik_tracking)
         selector.on_start(observation("pico_teleop"), MotorCommand())
         selector.step(observation("pico_teleop"), MotorCommand())
-        self.assertEqual(pico.start_count, 1)
-        self.assertEqual(pico.step_count, 1)
+        self.assertEqual(ik_tracking.start_count, 1)
+        self.assertEqual(ik_tracking.step_count, 1)
         self.assertEqual(walk.start_count, 0)
         self.assertEqual(selector.effective_policy, "pico_teleop")
 
@@ -166,7 +166,7 @@ class PolicySelectorTest(unittest.TestCase):
         walk = FakeMove(marker=10.0)
         with tempfile.TemporaryDirectory() as temp_dir:
             selector = PolicySelectableWalkMove(
-                pico_policy_path=Path(temp_dir) / "missing.onnx",
+                ik_tracking_policy_path=Path(temp_dir) / "missing.onnx",
                 fallback_move=walk,
             )
             selector.preload()
@@ -185,8 +185,8 @@ class PolicySelectorTest(unittest.TestCase):
 
     def test_preload_failure_does_not_disable_fallback(self):
         walk = FakeMove()
-        pico = FakeMove(preload_error=ValueError("bad metadata"))
-        selector = PolicySelectableWalkMove(fallback_move=walk, pico_move=pico)
+        ik_tracking = FakeMove(preload_error=ValueError("bad metadata"))
+        selector = PolicySelectableWalkMove(fallback_move=walk, ik_tracking_move=ik_tracking)
         selector.preload()
         selector.on_start(observation("pico_teleop"), MotorCommand())
         self.assertEqual(selector.effective_policy, "walk")
@@ -204,7 +204,7 @@ class PolicySelectorTest(unittest.TestCase):
                 )
 
             selector = PolicySelectableWalkMove(
-                pico_policy_path=path,
+                ik_tracking_policy_path=path,
                 fallback_move=walk,
                 learned_move_factory=reject_contract,
             )
@@ -221,8 +221,8 @@ class PolicySelectorTest(unittest.TestCase):
 
     def test_start_failure_falls_back_without_losing_activation(self):
         walk = FakeMove(marker=10.0)
-        pico = FakeMove(start_error=RuntimeError("cannot initialize"), marker=20.0)
-        selector = PolicySelectableWalkMove(fallback_move=walk, pico_move=pico)
+        ik_tracking = FakeMove(start_error=RuntimeError("cannot initialize"), marker=20.0)
+        selector = PolicySelectableWalkMove(fallback_move=walk, ik_tracking_move=ik_tracking)
         command = MotorCommand()
         obs = observation("pico_teleop", vx=-0.4)
 
@@ -236,8 +236,8 @@ class PolicySelectorTest(unittest.TestCase):
 
     def test_inference_failure_starts_and_steps_fallback_in_same_cycle(self):
         walk = FakeMove(marker=10.0)
-        pico = FakeMove(step_error=RuntimeError("non-finite output"), marker=20.0)
-        selector = PolicySelectableWalkMove(fallback_move=walk, pico_move=pico)
+        ik_tracking = FakeMove(step_error=RuntimeError("non-finite output"), marker=20.0)
+        selector = PolicySelectableWalkMove(fallback_move=walk, ik_tracking_move=ik_tracking)
         obs = observation("pico_teleop", vx=0.55)
         selector.on_start(obs, MotorCommand())
         command = MotorCommand()
@@ -247,7 +247,7 @@ class PolicySelectorTest(unittest.TestCase):
         self.assertEqual(selector.state, MoveState.ACTIVE)
         self.assertEqual(selector.effective_policy, "walk")
         self.assertTrue(selector.fallback_latched)
-        self.assertEqual(pico.step_count, 1)
+        self.assertEqual(ik_tracking.step_count, 1)
         self.assertEqual(walk.start_count, 1)
         self.assertEqual(walk.step_count, 1)
         self.assertEqual(walk.last_velocity["vx"], 0.55)
@@ -256,12 +256,12 @@ class PolicySelectorTest(unittest.TestCase):
 
     def test_inference_failure_runs_real_walk_actor_in_same_cycle(self):
         walk = WalkMove(controller=None, session=LinearWalkSession())
-        pico = FakeMove(step_error=RuntimeError("intentional learned failure"))
+        ik_tracking = FakeMove(step_error=RuntimeError("intentional learned failure"))
         with tempfile.TemporaryDirectory() as temp_dir:
             selector = PolicySelectableWalkMove(
-                pico_policy_path=Path(temp_dir) / "absent.onnx",
+                ik_tracking_policy_path=Path(temp_dir) / "absent.onnx",
                 fallback_move=walk,
-                pico_move=pico,
+                ik_tracking_move=ik_tracking,
             )
             robot_state = RobotState(
                 time_s=0.0,
@@ -291,7 +291,7 @@ class PolicySelectorTest(unittest.TestCase):
         self.assertEqual(selector.state, MoveState.ACTIVE)
         self.assertEqual(selector.effective_policy, "walk")
         self.assertTrue(selector.fallback_latched)
-        self.assertEqual(pico.step_count, 1)
+        self.assertEqual(ik_tracking.step_count, 1)
         self.assertTrue(all(math.isfinite(value) for value in targets))
         self.assertTrue(any(abs(float(value)) > 0.0 for value in walk._last_action))
         for index, name in enumerate(OBSERVATION_DOF_ORDER):
@@ -299,19 +299,19 @@ class PolicySelectorTest(unittest.TestCase):
             self.assertAlmostEqual(command.target_angles[name], expected, places=7)
         self.assertIn("intentional learned failure", selector.fallback_reason)
 
-    def test_missing_optional_body_targets_keep_pico_actor_and_joystick(self):
+    def test_missing_optional_body_targets_keep_ik_tracking_actor_and_joystick(self):
         source = NetworkInputSource()
-        source._apply(bridge_pico_packet(0, trigger_held=False))
-        source._apply(bridge_pico_packet(1, trigger_held=True))
+        source._apply(bridge_ik_tracking_packet(0, trigger_held=False))
+        source._apply(bridge_ik_tracking_packet(1, trigger_held=True))
         walk = FakeMove(marker=10.0)
-        pico = FakeMove(marker=20.0)
-        selector = PolicySelectableWalkMove(fallback_move=walk, pico_move=pico)
+        ik_tracking = FakeMove(marker=20.0)
+        selector = PolicySelectableWalkMove(fallback_move=walk, ik_tracking_move=ik_tracking)
         selector.on_start(
             Observation(robot_state=RobotState(time_s=0.0), user_input=source.read()),
             MotorCommand(),
         )
 
-        missing_targets = bridge_pico_packet(2, trigger_held=True)
+        missing_targets = bridge_ik_tracking_packet(2, trigger_held=True)
         missing_targets["foot_target"] = None
         source._apply(missing_targets)
         continued = source.read()
@@ -327,23 +327,23 @@ class PolicySelectorTest(unittest.TestCase):
         self.assertEqual(selector.effective_policy, "pico_teleop")
         self.assertFalse(selector.fallback_latched)
         self.assertEqual(walk.start_count, 0)
-        self.assertEqual(pico.step_count, 1)
-        self.assertEqual(pico.last_velocity["vx"], 0.4)
+        self.assertEqual(ik_tracking.step_count, 1)
+        self.assertEqual(ik_tracking.last_velocity["vx"], 0.4)
         self.assertEqual(command.target_angles["probe"], 20.4)
 
-        source._apply(bridge_pico_packet(3, trigger_held=True))
+        source._apply(bridge_ik_tracking_packet(3, trigger_held=True))
         selector.step(
             Observation(robot_state=RobotState(time_s=0.0), user_input=source.read()),
             MotorCommand(),
         )
         self.assertEqual(selector.effective_policy, "pico_teleop")
-        self.assertEqual(pico.step_count, 2)
+        self.assertEqual(ik_tracking.step_count, 2)
         self.assertEqual(walk.start_count, 0)
 
     def test_bad_body_target_contract_does_not_latch_fallback_during_handoff(self):
         source = NetworkInputSource()
-        source._apply(bridge_pico_packet(0, trigger_held=False))
-        invalid = bridge_pico_packet(1, trigger_held=True)
+        source._apply(bridge_ik_tracking_packet(0, trigger_held=False))
+        invalid = bridge_ik_tracking_packet(1, trigger_held=True)
         invalid["body_target_contract"] = "wrong"
         source._apply(invalid)
         continued = source.read()
@@ -352,8 +352,8 @@ class PolicySelectorTest(unittest.TestCase):
         self.assertIsNone(continued.foot_target)
 
         walk = FakeMove(marker=10.0)
-        pico = FakeMove(marker=20.0)
-        selector = PolicySelectableWalkMove(fallback_move=walk, pico_move=pico)
+        ik_tracking = FakeMove(marker=20.0)
+        selector = PolicySelectableWalkMove(fallback_move=walk, ik_tracking_move=ik_tracking)
         selector.on_start(observation("walk"), MotorCommand())
         selector.step(
             Observation(robot_state=RobotState(time_s=0.0), user_input=continued),
@@ -364,20 +364,20 @@ class PolicySelectorTest(unittest.TestCase):
         self.assertEqual(selector.effective_policy, "pico_teleop")
         self.assertEqual(walk.start_count, 1)
         self.assertEqual(walk.step_count, 0)
-        self.assertEqual(pico.start_count, 1)
-        self.assertEqual(pico.step_count, 1)
-        self.assertEqual(pico.last_velocity["vx"], 0.4)
+        self.assertEqual(ik_tracking.start_count, 1)
+        self.assertEqual(ik_tracking.step_count, 1)
+        self.assertEqual(ik_tracking.last_velocity["vx"], 0.4)
 
     def test_wire_policy_change_switches_without_stopping_joystick(self):
         walk = FakeMove()
-        pico = FakeMove()
-        selector = PolicySelectableWalkMove(fallback_move=walk, pico_move=pico)
+        ik_tracking = FakeMove()
+        selector = PolicySelectableWalkMove(fallback_move=walk, ik_tracking_move=ik_tracking)
         selector.on_start(observation("walk"), MotorCommand())
         selector.step(observation("pico_teleop", vx=0.7), MotorCommand())
         self.assertEqual(selector.effective_policy, "pico_teleop")
-        self.assertEqual(pico.start_count, 1)
-        self.assertEqual(pico.step_count, 1)
-        self.assertEqual(pico.last_velocity["vx"], 0.7)
+        self.assertEqual(ik_tracking.start_count, 1)
+        self.assertEqual(ik_tracking.step_count, 1)
+        self.assertEqual(ik_tracking.last_velocity["vx"], 0.7)
 
         selector.step(observation("walk", vx=-0.6), MotorCommand())
         self.assertEqual(selector.effective_policy, "walk")
@@ -388,9 +388,9 @@ class PolicySelectorTest(unittest.TestCase):
 
         selector.step(observation("pico_teleop", vx=0.25), MotorCommand())
         self.assertEqual(selector.effective_policy, "pico_teleop")
-        self.assertEqual(pico.start_count, 2)
-        self.assertEqual(pico.step_count, 2)
-        self.assertEqual(pico.last_velocity["vx"], 0.25)
+        self.assertEqual(ik_tracking.start_count, 2)
+        self.assertEqual(ik_tracking.step_count, 2)
+        self.assertEqual(ik_tracking.last_velocity["vx"], 0.25)
 
     def test_atomic_replacement_can_reload_without_process_restart(self):
         walk = FakeMove()
@@ -398,7 +398,7 @@ class PolicySelectorTest(unittest.TestCase):
         attempts = []
 
         with tempfile.TemporaryDirectory() as temp_dir:
-            path = Path(temp_dir) / "pico.onnx"
+            path = Path(temp_dir) / "ik_tracking.onnx"
             path.write_bytes(b"bad")
 
             def factory(_controller, received_path):
@@ -408,7 +408,7 @@ class PolicySelectorTest(unittest.TestCase):
                 return replacement
 
             selector = PolicySelectableWalkMove(
-                pico_policy_path=path,
+                ik_tracking_policy_path=path,
                 fallback_move=walk,
                 learned_move_factory=factory,
             )
@@ -447,11 +447,11 @@ class HoldGainTest(unittest.TestCase):
 
     ALL_IDS = list(MOTOR_TO_ID.values())
 
-    def _selector(self, controller, pico_move=None):
+    def _selector(self, controller, ik_tracking_move=None):
         return PolicySelectableWalkMove(
             controller=controller,
-            pico_move=pico_move,
-            pico_policy_path=Path(tempfile.gettempdir()) / "missing_pico_policy.onnx",
+            ik_tracking_move=ik_tracking_move,
+            ik_tracking_policy_path=Path(tempfile.gettempdir()) / "missing_ik_tracking_policy.onnx",
         )
 
     def _obs(self, policy="pico_teleop", time_s=0.0, active=True):
@@ -491,13 +491,13 @@ class HoldGainTest(unittest.TestCase):
         move.step(self._obs(), MotorCommand())
         self.assertEqual(len(controller.kp_writes), written + 1)
 
-    def test_hold_after_a_pico_failure_raises_every_joint(self):
+    def test_hold_after_an_ik_tracking_failure_raises_every_joint(self):
         controller = _KpRecorder()
-        pico = FakeMove(step_error=RuntimeError("inference failed"))
-        move = self._selector(controller, pico_move=pico)
+        ik_tracking = FakeMove(step_error=RuntimeError("inference failed"))
+        move = self._selector(controller, ik_tracking_move=ik_tracking)
         move.on_start(self._obs(), MotorCommand())
         self.assertEqual(move.effective_policy, "pico_teleop")
-        controller.kp_writes.append((self.ALL_IDS, [KP_RL] * 21))  # PICO's start gain
+        controller.kp_writes.append((self.ALL_IDS, [KP_RL] * 21))  # IK tracking's start gain
         move.step(self._obs(), MotorCommand())
         self.assertEqual(move.effective_policy, "hold")
         self.assertEqual(set(self._gains(controller).values()), {KP_HARDWARE_NEUTRAL})

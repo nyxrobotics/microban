@@ -25,8 +25,8 @@ from policy_contract import load_installed_policy, parse_policy
 # Note: requires to set observe_voltage = True in the Observer to log voltages
 LOGGING = False
 
-# Policy name of the walking model (the PICO policy is trained on it as its
-# frozen walker).  Its contract (src/policy_contract.py):
+# Policy name of the walking model (the IK tracking policy is trained on it as
+# its frozen walker).  Its contract (src/policy_contract.py):
 # target = clip(NEUTRAL_POSE + raw * 1.0, -pi, +pi) on the 18
 # OBSERVATION_DOF_ORDER joints, the raw output fed back as the previous action,
 # trained at this robot's HOME (config/home_pose.yaml).

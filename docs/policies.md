@@ -1,4 +1,4 @@
-# 学習したモデル（歩行・起き上がり・PICO）の契約と導入
+# 学習したモデル（歩行・起き上がり・IK トラッキング）の契約と導入
 
 実機は学習リポジトリ（mjlab_microban）で学習した 3 つのモデルを使う。
 
@@ -6,32 +6,32 @@
 |---|---|---|
 | 歩行 | `src/agents/walk.onnx` | `WalkMove`（GC300） |
 | 起き上がり | `src/agents/getup.onnx` | `GetupMove`（転倒後の起き上がり、立位の保持） |
-| PICO | `src/agents/pico_teleop.onnx` | `PicoHybridMove`（PICO の左トリガーで選ばれる全身の遠隔操作） |
+| IK トラッキング | `src/agents/pico_teleop.onnx`（名前は互換のため旧名） | `IkTrackingMove`（PICO の左トリガーで選ばれる IK トラッキング） |
 
 3 つとも `src/policy_contract.py` の契約 `microban-policy-1` だけで照合する。
 学習側との取り決めの全文は学習リポジトリ側と共有している契約の文書（metadata のキーの一覧）にあり、ここでは実機側の要点を書く。
 
 ## 契約
 - 版: metadata の `microban_policy_contract` が `microban-policy-1`。観測・行動・目標の意味を変えたら、両方のリポジトリで手で上げる。
-- 種類とレシピ: `microban_policy_kind`（walk / getup / pico）と `microban_recipe`。受け付けるレシピ id は `policy_contract.RECIPES` に 1 つずつ。
-  PICO のモデルは、凍結した歩行器の出力に、学習した小さな補正の網（入力 81、隠れ層 64・64）の出力を足したもので、1 つのグラフになっている。レシピ id `microban-pico-arm-overlay-residual-crouch-feedforward-track-velocity-1` はこの構造と、両足の目標のしゃがみの脚の角を実機が足し引きすること（下の「PICO の実行時の動き」）を表す。補正の網のないモデル（`microban-pico-arm-overlay-track-velocity-1`）と、しゃがみの角なしで学習したモデル（`microban-pico-arm-overlay-residual-track-velocity-1`）は拒否する。
+- 種類とレシピ: `microban_policy_kind`（walk / getup / pico。pico は IK トラッキングの種類名で、互換のため旧名）と `microban_recipe`。受け付けるレシピ id は `policy_contract.RECIPES` に 1 つずつ。
+  IK トラッキングのモデルは、凍結した歩行器の出力に、学習した小さな補正の網（入力 81、隠れ層 64・64）の出力を足したもので、1 つのグラフになっている。レシピ id `microban-pico-arm-overlay-residual-crouch-feedforward-track-velocity-1` はこの構造と、両足の目標のしゃがみの脚の角を実機が足し引きすること（下の「IK トラッキングの実行時の動き」）を表す。補正の網のないモデル（`microban-pico-arm-overlay-track-velocity-1`）と、しゃがみの角なしで学習したモデル（`microban-pico-arm-overlay-residual-track-velocity-1`）は拒否する。
 - HOME: `home_pose` の全精度のスタンプと `default_joint_pos` が `config/home_pose.yaml` と 1e-6 以内で一致すること。別の HOME で学習したモデルは拒否する。
-- 目標の式: どのモデルも `target = clip(HOME + raw * 1.0, -π, +π)`（18 関節、ソフトウェアのクリップなし、±π はサーボの 1 回転の範囲）。前回の行動の観測は生の出力。PICO だけは腕の 6 関節にこの式を使わない（下の「PICO の実行時の動き」）。
+- 目標の式: どのモデルも `target = clip(HOME + raw * 1.0, -π, +π)`（18 関節、ソフトウェアのクリップなし、±π はサーボの 1 回転の範囲）。前回の行動の観測は生の出力。IK トラッキングだけは腕の 6 関節にこの式を使わない（下の「IK トラッキングの実行時の動き」）。
 - 観測の並び: `observation_schema_json`（walk 63、getup 60、pico 81）と `observation_joint_names`。
 - 合格: `gate_status=pass` と判定レポートの sha256。チェックポイントの名前と sha256。
-- 免除つきの合格（PICO だけ）: ユーザーが承認して、PICO の判定の一部に落ちたまま入れたモデルは、`gate_status=pass_with_waiver` と `gate_tracking_waiver_json`（承認の文と、免除した項目ごとの落ちた測定値・場面・合格の線）を持つ。
+- 免除つきの合格（IK トラッキングだけ）: ユーザーが承認して、IK トラッキングの判定の一部に落ちたまま入れたモデルは、`gate_status=pass_with_waiver` と `gate_tracking_waiver_json`（承認の文と、免除した項目ごとの落ちた測定値・場面・合格の線）を持つ。
   実機は受け付けたうえで、起動時のログと `tools/validate_policies.py` の出力（JSON の `gate_status`・`tracking_waiver` と、標準エラーの WARNING 行）に、免除した項目と測定値を出す。
-  免除できるのは動きの項目（`policy_contract.PICO_WAIVABLE_TRACKING_CHECKS`: 押さないときの転倒、足の上げ、足の位置のずれ、支える足、押されたときの転倒、止まれの足踏み、腕を動かしての歩行）だけ。
+  免除できるのは動きの項目（`policy_contract.IK_TRACKING_WAIVABLE_TRACKING_CHECKS`: 押さないときの転倒、足の上げ、足の位置のずれ、支える足、押されたときの転倒、止まれの足踏み、腕を動かしての歩行）だけ。
   安全の項目（`finite`、`actual_soft_limits`、`raw_action_recurrence`、`forced_hmd_motion`、`arm_observation`）を免除したもの、記録が壊れているもの、walk・getup の免除は拒否する。
-- PICO だけ: 凍結した歩行器のチェックポイント（`pico_walk_checkpoint_sha256`）、足の目標の座標（HOME の体幹の傾きから決まる）と範囲、腕の目標（`pico_arm_target_json`: 関節の箱と速さ 4 rad/s が `pico_arm_contract` と同じ）、生の行動の上限（`pico_raw_action_guard_json`）、しゃがみの脚の角（`pico_crouch_feedforward_json`: 名前 `microban_pico_crouch_feedforward_v2`、12 脚関節の並び、方策の周期 0.02 s と Δq の 1 周期の上限 0.2 rad がこの実機の `crouch_feedforward` と同じこと、確かめの足の目標でこの実機の `crouch_feedforward` が記録の角を 1e-6 rad 以内で再現すること）、段の時刻（`critic_warmup / arm_start / foot_start / foot_tighten / total`。保存点が最後の段のものであること）、全部の追加列が学習されたこと。
+- IK トラッキングだけ（キーの名前は互換のため `pico_*` のまま）: 凍結した歩行器のチェックポイント（`pico_walk_checkpoint_sha256`）、足の目標の座標（HOME の体幹の傾きから決まる）と範囲、腕の目標（`pico_arm_target_json`: 関節の箱と速さ 4 rad/s が `ik_tracking_arm_contract` と同じ）、生の行動の上限（`pico_raw_action_guard_json`）、しゃがみの脚の角（`pico_crouch_feedforward_json`: 名前 `microban_pico_crouch_feedforward_v2`、12 脚関節の並び、方策の周期 0.02 s と Δq の 1 周期の上限 0.2 rad がこの実機の `crouch_feedforward` と同じこと、確かめの足の目標でこの実機の `crouch_feedforward` が記録の角を 1e-6 rad 以内で再現すること）、段の時刻（`critic_warmup / arm_start / foot_start / foot_tighten / total`。保存点が最後の段のものであること）、全部の追加列が学習されたこと。
 
 実機側のソースのハッシュは使わない。互換性は契約の版と次の起動時の自己テストで確かめる。
 
 ## 起動時の自己テスト
 各モデルには、書き出したチェックポイントの評価のロールアウトから取った観測 8〜64 行と、それに対する学習時の actor の出力が入っている。
-実機は読み込むときにそれを ONNX Runtime に通し、行ごとに `max|ORT − 記録| ≤ 1e-4 + 1e-5 × max|記録|` を確かめる（PICO は加えて出力が上限以内）。
+実機は読み込むときにそれを ONNX Runtime に通し、行ごとに `max|ORT − 記録| ≤ 1e-4 + 1e-5 × max|記録|` を確かめる（IK トラッキングは加えて出力が上限以内）。
 記録の観測は、重力のノルムが 1、関節角が可動範囲 + 5° の内側、関節速度が 8.5 rad/s 以下であること。
-PICO の記録は、腕の目標が腕の箱の中にあり、腕の目標が 0 でない行と足の目標が 0 でない行を含むこと。
+IK トラッキングの記録は、腕の目標が腕の箱の中にあり、腕の目標が 0 でない行と足の目標が 0 でない行を含むこと。
 
 ## manifest と導入
 導入の道具（学習リポジトリの `scripts/retrain_all_for_home.py`）は次だけを書き、実機の .py もテストも書き換えない。
@@ -41,7 +41,7 @@ PICO の記録は、腕の目標が腕の箱の中にあり、腕の目標が 0 
 - `config/home_pose.yaml`（schema 2）
 
 実機はモデルを読むたびに、ファイルの sha256・チェックポイントの sha256・HOME の tag を manifest と照合し、
-PICO は凍結した歩行器が導入された walk.onnx と同じチェックポイントであることも確かめる。
+IK トラッキングは凍結した歩行器が導入された walk.onnx と同じチェックポイントであることも確かめる。
 試運転のパッケージ（`dry_run`）は環境変数 `MICROBAN_ALLOW_DRYRUN_POLICY=1` のときだけ受け付ける（導入の検証とテストの実行のためだけ）。
 
 検証（モーターのバスは開かない）:
@@ -55,28 +55,28 @@ make teleop-validate HOST=microban   # 作業機と Raspberry Pi の両方で va
 `make teleop-validate` は作業ツリーをそのまま rsync するので、`git status --porcelain=v1 --untracked-files=all` が空の状態で実行する。
 通ってから `make teleop-run HOST=microban` で制御を始める。
 
-### PICOだけを再学習した場合
+### IK トラッキングだけを再学習した場合
 
-同じHOMEと同じ歩行器からPICOだけを再学習した場合は、3モデル一括の
-`retrain_all_for_home.py`ではなく、PICO専用の導入道具を使う。書き出しに使った
+同じHOMEと同じ歩行器からIK トラッキングだけを再学習した場合は、3モデル一括の
+`retrain_all_for_home.py`ではなく、IK トラッキング専用の導入道具を使う。書き出しに使った
 stage gateも渡すため、別の判定結果やcheckpointから作ったONNXは導入できない。
 
 ```bash
 TRAINING_REPO=/absolute/path/to/mjlab_microban
-PICO_RELEASE="$TRAINING_REPO/artifacts/pico_release/<run>"
+IK_TRACKING_RELEASE="$TRAINING_REPO/artifacts/ik_tracking_release/<run>"
 TRAINING_COMMIT=<学習開始時にrunが記録した40桁のcommit>
 
-PYTHONPATH=src uv run --locked python tools/install_pico_policy.py \
-  "$PICO_RELEASE/pico_teleop.onnx" \
-  "$PICO_RELEASE/model_14999_gate.json" \
+PYTHONPATH=src uv run --locked python tools/install_ik_tracking_policy.py \
+  "$IK_TRACKING_RELEASE/pico_teleop.onnx" \
+  "$IK_TRACKING_RELEASE/model_14999_gate.json" \
   --training-repo "$TRAINING_REPO" \
   --training-branch tracking-v13c \
   --training-commit "$TRAINING_COMMIT" \
   --check-only
 
-PYTHONPATH=src uv run --locked python tools/install_pico_policy.py \
-  "$PICO_RELEASE/pico_teleop.onnx" \
-  "$PICO_RELEASE/model_14999_gate.json" \
+PYTHONPATH=src uv run --locked python tools/install_ik_tracking_policy.py \
+  "$IK_TRACKING_RELEASE/pico_teleop.onnx" \
+  "$IK_TRACKING_RELEASE/model_14999_gate.json" \
   --training-repo "$TRAINING_REPO" \
   --training-branch tracking-v13c \
   --training-commit "$TRAINING_COMMIT"
@@ -86,14 +86,14 @@ PYTHONPATH=src uv run --locked --with pytest python -m pytest -q tests
 ```
 
 導入道具は、既存のwalk/getupを先に検証してそのbytesとmanifest欄を変えずに候補bundleへコピーし、
-新しいPICOの契約、CPU自己テスト、stage gate hash、凍結walkerのcheckpoint hashを検証する。
+新しいIK トラッキングの契約、CPU自己テスト、stage gate hash、凍結walkerのcheckpoint hashを検証する。
 さらにstage gateが指すcheckpointとrunの`git/mjlab_microban.diff`を読み、ONNX metadataに埋め込まれた
 学習開始時のcommit・branch・Git記録hashと一致すること、そのcommitが指定branchに含まれることを確かめる。
 現在のbranch先端（学習後の文書commitなど）を学習commitとして記録してはならない。
 
 manifest上端の`training_commit`、`training_branch`、`home_yaml_sha256`、`created`は、保持したwalk/getupを含む
-元の3-policy bundleの記録なので書き換えない。後から入れたPICOの出所は
-`policy_provenance.pico`にcheckpoint、gate、ONNX、runのGit記録まで別に保存する。
+元の3-policy bundleの記録なので書き換えない。後から入れたIK トラッキングの出所は
+`policy_provenance.pico`（キーは互換のため旧名）にcheckpoint、gate、ONNX、runのGit記録まで別に保存する。
 
 3モデルをまとめた候補bundleが通った後にだけ`pico_teleop.onnx`と`manifest.json`を置き換える。
 2ファイルは一度にはrenameできないため、導入前の両bytesとfsync済みjournalを
@@ -117,20 +117,20 @@ sha256sum src/agents/walk.onnx src/agents/getup.onnx
 契約に合わないモデルの扱い:
 - 歩行: `WalkMove` が例外を出し、そのランタイムは起動しない。
 - 起き上がり: `GetupMove.model_ready` が False になり、転倒時はゆっくり初期姿勢へ戻るだけになる。
-- PICO: `PolicySelectableWalkMove` が読み込みに失敗を記録し、左トリガーの間は最後の体の目標を保持する。
+- IK トラッキング: `PolicySelectableWalkMove` が読み込みに失敗を記録し、左トリガーの間は最後の体の目標を保持する。
 
 ## サーボのゲイン
-- 学習したモデル（歩行・起き上がり・PICO）が動いている間は、頭と首を含む全 21 関節を P125（`KP_RL`。学習の BAM と同じ値）。
+- 学習したモデル（歩行・起き上がり・IK トラッキング）が動いている間は、頭と首を含む全 21 関節を P125（`KP_RL`。学習の BAM と同じ値）。
 - 学習したモデルを使わない静止（A の初期姿勢、起き上がり後に歩行が始まらないままの静止、起き上がりモデルが使えないとき、学習した動作が終わって HOME に戻ったあと）は全関節 P900（`KP_HARDWARE_NEUTRAL`）。
-  PICO のモデルがない・失敗したときの静止保持（`policy_selector._HoldPositionMove`）も、何から引き継いだかによらず、保持する目標を送り直してから頭と首を含む全 21 関節を P900 にする。
+  IK トラッキングのモデルがない・失敗したときの静止保持（`policy_selector._HoldPositionMove`）も、何から引き継いだかによらず、保持する目標を送り直してから頭と首を含む全 21 関節を P900 にする。
 - 右トリガーの腕の追従（`pico_arms`）は追従中だけ腕 6 関節を P125 にし、終わると歩行中なら P125、静止なら P900 に戻す。
 - `RobotController.sync_write_kp` は前回そのサーボに送った値と違うものだけを送る。起動直後は値が分からないので、`main.py` の最初の書き込み（全関節 P900）は必ず全サーボに届く。サーボが通信から外れて戻ったとき（再起動で RAM のゲインが戻った可能性がある）は、最後に指定した値をそのサーボに送り直す。
 
-## PICO の実行時の動き
+## IK トラッキングの実行時の動き
 - 入力は 81 個（角速度 3、重力 3、21 関節の角度と速度、前回の行動 18、速度指令 3、足の目標 6、腕の目標 6）。角速度は IMU の座標のまま。
-- 腕の目標は、1 周期前に `pico_arms` が腕の 6 サーボに書いた目標角から HOME を引いた値（左 pitch, roll, elbow、右 pitch, roll, elbow。`PicoArmTargetHold` で受け渡す）。右トリガーを離していれば HOME に戻り 0 になる。
+- 腕の目標は、1 周期前に `pico_arms` が腕の 6 サーボに書いた目標角から HOME を引いた値（左 pitch, roll, elbow、右 pitch, roll, elbow。`IkTrackingArmTargetHold` で受け渡す）。右トリガーを離していれば HOME に戻り 0 になる。
 - 出力の 18 個はそのまま生の行動として前回の行動の観測に戻すが、サーボに使うのは脚の 12 個だけで、上の目標の式で目標にする。腕の 6 サーボには観測に使った腕の目標を書き、`pico_arms` が動いていれば同じ周期で上書きする。学習でも腕は外から同じ箱と速さで動かす。どれかが非有限、float32 で溢れる、または上限 `pico_raw_action_guard_json` を超えたら、目標を 1 つも書かずに例外を出し、selector が同じ周期で最後の体の目標を保持する（トリガーを離すまで保持を続ける）。
 - 足の目標は学習の範囲で切り詰める。支持足の床の帯（z ≤ 2.5 mm）はちょうど 0 であること。両足を同時に上げる目標は学習の範囲の 0.8 倍以内で、速度指令が 0 のときだけ受け付ける。
-- 両足の目標がともに床の帯より上のとき（操作者がしゃがんだとき）、脚はそのしゃがみの姿勢を基準に動く。`src/crouch_feedforward.py`（学習側と同じファイル）が、(dx, dy の平均, 低い方の dz) だけ胴を下げて両足の裏を HOME の位置に残す脚の角を求める。片足の目標・目標なし・歩行・両足の範囲（xy ±10 mm、dz 20 mm 以下）の外では、この角は 0。使う Δq は、この角へ 1 周期 0.2 rad（12 関節のノルム、10 rad/s）までの速さで近づく状態で、PICO の動作の始めと終わりに 0 にする。両足の目標が一度に消えたとき（左トリガーを離す、スティックを倒す、範囲を越える）も、脚の目標は跳ばずにこの速さで HOME に戻る。脚の目標を `clip(HOME + Δq + raw, -π, +π)`、観測の脚の関節角を 実測 − HOME − Δq にする（同じ周期の同じ Δq）。前回の行動は生の出力のまま。
-- 左トリガーを押している間は `walk` が `active_moves` に入り、PICO のモデルにスティックの速度と体の目標を渡す。R3 で有効にしたまま左トリガーを離すと、速度 0・体の目標 0 で立位を保つ。右トリガーは `hmd_head`（首の追従）と `pico_arms`（腕の直接の追従）を有効にする。
-- `MICROBAN_INPUT=network` の起動は全関節トルク OFF から始まる。右手 B はいつでも全関節のトルクを OFF にし、A は現在角を目標に書いてからトルクを ON にして 0.5 rad/s 以下で `NEUTRAL_POSE` へ戻す。R3 は A の後だけ、PICO のモデルと初期姿勢の復帰を切り替える。
+- 両足の目標がともに床の帯より上のとき（操作者がしゃがんだとき）、脚はそのしゃがみの姿勢を基準に動く。`src/crouch_feedforward.py`（学習側と同じファイル）が、(dx, dy の平均, 低い方の dz) だけ胴を下げて両足の裏を HOME の位置に残す脚の角を求める。片足の目標・目標なし・歩行・両足の範囲（xy ±10 mm、dz 20 mm 以下）の外では、この角は 0。使う Δq は、この角へ 1 周期 0.2 rad（12 関節のノルム、10 rad/s）までの速さで近づく状態で、IK トラッキングの動作の始めと終わりに 0 にする。両足の目標が一度に消えたとき（左トリガーを離す、スティックを倒す、範囲を越える）も、脚の目標は跳ばずにこの速さで HOME に戻る。脚の目標を `clip(HOME + Δq + raw, -π, +π)`、観測の脚の関節角を 実測 − HOME − Δq にする（同じ周期の同じ Δq）。前回の行動は生の出力のまま。
+- 左トリガーを押している間は `walk` が `active_moves` に入り、IK トラッキングのモデルにスティックの速度と体の目標を渡す。R3 で有効にしたまま左トリガーを離すと、速度 0・体の目標 0 で立位を保つ。右トリガーは `hmd_head`（首の追従）と `pico_arms`（腕の直接の追従）を有効にする。
+- `MICROBAN_INPUT=network` の起動は全関節トルク OFF から始まる。右手 B はいつでも全関節のトルクを OFF にし、A は現在角を目標に書いてからトルクを ON にして 0.5 rad/s 以下で `NEUTRAL_POSE` へ戻す。R3 は A の後だけ、IK トラッキングのモデルと初期姿勢の復帰を切り替える。

@@ -1,5 +1,5 @@
-"""The crouch offsets of the PICO policy (src/crouch_feedforward.py, the
-training's file) and their use in the PICO runtime."""
+"""The crouch offsets of the IK tracking policy (src/crouch_feedforward.py,
+the training's file) and their use in the IK tracking runtime."""
 
 import math
 import unittest
@@ -12,10 +12,10 @@ import crouch_feedforward as cf
 from constants import NEUTRAL_POSE, OBSERVATION_DOF_ORDER
 from home_pose import HOME_TRUNK_PITCH_RAD
 from moves.move import MotorCommand
-from moves.pico_hybrid import PicoHybridMove
+from moves.ik_tracking import IkTrackingMove
 from policy_contract import crouch_table
 from policy_fixtures import CROUCH_PROBES
-from test_pico_hybrid import observation, pico_session
+from test_ik_tracking import observation, ik_tracking_session
 
 ROBOT_XML = Path(__file__).resolve().parents[1] / "src" / "model" / "mjcf" / "robot.xml"
 LEG_BODIES = {
@@ -96,14 +96,14 @@ class TrainingNumbersTest(unittest.TestCase):
         np.testing.assert_array_equal(cf.leg_offsets(crouch_table(), feet), np.zeros((4, 12)))
 
 
-class PicoCrouchTest(unittest.TestCase):
+class IkTrackingCrouchTest(unittest.TestCase):
     def test_the_legs_work_around_the_crouch_pose(self):
         """Each cycle observes and acts on one offset, which follows the crouch
         pose at most MAX_STEP_RAD per cycle, and returns to zero the same way
         when the teleop drops both foot targets at once."""
 
         raw = np.linspace(-0.2, 0.2, 18, dtype=np.float32).reshape(1, 18)
-        move = PicoHybridMove(session=pico_session(raw), gyro_transform=lambda value: value)
+        move = IkTrackingMove(session=ik_tracking_session(raw), gyro_transform=lambda value: value)
         obs = observation()
         obs.user_input.velocity = {"vx": 0.0, "vy": 0.0, "vtheta": 0.0}
         foot = {"left": (0.004, 0.004, 0.012), "right": (0.004, 0.004, 0.012)}
@@ -149,7 +149,7 @@ class PicoCrouchTest(unittest.TestCase):
         np.testing.assert_allclose(first, cf.follow(np.zeros((1, 12)), target[None])[0], atol=1e-12)
 
     def test_one_foot_up_keeps_home(self):
-        move = PicoHybridMove(session=pico_session(), gyro_transform=lambda value: value)
+        move = IkTrackingMove(session=ik_tracking_session(), gyro_transform=lambda value: value)
         values = move.build_observation(observation())  # the left foot up, the right at zero
         self.assertEqual(values[6:27], [0.0] * 21)
 

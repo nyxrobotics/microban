@@ -10,8 +10,9 @@ observation is built exactly as in training (mjlab_microban
 control tick, the last 10 ticks oldest first, every row the first frame after
 a reset.  The ``*_b`` terms use the IMU trunk orientation with its yaw.
 
-From R3 on, the policy drives the robot the whole time; the PICO policy does
-not stand it.  The reference is the move's own until the PC's start joins:
+From R3 on, the policy drives the robot the whole time; the IK tracking
+policy does not stand it.  The reference is the move's own until the PC's
+start joins:
 
 1. enter: from the measured 21 joints and the IMU's attitude (velocities
    zero, HOME's height) to the HOME stance in ENTER_S (smoothstep), its
@@ -72,7 +73,7 @@ Neck: while joining and tracking its targets are the reference's neck angles
 training's ReferenceNeckTarget does, and the HMD head move yields
 (``WholebodyClaim.neck``).  Otherwise the move slews the neck toward its own
 reference's (HOME standing), and the HMD head move, when it runs, drives it
-as it does on the PICO policy.
+as it does on the IK tracking policy.
 """
 
 from __future__ import annotations
@@ -143,8 +144,8 @@ RETURN_S = 1.5
 HEADING_STEP_RAD = 0.02
 HEADING_FREEZE_TILT_DEG = 30.0
 # The robot stands still: the trunk near HOME's attitude, no leg joint moving
-# (the PICO policy's start of preflight-fixes: its legs move at 1.7-4.6 rad/s
-# stepping and below 0.4 rad/s standing).
+# (the IK tracking policy's start of preflight-fixes: its legs move at
+# 1.7-4.6 rad/s stepping and below 0.4 rad/s standing).
 STILL_TILT_DEG = 12.0
 STILL_LEG_SPEED_RAD_S = 1.0
 STILL_TICKS = 25

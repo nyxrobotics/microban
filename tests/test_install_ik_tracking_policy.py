@@ -9,15 +9,15 @@ from types import SimpleNamespace
 from unittest import mock
 
 
-MODULE_PATH = Path(__file__).resolve().parents[1] / "tools" / "install_pico_policy.py"
-SPEC = importlib.util.spec_from_file_location("install_pico_policy", MODULE_PATH)
+MODULE_PATH = Path(__file__).resolve().parents[1] / "tools" / "install_ik_tracking_policy.py"
+SPEC = importlib.util.spec_from_file_location("install_ik_tracking_policy", MODULE_PATH)
 assert SPEC is not None and SPEC.loader is not None
 installer = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(installer)
 
 
 WALK_SHA = "a7" * 32
-PICO_SHA = "b4" * 32
+IK_TRACKING_SHA = "b4" * 32
 GATE_SHA = "c3" * 32
 TRAINING_COMMIT = "d5" * 20
 
@@ -33,7 +33,7 @@ WAIVER = {
 }
 
 
-def contract(*, gate_sha=GATE_SHA, checkpoint_sha=PICO_SHA, tracking_waiver=None):
+def contract(*, gate_sha=GATE_SHA, checkpoint_sha=IK_TRACKING_SHA, tracking_waiver=None):
     return SimpleNamespace(
         kind="pico",
         tracking_waiver=tracking_waiver,
@@ -41,7 +41,7 @@ def contract(*, gate_sha=GATE_SHA, checkpoint_sha=PICO_SHA, tracking_waiver=None
         checkpoint_iteration=14999,
         checkpoint_sha256=checkpoint_sha,
         gate_report_sha256=gate_sha,
-        pico=SimpleNamespace(
+        ik_tracking=SimpleNamespace(
             curriculum={
                 "critic_warmup": 1,
                 "arm_start": 2,
@@ -53,7 +53,7 @@ def contract(*, gate_sha=GATE_SHA, checkpoint_sha=PICO_SHA, tracking_waiver=None
     )
 
 
-class PicoPolicyInstallerTest(unittest.TestCase):
+class IkTrackingPolicyInstallerTest(unittest.TestCase):
     def manifest(self):
         return {
             "contract": "microban-policy-1",
@@ -92,7 +92,7 @@ class PicoPolicyInstallerTest(unittest.TestCase):
             },
         }
 
-    def test_manifest_replaces_only_pico_policy_entry(self):
+    def test_manifest_replaces_only_ik_tracking_policy_entry(self):
         before = self.manifest()
         provenance = {
             "scope": "pico_only",
@@ -102,9 +102,9 @@ class PicoPolicyInstallerTest(unittest.TestCase):
         }
         after = installer._updated_manifest(
             before,
-            pico_sha256="6" * 64,
+            ik_tracking_sha256="6" * 64,
             contract=contract(),
-            pico_provenance=provenance,
+            ik_tracking_provenance=provenance,
         )
 
         self.assertEqual(after["policies"]["walk"], before["policies"]["walk"])
@@ -112,10 +112,11 @@ class PicoPolicyInstallerTest(unittest.TestCase):
         self.assertEqual(after["checkpoints"]["walk"], "model_29000.pt")
         self.assertEqual(after["checkpoints"]["getup"], "model_17999.pt")
         self.assertEqual(after["policies"]["pico"]["sha256"], "6" * 64)
-        self.assertEqual(after["policies"]["pico"]["checkpoint_sha256"], PICO_SHA)
+        self.assertEqual(after["policies"]["pico"]["checkpoint_sha256"], IK_TRACKING_SHA)
         self.assertEqual(after["checkpoints"]["pico"], "model_14999.pt")
         # The top-level fields still identify the preserved three-policy base
-        # release.  The later PICO has its own, truthful provenance record.
+        # release.  The later IK tracking policy has its own, truthful
+        # provenance record.
         for key in ("training_commit", "training_branch", "home_yaml_sha256", "created"):
             self.assertEqual(after[key], before[key])
         self.assertEqual(after["policy_provenance"]["pico"], provenance)
@@ -125,7 +126,7 @@ class PicoPolicyInstallerTest(unittest.TestCase):
             "schema_version": 3,
             "gate": "microban_teleop_v12_stage",
             "status": "pass",
-            "checkpoint_sha256": PICO_SHA,
+            "checkpoint_sha256": IK_TRACKING_SHA,
             "iteration": 14999,
             "completed_updates": 15000,
         }
@@ -147,7 +148,7 @@ class PicoPolicyInstallerTest(unittest.TestCase):
             "gate": "microban_teleop_v12_stage",
             "status": "pass_with_waiver",
             "tracking_waiver": WAIVER,
-            "checkpoint_sha256": PICO_SHA,
+            "checkpoint_sha256": IK_TRACKING_SHA,
             "iteration": 14999,
             "completed_updates": 15000,
         }
@@ -177,9 +178,9 @@ class PicoPolicyInstallerTest(unittest.TestCase):
 
         after = installer._updated_manifest(
             self.manifest(),
-            pico_sha256="6" * 64,
+            ik_tracking_sha256="6" * 64,
             contract=contract(tracking_waiver=WAIVER),
-            pico_provenance={"scope": "pico_only"},
+            ik_tracking_provenance={"scope": "pico_only"},
         )
         self.assertEqual(after["judgments"]["pico"]["failures"], ["standing_still"])
         self.assertFalse(after["judgments"]["pico"]["passed"])
@@ -191,7 +192,7 @@ class PicoPolicyInstallerTest(unittest.TestCase):
             "schema_version": 3,
             "gate": "microban_teleop_v12_stage",
             "status": "pass",
-            "checkpoint_sha256": PICO_SHA,
+            "checkpoint_sha256": IK_TRACKING_SHA,
             "iteration": 14999,
             "completed_updates": 15000,
         }
@@ -287,7 +288,7 @@ class PicoPolicyInstallerTest(unittest.TestCase):
                 commit=commit,
                 gate={"checkpoint": "repo://logs/run/model_14999.pt"},
                 contract=contract(checkpoint_sha=checkpoint_sha),
-                pico_sha256="6" * 64,
+                ik_tracking_sha256="6" * 64,
                 onnx_provenance={
                     "training_git_commit": commit,
                     "training_git_branch": "tracking-v13c",
@@ -308,7 +309,7 @@ class PicoPolicyInstallerTest(unittest.TestCase):
                     commit=commit,
                     gate={"checkpoint": "repo://logs/run/model_14999.pt"},
                     contract=contract(checkpoint_sha=checkpoint_sha),
-                    pico_sha256="6" * 64,
+                    ik_tracking_sha256="6" * 64,
                     onnx_provenance={
                         "training_git_commit": commit,
                         "training_git_branch": "tracking-v13c",
@@ -320,16 +321,16 @@ class PicoPolicyInstallerTest(unittest.TestCase):
         class SimulatedCrash(BaseException):
             pass
 
-        old_pico = b"old-pico"
+        old_policy = b"old-policy"
         old_manifest = b"old-manifest"
-        new_pico = b"new-pico"
+        new_policy = b"new-policy"
         new_manifest = b"new-manifest"
         for crash_after_write in range(1, 6):
             with self.subTest(crash_after_write=crash_after_write), tempfile.TemporaryDirectory() as directory:
                 agents = Path(directory)
-                pico_path = agents / installer.POLICY_FILES["pico"]
+                ik_tracking_path = agents / installer.POLICY_FILES["pico"]
                 manifest_path = agents / "manifest.json"
-                pico_path.write_bytes(old_pico)
+                ik_tracking_path.write_bytes(old_policy)
                 manifest_path.write_bytes(old_manifest)
                 real_atomic_write = installer._atomic_write
                 calls = 0
@@ -348,29 +349,29 @@ class PicoPolicyInstallerTest(unittest.TestCase):
                         with self.assertRaises(SimulatedCrash):
                             installer._publish_bundle(
                                 agents_dir=agents,
-                                pico_data=new_pico,
+                                ik_tracking_data=new_policy,
                                 manifest_data=new_manifest,
-                                expected_old_pico_sha256=hashlib.sha256(old_pico).hexdigest(),
+                                expected_old_ik_tracking_sha256=hashlib.sha256(old_policy).hexdigest(),
                                 expected_old_manifest_sha256=hashlib.sha256(old_manifest).hexdigest(),
                             )
                     recovered = installer._recover_pending_install(agents)
 
                 if crash_after_write == 5:
                     self.assertEqual(recovered, "finalized")
-                    self.assertEqual(pico_path.read_bytes(), new_pico)
+                    self.assertEqual(ik_tracking_path.read_bytes(), new_policy)
                     self.assertEqual(manifest_path.read_bytes(), new_manifest)
                 else:
                     self.assertIn(recovered, {"discarded_orphan_backups", "rolled_back"})
-                    self.assertEqual(pico_path.read_bytes(), old_pico)
+                    self.assertEqual(ik_tracking_path.read_bytes(), old_policy)
                     self.assertEqual(manifest_path.read_bytes(), old_manifest)
                 self.assertFalse(any(path.name.startswith(".pico-policy-install") for path in agents.iterdir()))
 
     def test_validation_failure_rolls_back_before_returning(self):
         with tempfile.TemporaryDirectory() as directory:
             agents = Path(directory)
-            pico_path = agents / installer.POLICY_FILES["pico"]
+            ik_tracking_path = agents / installer.POLICY_FILES["pico"]
             manifest_path = agents / "manifest.json"
-            pico_path.write_bytes(b"old-pico")
+            ik_tracking_path.write_bytes(b"old-policy")
             manifest_path.write_bytes(b"old-manifest")
             with mock.patch.object(
                 installer, "_validate_bundle", side_effect=RuntimeError("bad bundle")
@@ -378,12 +379,12 @@ class PicoPolicyInstallerTest(unittest.TestCase):
                 with self.assertRaisesRegex(RuntimeError, "bad bundle"):
                     installer._publish_bundle(
                         agents_dir=agents,
-                        pico_data=b"new-pico",
+                        ik_tracking_data=b"new-policy",
                         manifest_data=b"new-manifest",
-                        expected_old_pico_sha256=hashlib.sha256(b"old-pico").hexdigest(),
+                        expected_old_ik_tracking_sha256=hashlib.sha256(b"old-policy").hexdigest(),
                         expected_old_manifest_sha256=hashlib.sha256(b"old-manifest").hexdigest(),
                     )
-            self.assertEqual(pico_path.read_bytes(), b"old-pico")
+            self.assertEqual(ik_tracking_path.read_bytes(), b"old-policy")
             self.assertEqual(manifest_path.read_bytes(), b"old-manifest")
             self.assertFalse(any(path.name.startswith(".pico-policy-install") for path in agents.iterdir()))
 

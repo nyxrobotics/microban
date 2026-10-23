@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright 2026 nyxrobotics
 
-"""Independent six-joint PICO controller arm overlay."""
+"""Independent six-joint arm overlay of IK tracking (PICO controller IK targets)."""
 
 from __future__ import annotations
 
@@ -12,26 +12,26 @@ from constants import KP_HARDWARE_NEUTRAL, KP_RL, MOTOR_TO_ID, NEUTRAL_POSE
 from controller import ControllerProtocol
 from moves.move import MotorCommand, Move, MoveState, WholebodyClaim
 from observer import Observation
-from pico_arm_contract import (
-    PICO_ARM_HOME_RAD,
-    PICO_ARM_JOINT_NAMES,
-    PICO_ARM_SIDES,
-    PICO_ARM_SLEW_RATE_RAD_S,
-    parse_pico_arm_joint_target,
+from ik_tracking_arm_contract import (
+    IK_TRACKING_ARM_HOME_RAD,
+    IK_TRACKING_ARM_JOINT_NAMES,
+    IK_TRACKING_ARM_SIDES,
+    IK_TRACKING_ARM_SLEW_RATE_RAD_S,
+    parse_ik_tracking_arm_joint_target,
 )
 
-PICO_ARM_JOINT_ORDER = tuple(
-    name for side in PICO_ARM_SIDES for name in PICO_ARM_JOINT_NAMES[side]
+IK_TRACKING_ARM_JOINT_ORDER = tuple(
+    name for side in IK_TRACKING_ARM_SIDES for name in IK_TRACKING_ARM_JOINT_NAMES[side]
 )
 
 
-class PicoArmTargetHold:
+class IkTrackingArmTargetHold:
     """The six arm servo targets the overlay wrote last (absolute rad).
 
-    One instance is shared by ``PicoArmTrackingMove`` (the writer) and the PICO
-    policy (the reader): the policy observes these targets and holds the arms
-    at them instead of using its own arm outputs, as in training.  The hold
-    starts at HOME and keeps its value when the overlay stops.
+    One instance is shared by ``IkTrackingArmMove`` (the writer) and the IK
+    tracking policy (the reader): the policy observes these targets and holds
+    the arms at them instead of using its own arm outputs, as in training.  The
+    hold starts at HOME and keeps its value when the overlay stops.
     """
 
     def __init__(self) -> None:
@@ -39,7 +39,7 @@ class PicoArmTargetHold:
         self.reset()
 
     def write(self, targets: Mapping[str, float]) -> None:
-        self._targets = {name: float(targets[name]) for name in PICO_ARM_JOINT_ORDER}
+        self._targets = {name: float(targets[name]) for name in IK_TRACKING_ARM_JOINT_ORDER}
 
     def reset(self) -> None:
         self.write(NEUTRAL_POSE)
@@ -48,25 +48,25 @@ class PicoArmTargetHold:
         return dict(self._targets)
 
 
-class PicoArmTrackingMove(Move):
+class IkTrackingArmMove(Move):
     """Overlay bounded controller IK targets after the locomotion actor.
 
     The move deliberately owns only both shoulder pitch/roll and elbow joints.
     Registering it immediately after ``walk`` lets the learned policy continue
     to own all leg joints in both standing and walking states.  A live released
-    right trigger keeps this move active and slews to the exact PICO FK home;
+    right trigger keeps this move active and slews to the exact arm HOME;
     losing the PICO session stops the move and returns to the robot's global
     neutral pose.  Every target it writes is also stored in ``arm_target_hold``
-    for the PICO policy's observation.
+    for the IK tracking policy's observation.
     """
 
     def __init__(
         self,
         controller: ControllerProtocol | None = None,
         *,
-        arm_target_hold: PicoArmTargetHold | None = None,
+        arm_target_hold: IkTrackingArmTargetHold | None = None,
         wholebody_claim: WholebodyClaim | None = None,
-        slew_rate_rad_s: float = PICO_ARM_SLEW_RATE_RAD_S,
+        slew_rate_rad_s: float = IK_TRACKING_ARM_SLEW_RATE_RAD_S,
         neutral_return_duration_s: float = 0.8,
     ) -> None:
         super().__init__()
@@ -80,7 +80,7 @@ class PicoArmTrackingMove(Move):
                 "neutral_return_duration_s must be finite and positive"
             )
         self._controller = controller
-        self._hold = arm_target_hold if arm_target_hold is not None else PicoArmTargetHold()
+        self._hold = arm_target_hold if arm_target_hold is not None else IkTrackingArmTargetHold()
         self._claim = wholebody_claim if wholebody_claim is not None else WholebodyClaim()
         self._slew_rate_rad_s = float(slew_rate_rad_s)
         self._neutral_return_duration_s = float(neutral_return_duration_s)
@@ -91,21 +91,21 @@ class PicoArmTrackingMove(Move):
         self._suspended_for_getup = False
 
     @staticmethod
-    def _pico_home() -> dict[str, float]:
+    def _arm_home() -> dict[str, float]:
         return {
-            name: PICO_ARM_HOME_RAD[side][index]
-            for side in PICO_ARM_SIDES
-            for index, name in enumerate(PICO_ARM_JOINT_NAMES[side])
+            name: IK_TRACKING_ARM_HOME_RAD[side][index]
+            for side in IK_TRACKING_ARM_SIDES
+            for index, name in enumerate(IK_TRACKING_ARM_JOINT_NAMES[side])
         }
 
     @staticmethod
     def _global_neutral() -> dict[str, float]:
-        return {name: float(NEUTRAL_POSE[name]) for name in PICO_ARM_JOINT_ORDER}
+        return {name: float(NEUTRAL_POSE[name]) for name in IK_TRACKING_ARM_JOINT_ORDER}
 
     def _initialize_from_observation(self, obs: Observation) -> None:
         previous = self._last_targets
         targets: dict[str, float] = {}
-        for name in PICO_ARM_JOINT_ORDER:
+        for name in IK_TRACKING_ARM_JOINT_ORDER:
             try:
                 measured = float(
                     obs.robot_state.motor_positions.get(
@@ -138,7 +138,7 @@ class PicoArmTrackingMove(Move):
             self.state = MoveState.ACTIVE
             return
         if self._controller is not None:
-            ids = [MOTOR_TO_ID[name] for name in PICO_ARM_JOINT_ORDER]
+            ids = [MOTOR_TO_ID[name] for name in IK_TRACKING_ARM_JOINT_ORDER]
             self._controller.sync_write_kp(ids, [KP_RL] * len(ids))
         command.target_angles.update(self._last_targets)
         self._hold.write(self._last_targets)
@@ -149,17 +149,17 @@ class PicoArmTrackingMove(Move):
 
     def _desired_live_target(self, obs: Observation) -> dict[str, float]:
         if not obs.user_input.arm_tracking_enabled:
-            return self._pico_home()
+            return self._arm_home()
         try:
-            parsed = parse_pico_arm_joint_target(obs.user_input.arm_joint_target)
+            parsed = parse_ik_tracking_arm_joint_target(obs.user_input.arm_joint_target)
         except (TypeError, ValueError, OverflowError):
             # A custom InputSource cannot bypass the receiver's all-or-nothing
             # validation and leave an earlier arm target latched in this move.
-            return self._pico_home()
+            return self._arm_home()
         return {
             name: parsed[side][index]
-            for side in PICO_ARM_SIDES
-            for index, name in enumerate(PICO_ARM_JOINT_NAMES[side])
+            for side in IK_TRACKING_ARM_SIDES
+            for index, name in enumerate(IK_TRACKING_ARM_JOINT_NAMES[side])
         }
 
     def _write_slew_limited(
@@ -180,7 +180,7 @@ class PicoArmTrackingMove(Move):
         dt = max(0.001, min(0.1, now - previous_time))
         max_step = self._slew_rate_rad_s * dt
 
-        for name in PICO_ARM_JOINT_ORDER:
+        for name in IK_TRACKING_ARM_JOINT_ORDER:
             target = float(desired[name])
             previous = self._last_targets[name]
             difference = target - previous
@@ -213,7 +213,7 @@ class PicoArmTrackingMove(Move):
             # Get-up is registered after this overlay and owns all 18 body
             # joints; whole-body tracking drives the arms too.  Do not change
             # their commands or gains during the hand-off.  Both end at HOME,
-            # so the PICO policy resumes from HOME arms.
+            # so the IK tracking policy resumes from HOME arms.
             self._hold.reset()
             self._last_targets = {}
             self._last_time_s = None
@@ -237,7 +237,7 @@ class PicoArmTrackingMove(Move):
         elapsed = max(0.0, now - self._stop_start_time_s)
         fraction = min(1.0, elapsed / self._neutral_return_duration_s)
         blend = fraction * fraction * (3.0 - 2.0 * fraction)
-        for name in PICO_ARM_JOINT_ORDER:
+        for name in IK_TRACKING_ARM_JOINT_ORDER:
             start = self._stop_start_angles[name]
             target = (
                 desired[name]
@@ -251,8 +251,8 @@ class PicoArmTrackingMove(Move):
 
         if fraction >= 1.0:
             if self._controller is not None:
-                ids = [MOTOR_TO_ID[name] for name in PICO_ARM_JOINT_ORDER]
-                # A learned walking/PICO policy keeps its gain; a static stand
+                ids = [MOTOR_TO_ID[name] for name in IK_TRACKING_ARM_JOINT_ORDER]
+                # A learned walking/IK tracking policy keeps its gain; a static stand
                 # holds at the static gain.
                 gain = KP_RL if "walk" in obs.user_input.active_moves else KP_HARDWARE_NEUTRAL
                 self._controller.sync_write_kp(ids, [gain] * len(ids))

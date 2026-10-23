@@ -1,15 +1,16 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright 2026 nyxrobotics
 
-"""Select the whole-body policy, PICO locomotion or the position hold.
+"""Select the whole-body policy, the IK tracking policy or the position hold.
 
 With the whole-body policy installed (moves/wholebody.py loaded and
 self-tested), it drives the robot the whole time the policy is enabled (R3),
 whatever the wire's ``locomotion_policy``: it stands the robot on its own
 HOME reference and joins the PC's reference when the operator starts it and
 the robot and the operator stand still; when the PC stops or the stream goes
-stale it coasts, returns to HOME and stands again.  The PICO policy does not
-stand the robot then, and the PICO triggers and joystick are not used.
+stale it coasts, returns to HOME and stands again.  The IK tracking policy
+does not stand the robot then, and the PICO triggers and joystick are not
+used.
 ``walk`` on the wire stops tracking and keeps the robot standing.  While it
 runs, the arm overlay (pico_arms) yields (``WholebodyClaim.active``: the
 policy drives the arms); the HMD head move yields only while the PC's
@@ -17,9 +18,9 @@ reference is followed (``WholebodyClaim.neck``: the move drives the neck to
 the reference's neck angles).
 
 A whole-body policy that fails to start or to infer gives the robot to the
-standing policy (PICO when it is installed, else the position hold) until
-the next start (R3, or the hand-back after a get-up); then PICO is selected
-as without the whole-body policy.
+standing policy (IK tracking when it is installed, else the position hold)
+until the next start (R3, or the hand-back after a get-up); then IK tracking
+is selected as without the whole-body policy.
 """
 
 from __future__ import annotations
@@ -33,13 +34,15 @@ from pathlib import Path
 from constants import KP_HARDWARE_NEUTRAL, MOTOR_TO_ID, NEUTRAL_POSE, OBSERVATION_DOF_ORDER
 from controller import ControllerProtocol
 from moves.move import MotorCommand, Move, MoveState, WholebodyClaim
-from moves.pico_arms import PicoArmTargetHold
-from moves.pico_hybrid import AGENT_NAME as PICO_AGENT_NAME
-from moves.pico_hybrid import PicoHybridMove
+from moves.ik_tracking_arms import IkTrackingArmTargetHold
+from moves.ik_tracking import AGENT_NAME as IK_TRACKING_AGENT_NAME
+from moves.ik_tracking import IkTrackingMove
 from moves.wholebody import WholebodyMove
 from observer import Observation
 from wholebody_contract import POLICY_FILE as WHOLEBODY_POLICY_FILE
 
+# The wire's locomotion_policy values.  pico_teleop selects IK tracking; the
+# name stays because the PICO bridge sends it (it also keys that child).
 POLICY_NAMES = frozenset({"walk", "pico_teleop", "wholebody"})
 # Builds the learned move from the installed policy (tests inject their own).
 LearnedMoveFactory = Callable[[ControllerProtocol | None, Path], Move]
@@ -47,9 +50,9 @@ PolicyFingerprint = tuple[int, int, int, int]
 ALL_MOTOR_IDS = list(MOTOR_TO_ID.values())
 
 
-def _pico_hybrid_factory(arm_target_hold: PicoArmTargetHold | None) -> LearnedMoveFactory:
+def _ik_tracking_factory(arm_target_hold: IkTrackingArmTargetHold | None) -> LearnedMoveFactory:
     def build(controller: ControllerProtocol | None, policy_path: Path) -> Move:
-        return PicoHybridMove(
+        return IkTrackingMove(
             controller=controller,
             policy_path=policy_path,
             arm_target_hold=arm_target_hold,
@@ -74,7 +77,7 @@ class _HoldPositionMove(Move):
         self._stop_start_time_s: float | None = None
         self._stop_start_angles: dict[str, float] = {}
         # Set by every start: the hold may take over from GetupMove or from a
-        # failed PICO actor, both of which leave every joint at the soft
+        # failed IK tracking actor, both of which leave every joint at the soft
         # learned-policy gain (KP_RL). A static hold at that gain cannot carry
         # the robot and slowly topples it; a static hold is P900 on all joints.
         self._restore_gain_pending = False
@@ -124,7 +127,7 @@ class _HoldPositionMove(Move):
         if self._restore_gain_pending:
             # First step after the start (the next tick after a get-up handoff,
             # whose on_stop wrote KP_RL and the measured goals; the same tick
-            # after a PICO failure). Re-seed the held goals first, then raise
+            # after an IK tracking failure). Re-seed the held goals first, then raise
             # every joint, the camera joints included, so P900 never acts on an
             # old saturated get-up target.
             self._restore_gain_pending = False
@@ -182,12 +185,12 @@ class PolicySelectableWalkMove(Move):
     def __init__(
         self,
         controller: ControllerProtocol | None = None,
-        pico_policy_path: str | Path = Path("src/agents") / PICO_AGENT_NAME,
+        ik_tracking_policy_path: str | Path = Path("src/agents") / IK_TRACKING_AGENT_NAME,
         *,
         fallback_move: Move | None = None,
-        pico_move: Move | None = None,
+        ik_tracking_move: Move | None = None,
         learned_move_factory: LearnedMoveFactory | None = None,
-        arm_target_hold: PicoArmTargetHold | None = None,
+        arm_target_hold: IkTrackingArmTargetHold | None = None,
         wholebody_reference=None,
         wholebody_policy_path: str | Path = Path("src/agents") / WHOLEBODY_POLICY_FILE,
         wholebody_move: Move | None = None,
@@ -195,17 +198,17 @@ class PolicySelectableWalkMove(Move):
     ) -> None:
         super().__init__()
         self._controller = controller
-        self._pico_policy_path = Path(pico_policy_path)
-        # The PICO policy observes and holds the arm targets the direct-arm
-        # overlay writes into ``arm_target_hold`` (shared with PicoArmTrackingMove).
-        self._learned_move_factory = learned_move_factory or _pico_hybrid_factory(
+        self._ik_tracking_policy_path = Path(ik_tracking_policy_path)
+        # The IK tracking policy observes and holds the arm targets the direct-arm
+        # overlay writes into ``arm_target_hold`` (shared with IkTrackingArmMove).
+        self._learned_move_factory = learned_move_factory or _ik_tracking_factory(
             arm_target_hold
         )
         self._children: dict[str, Move] = {
             "walk": fallback_move or _HoldPositionMove(controller=controller),
         }
-        if pico_move is not None:
-            self._children["pico_teleop"] = pico_move
+        if ik_tracking_move is not None:
+            self._children["pico_teleop"] = ik_tracking_move
         # The whole-body move needs the reference receiver; without one the
         # mode is unavailable (and requesting it stands on the standing policy).
         self._wholebody_reference = wholebody_reference
@@ -219,7 +222,7 @@ class PolicySelectableWalkMove(Move):
         self._selected: Move | None = None
         self._fallback_latched = False
         self._fallback_reason: str | None = None
-        self._last_pico_targets: dict[str, float] | None = None
+        self._last_ik_tracking_targets: dict[str, float] | None = None
         self._last_balance_only = False
 
         self._reload_lock = threading.Lock()
@@ -228,7 +231,7 @@ class PolicySelectableWalkMove(Move):
             PolicyFingerprint, Move | None, BaseException | None
         ] | None = None
         self._loaded_fingerprint: PolicyFingerprint | None = (
-            self._policy_fingerprint() if pico_move is not None else None
+            self._policy_fingerprint() if ik_tracking_move is not None else None
         )
         self._last_attempted_fingerprint: PolicyFingerprint | None = None
 
@@ -250,10 +253,10 @@ class PolicySelectableWalkMove(Move):
 
     def _policy_fingerprint(self) -> PolicyFingerprint | None:
         try:
-            status = self._pico_policy_path.stat()
+            status = self._ik_tracking_policy_path.stat()
         except OSError:
             return None
-        if not self._pico_policy_path.is_file():
+        if not self._ik_tracking_policy_path.is_file():
             return None
         return (status.st_dev, status.st_ino, status.st_size, status.st_mtime_ns)
 
@@ -271,12 +274,12 @@ class PolicySelectableWalkMove(Move):
             if isinstance(self._children["walk"], _HoldPositionMove)
             else "continuing with walk"
         )
-        print(f"PICO teleop fallback: {reason}; {action}", flush=True)
+        print(f"IK tracking fallback: {reason}; {action}", flush=True)
 
     def _build_learned_move(self) -> Move:
         child = self._learned_move_factory(
             self._controller,
-            self._pico_policy_path,
+            self._ik_tracking_policy_path,
         )
         child.preload()
         return child
@@ -332,7 +335,7 @@ class PolicySelectableWalkMove(Move):
         fingerprint = self._policy_fingerprint()
         if fingerprint is None:
             self._fallback_reason = (
-                f"learned policy is not installed at {self._pico_policy_path}"
+                f"learned policy is not installed at {self._ik_tracking_policy_path}"
             )
             return
         self._last_attempted_fingerprint = fingerprint
@@ -355,7 +358,7 @@ class PolicySelectableWalkMove(Move):
         fingerprint = self._policy_fingerprint()
         if fingerprint is None:
             self._fallback_reason = (
-                f"learned policy is not installed at {self._pico_policy_path}"
+                f"learned policy is not installed at {self._ik_tracking_policy_path}"
             )
             return False
         with self._reload_lock:
@@ -371,7 +374,7 @@ class PolicySelectableWalkMove(Move):
             worker = threading.Thread(
                 target=self._reload_worker,
                 args=(fingerprint,),
-                name="pico-policy-reload",
+                name="ik-tracking-policy-reload",
                 daemon=True,
             )
             self._reload_thread = worker
@@ -439,7 +442,7 @@ class PolicySelectableWalkMove(Move):
         self._claim.neck = False
         self.state = MoveState.ACTIVE
 
-    def _remember_pico_targets(self, command: MotorCommand) -> None:
+    def _remember_ik_tracking_targets(self, command: MotorCommand) -> None:
         try:
             targets = {
                 name: float(command.target_angles[name])
@@ -448,7 +451,7 @@ class PolicySelectableWalkMove(Move):
         except (KeyError, TypeError, ValueError, OverflowError):
             return
         if all(math.isfinite(value) for value in targets.values()):
-            self._last_pico_targets = targets
+            self._last_ik_tracking_targets = targets
 
     def _start_fallback(
         self,
@@ -461,7 +464,7 @@ class PolicySelectableWalkMove(Move):
         fallback = self._children["walk"]
         if isinstance(fallback, _HoldPositionMove):
             fallback.seed_targets(
-                self._last_pico_targets
+                self._last_ik_tracking_targets
                 if self._selected_name == "pico_teleop"
                 else None
             )
@@ -498,7 +501,7 @@ class PolicySelectableWalkMove(Move):
         Mirrors on_start's choice: the whole-body policy when it is loaded
         (on_start clears an earlier failure), else a loaded learned policy
         when it is requested and its tracking is not degraded, otherwise the
-        fallback child (the static _HoldPositionMove on the PICO runtime);
+        fallback child (the static _HoldPositionMove of main.py);
         for ``wholebody``, the standing child.  A finished background reload
         is adopted first, exactly as on_start would.
         """
@@ -526,7 +529,7 @@ class PolicySelectableWalkMove(Move):
         self._poll_reload()
         self._notice_replacement()
         self._fallback_latched = False
-        self._last_pico_targets = None
+        self._last_ik_tracking_targets = None
         self._last_balance_only = bool(obs.user_input.balance_only)
         requested = self._requested_policy(obs)
         self._last_learned_targets = None
@@ -548,7 +551,7 @@ class PolicySelectableWalkMove(Move):
 
         if requested == "pico_teleop" and child is None:
             reason = self._fallback_reason or (
-                f"learned policy is unavailable at {self._pico_policy_path}"
+                f"learned policy is unavailable at {self._ik_tracking_policy_path}"
             )
             self._record_fallback(reason)
             self._start_fallback(obs, command, step_now=False)
@@ -558,7 +561,7 @@ class PolicySelectableWalkMove(Move):
         try:
             self._start_child(requested, child, obs, command)
             if requested == "pico_teleop":
-                self._remember_pico_targets(command)
+                self._remember_ik_tracking_targets(command)
         except Exception as exc:
             if requested != "pico_teleop":
                 raise
@@ -622,16 +625,16 @@ class PolicySelectableWalkMove(Move):
                 learned = self._children.get("pico_teleop")
                 if learned is None:
                     reason = self._fallback_reason or (
-                        f"learned policy is unavailable at {self._pico_policy_path}"
+                        f"learned policy is unavailable at {self._ik_tracking_policy_path}"
                     )
                     self._record_fallback(reason)
                 else:
                     try:
-                        self._last_pico_targets = None
+                        self._last_ik_tracking_targets = None
                         self._start_child("pico_teleop", learned, obs, command)
-                        self._remember_pico_targets(command)
+                        self._remember_ik_tracking_targets(command)
                         self._selected.step(obs, command)
-                        self._remember_pico_targets(command)
+                        self._remember_ik_tracking_targets(command)
                         return
                     except Exception as exc:  # noqa: BLE001 - learned child only
                         self._fallback_from_exception(
@@ -648,7 +651,7 @@ class PolicySelectableWalkMove(Move):
 
         try:
             self._selected.step(obs, command)
-            self._remember_pico_targets(command)
+            self._remember_ik_tracking_targets(command)
         except Exception as exc:  # noqa: BLE001 - learned child only
             self._fallback_from_exception(
                 "inference",
@@ -660,9 +663,9 @@ class PolicySelectableWalkMove(Move):
 
     # ------------------------------------------------------------ whole-body mode
     def _standing_child(self) -> tuple[str, Move]:
-        """The policy that stands the robot in whole-body mode: PICO, else the hold."""
-        pico = self._children.get("pico_teleop")
-        return ("pico_teleop", pico) if pico is not None else ("walk", self._children["walk"])
+        """The policy that stands the robot in whole-body mode: IK tracking, else the hold."""
+        ik_tracking = self._children.get("pico_teleop")
+        return ("pico_teleop", ik_tracking) if ik_tracking is not None else ("walk", self._children["walk"])
 
     def _remember_learned_targets(self, command: MotorCommand) -> None:
         try:
@@ -688,7 +691,7 @@ class PolicySelectableWalkMove(Move):
     def _wholebody_failed(self, reason: str) -> None:
         self._fallback_reason = reason
         _, child = self._standing_child()
-        on = "the PICO policy" if child is self._children.get("pico_teleop") else "the position hold"
+        on = "the IK tracking policy" if child is self._children.get("pico_teleop") else "the position hold"
         print(f"Whole-body policy failed: {reason}; standing on {on} until the next start", flush=True)
 
     def _step_wholebody(self, obs: Observation, command: MotorCommand, requested: str) -> None:
@@ -723,7 +726,7 @@ class PolicySelectableWalkMove(Move):
         if self._selected is None:
             self.state = MoveState.INACTIVE
             self._fallback_latched = False
-            self._last_pico_targets = None
+            self._last_ik_tracking_targets = None
             self._last_balance_only = False
             return
         if self._selected.state != MoveState.STOPPING:
@@ -739,13 +742,13 @@ class PolicySelectableWalkMove(Move):
             self._selected = None
             self._selected_name = None
             self._fallback_latched = False
-            self._last_pico_targets = None
+            self._last_ik_tracking_targets = None
             self._last_balance_only = False
             self.state = MoveState.INACTIVE
         else:
             self.state = MoveState.STOPPING
 
     def on_safety_resume(self, obs: Observation) -> None:
-        self._last_pico_targets = None
+        self._last_ik_tracking_targets = None
         if self._selected is not None:
             self._selected.on_safety_resume(obs)

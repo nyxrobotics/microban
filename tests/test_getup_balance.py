@@ -934,7 +934,7 @@ class _BalancingChild(Move):
 
 
 class CanBalanceTest(unittest.TestCase):
-    missing = Path(tempfile.gettempdir()) / "missing_pico_policy_for_balance.onnx"
+    missing = Path(tempfile.gettempdir()) / "missing_ik_tracking_policy_for_balance.onnx"
 
     def test_base_move_cannot_balance(self):
         self.assertFalse(FakeGetup().can_balance(UserInput()))
@@ -943,14 +943,14 @@ class CanBalanceTest(unittest.TestCase):
         self.assertFalse(_HoldPositionMove(controller=None).can_balance(UserInput()))
 
     def test_selector_without_policy_falls_back_to_hold(self):
-        move = PolicySelectableWalkMove(controller=None, pico_policy_path=self.missing)
+        move = PolicySelectableWalkMove(controller=None, ik_tracking_policy_path=self.missing)
         move.preload()
         self.assertFalse(move.can_balance(UserInput(locomotion_policy="pico_teleop")))
         self.assertFalse(move.can_balance(UserInput(locomotion_policy="walk")))
 
     def test_selector_with_loaded_policy_balances_only_when_selected(self):
         move = PolicySelectableWalkMove(
-            controller=None, pico_policy_path=self.missing, pico_move=_BalancingChild()
+            controller=None, ik_tracking_policy_path=self.missing, ik_tracking_move=_BalancingChild()
         )
         self.assertTrue(move.can_balance(UserInput(locomotion_policy="pico_teleop")))
         self.assertFalse(move.can_balance(UserInput(locomotion_policy="walk")))

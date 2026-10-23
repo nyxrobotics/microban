@@ -32,7 +32,7 @@ running with the last operation. Before the first authenticated packet or after
 the allowed sender changes, read() holds the motor goals and torque state.
 A new bridge session still requires a released-trigger snapshot (``"walk"``
 absent) before walking can arm.
-Hybrid ``pico_teleop`` walk snapshots use fixed policy-session calibration
+IK tracking (``pico_teleop``) walk snapshots use fixed policy-session calibration
 foot offsets in the robot's HOME-levelled trunk frame, in metres: the trunk
 frame with HOME's forward lean rotated out, R_trunk * R_y(-HOME_TRUNK_PITCH_RAD),
 which at HOME is gravity level (+X forward, +Y left, +Z up; the plain trunk
@@ -43,9 +43,10 @@ After the bridge projects a support foot into its floor band, two active foot
 offsets use the narrower simultaneous-foot envelope and require an exactly zero
 twist command.
 Invalid feet are dropped without clearing the ``pico_teleop`` policy, trigger,
-arms and joystick command; missing feet become zero offsets.  The PICO policy
-observes the arm targets the robot itself writes (``moves/pico_arms.py``), so
-no policy hand or arm target travels on the wire.
+arms and joystick command; missing feet become zero offsets.  The IK tracking
+policy observes the arm targets the robot itself writes
+(``moves/ik_tracking_arms.py``), so no policy hand or arm target travels on the
+wire.
 
 A second, unrelated packet shape is a stateless bridge-side latency probe,
 handled before session/sequence validation and never touching UserInput:
@@ -70,28 +71,30 @@ import threading
 import time
 
 from input.input_source import InputSource, UserInput
-from pico_arm_contract import (
-    PICO_ARM_HOME_RAD,
-    PICO_ARM_SIDES,
-    parse_pico_arm_joint_target,
+from ik_tracking_arm_contract import (
+    IK_TRACKING_ARM_HOME_RAD,
+    IK_TRACKING_ARM_SIDES,
+    parse_ik_tracking_arm_joint_target,
 )
 
+# pico_arms (the IK tracking arm overlay) and pico_teleop (the IK tracking
+# policy) are the names the PICO bridge sends; they stay to match it.
 _NETWORK_MOVES = frozenset({"walk", "hmd_head", "pico_arms"})
 _LOCOMOTION_POLICIES = frozenset({"walk", "pico_teleop", "wholebody"})
-_PICO_BODY_TARGET_CONTRACT = "microban_pico_offsets_v3_feet_arm_overlay"
-_PICO_BODY_TARGET_SAFETY_MARGIN = 0.8
-_PICO_SUPPORT_FOOT_FLOOR_BAND_M = 0.0025
-_PICO_FOOT_TARGET_LOWER = tuple(
-    value * _PICO_BODY_TARGET_SAFETY_MARGIN for value in (-0.03, -0.03, 0.0)
+_IK_TRACKING_BODY_TARGET_CONTRACT = "microban_pico_offsets_v3_feet_arm_overlay"
+_IK_TRACKING_BODY_TARGET_SAFETY_MARGIN = 0.8
+_IK_TRACKING_SUPPORT_FOOT_FLOOR_BAND_M = 0.0025
+_IK_TRACKING_FOOT_TARGET_LOWER = tuple(
+    value * _IK_TRACKING_BODY_TARGET_SAFETY_MARGIN for value in (-0.03, -0.03, 0.0)
 )
-_PICO_FOOT_TARGET_UPPER = tuple(
-    value * _PICO_BODY_TARGET_SAFETY_MARGIN for value in (0.03, 0.03, 0.05)
+_IK_TRACKING_FOOT_TARGET_UPPER = tuple(
+    value * _IK_TRACKING_BODY_TARGET_SAFETY_MARGIN for value in (0.03, 0.03, 0.05)
 )
-_PICO_SIMULTANEOUS_BOTH_FEET_LOWER = tuple(
-    value * _PICO_BODY_TARGET_SAFETY_MARGIN for value in (-0.01, -0.01, 0.0)
+_IK_TRACKING_SIMULTANEOUS_BOTH_FEET_LOWER = tuple(
+    value * _IK_TRACKING_BODY_TARGET_SAFETY_MARGIN for value in (-0.01, -0.01, 0.0)
 )
-_PICO_SIMULTANEOUS_BOTH_FEET_UPPER = tuple(
-    value * _PICO_BODY_TARGET_SAFETY_MARGIN for value in (0.01, 0.01, 0.02)
+_IK_TRACKING_SIMULTANEOUS_BOTH_FEET_UPPER = tuple(
+    value * _IK_TRACKING_BODY_TARGET_SAFETY_MARGIN for value in (0.01, 0.01, 0.02)
 )
 
 
@@ -160,7 +163,7 @@ def _target_pair_in_bounds(
     return True
 
 
-def _matches_pico_safety_margin(value) -> bool:
+def _matches_ik_tracking_safety_margin(value) -> bool:
     if not isinstance(value, (int, float)) or isinstance(value, bool):
         return False
     try:
@@ -169,7 +172,7 @@ def _matches_pico_safety_margin(value) -> bool:
         return False
     return (
         math.isfinite(numeric_value)
-        and numeric_value == _PICO_BODY_TARGET_SAFETY_MARGIN
+        and numeric_value == _IK_TRACKING_BODY_TARGET_SAFETY_MARGIN
     )
 
 
@@ -195,8 +198,8 @@ def _simultaneous_both_feet_valid(
         return False
     return _target_pair_in_bounds(
         foot_target,
-        _PICO_SIMULTANEOUS_BOTH_FEET_LOWER,
-        _PICO_SIMULTANEOUS_BOTH_FEET_UPPER,
+        _IK_TRACKING_SIMULTANEOUS_BOTH_FEET_LOWER,
+        _IK_TRACKING_SIMULTANEOUS_BOTH_FEET_UPPER,
     )
 
 
@@ -211,7 +214,7 @@ def _support_foot_floor_projection_valid(
         vector = foot_target.get(side)
         if vector is None:
             return False
-        if vector[2] <= _PICO_SUPPORT_FOOT_FLOOR_BAND_M and vector != (
+        if vector[2] <= _IK_TRACKING_SUPPORT_FOOT_FLOOR_BAND_M and vector != (
             0.0,
             0.0,
             0.0,
@@ -542,8 +545,8 @@ class NetworkInputSource(InputSource):
         locomotion_policy = packet.get("locomotion_policy", "walk")
         if locomotion_policy not in _LOCOMOTION_POLICIES:
             raise ValueError("unsupported locomotion_policy")
-        incoming_pico_packet = locomotion_policy == "pico_teleop"
-        pico_walk_requested = incoming_pico_packet and "walk" in requested_moves
+        incoming_ik_tracking_packet = locomotion_policy == "pico_teleop"
+        ik_tracking_walk_requested = incoming_ik_tracking_packet and "walk" in requested_moves
 
         orientation = packet.get("head_orientation")
         if orientation is not None:
@@ -607,12 +610,12 @@ class NetworkInputSource(InputSource):
         try:
             if not isinstance(arm_tracking_enabled, bool):
                 raise TypeError("arm_tracking_enabled must be boolean")
-            parsed_arm_joint_target = parse_pico_arm_joint_target(
+            parsed_arm_joint_target = parse_ik_tracking_arm_joint_target(
                 packet.get("arm_joint_target")
             )
             if not arm_tracking_enabled and any(
-                parsed_arm_joint_target[side] != PICO_ARM_HOME_RAD[side]
-                for side in PICO_ARM_SIDES
+                parsed_arm_joint_target[side] != IK_TRACKING_ARM_HOME_RAD[side]
+                for side in IK_TRACKING_ARM_SIDES
             ):
                 raise ValueError(
                     "released arm tracking requires the exact authenticated HOME target"
@@ -628,10 +631,10 @@ class NetworkInputSource(InputSource):
             foot_target = packet.get("foot_target")
             if foot_target is not None:
                 if not isinstance(foot_target, dict) or (
-                    incoming_pico_packet
+                    incoming_ik_tracking_packet
                     and set(foot_target) != {"left", "right"}
                 ):
-                    # The exact-two-keys contract only matters for pico_teleop
+                    # The exact-two-keys contract only matters for IK tracking
                     # (foot_target is otherwise meaningless): a plain "walk"
                     # sender's odd-shaped foot_target must not discard its
                     # velocity/joystick command over an irrelevant field.
@@ -646,32 +649,32 @@ class NetworkInputSource(InputSource):
             else:
                 parsed_foot_target = None
         except (IndexError, TypeError, ValueError, OverflowError):
-            if not incoming_pico_packet:
+            if not incoming_ik_tracking_packet:
                 raise
             parsed_foot_target = None
 
-        pico_metadata_valid = packet.get(
+        ik_tracking_metadata_valid = packet.get(
             "body_target_contract"
-        ) == _PICO_BODY_TARGET_CONTRACT and _matches_pico_safety_margin(
+        ) == _IK_TRACKING_BODY_TARGET_CONTRACT and _matches_ik_tracking_safety_margin(
             packet.get("body_target_safety_margin")
         )
-        pico_arm_requested = "pico_arms" in requested_moves
-        pico_arm_snapshot_valid = (
-            incoming_pico_packet
-            and pico_metadata_valid
-            and pico_arm_requested
+        ik_tracking_arms_requested = "pico_arms" in requested_moves
+        ik_tracking_arm_snapshot_valid = (
+            incoming_ik_tracking_packet
+            and ik_tracking_metadata_valid
+            and ik_tracking_arms_requested
             and arm_fields_present
             and arm_payload_valid
             and parsed_arm_joint_target is not None
         )
-        if not pico_walk_requested or not pico_metadata_valid:
+        if not ik_tracking_walk_requested or not ik_tracking_metadata_valid:
             parsed_foot_target = None
         else:
             if parsed_foot_target is not None and not (
                 _target_pair_in_bounds(
                     parsed_foot_target,
-                    _PICO_FOOT_TARGET_LOWER,
-                    _PICO_FOOT_TARGET_UPPER,
+                    _IK_TRACKING_FOOT_TARGET_LOWER,
+                    _IK_TRACKING_FOOT_TARGET_UPPER,
                 )
                 and _support_foot_floor_projection_valid(parsed_foot_target)
                 and _simultaneous_both_feet_valid(
@@ -690,12 +693,13 @@ class NetworkInputSource(InputSource):
             parsed_foot_target = None
             arm_tracking_enabled = False
             parsed_arm_joint_target = None
-            pico_arm_requested = False
-            pico_arm_snapshot_valid = False
+            ik_tracking_arms_requested = False
+            ik_tracking_arm_snapshot_valid = False
 
         # R3 keeps the selected standing actor active at zero velocity even
-        # while the left trigger is released. PICO arm authentication remains
-        # independent; a PICO request must not silently select plain walk.
+        # while the left trigger is released. IK tracking arm authentication
+        # remains independent; an IK tracking request must not silently select
+        # plain walk.
         balance_only = bool(policy_enabled and "walk" not in requested_moves)
         if balance_only:
             requested_moves.add("walk")
@@ -764,13 +768,13 @@ class NetworkInputSource(InputSource):
 
             if self._motion_inhibited:
                 pass
-            elif not pico_arm_requested:
-                # Non-PICO snapshots do not own the overlay and cannot
-                # implicitly arm a later right-trigger press.
+            elif not ik_tracking_arms_requested:
+                # Snapshots without the IK tracking arms do not own the overlay
+                # and cannot implicitly arm a later right-trigger press.
                 self._arm_armed = False
                 arm_tracking_enabled = False
                 parsed_arm_joint_target = None
-            elif not pico_arm_snapshot_valid:
+            elif not ik_tracking_arm_snapshot_valid:
                 # Clear the complete arm channel atomically.  In particular,
                 # never keep one valid side or a previous target after a bad
                 # packet.
@@ -780,7 +784,7 @@ class NetworkInputSource(InputSource):
                 parsed_arm_joint_target = None
             elif not arm_tracking_enabled:
                 # A valid released snapshot keeps the overlay active at the
-                # exact PICO home and arms the next physical press.
+                # exact arm HOME and arms the next physical press.
                 self._arm_armed = True
             elif not self._arm_armed:
                 requested_moves.discard("pico_arms")

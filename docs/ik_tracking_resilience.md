@@ -1,17 +1,17 @@
-# PICO teleop degraded-operation contract
+# IK tracking degraded-operation contract
 
-The PICO actor provides locomotion and R3 balance. The robot's `walk` move name
-routes through `PolicySelectableWalkMove`. If the PICO actor cannot run, the
-selector holds its last complete joint goals. At startup, before a PICO goal
-exists, it holds the measured pose.
+The IK tracking actor provides locomotion and R3 balance. The robot's `walk`
+move name routes through `PolicySelectableWalkMove`. If the IK tracking actor
+cannot run, the selector holds its last complete joint goals. At startup,
+before an IK tracking goal exists, it holds the measured pose.
 
 | Condition | Same-cycle result | Recovery |
 |---|---|---|
 | Camera stale/missing, calibration/FOV/IPD invalid | View may fall back to passthrough; locomotion is unchanged | Camera can recover independently |
 | Optional foot targets missing, malformed, stale, or outside the wire envelope | Use zero offsets for missing feet; preserve left trigger, arms and joystick velocity | Valid tracking can resume without restarting the gait |
 | Head tracking unavailable | Ignore that head pose; keep buttons, sticks, arms, and locomotion independent | Head tracking resumes when a valid pose arrives |
-| PICO ONNX absent, rejected, or unable to start | Hold the last complete joint goals, or the measured pose if none were produced | Atomic replacement is loaded in the background and can be selected on a later activation |
-| PICO inference fails or produces an unusable target | Hold the last complete PICO goals in the faulting control cycle | Keep the hold latched until locomotion is released and activated again |
+| IK tracking ONNX absent, rejected, or unable to start | Hold the last complete joint goals, or the measured pose if none were produced | Atomic replacement is loaded in the background and can be selected on a later activation |
+| IK tracking inference fails or produces an unusable target | Hold the last complete IK tracking goals in the faulting control cycle | Keep the hold latched until locomotion is released and activated again |
 | Left X / primary button changes | No locomotion effect; bridge keeps requesting `pico_teleop` | Left trigger enables walking; R3 enables zero-velocity balance |
 | PICO controller samples or PC-to-robot UDP packets stop | Replay the last authenticated operator state, including motion, policy and torque state | Fresh input replaces that state when it arrives; a sender-authority change requires a new released-trigger snapshot |
 | IMU becomes unavailable | Keep the previous motor goals and torque while policy output is inhibited | Valid IMU input allows the normal motion gate to resume |
@@ -21,7 +21,7 @@ exists, it holds the measured pose.
 After an automatic get-up, tracking does not resume on its own while the
 operator keeps holding the triggers: the get-up actor keeps balancing. Release
 the left trigger once after the robot is upright to hand the legs back to the
-PICO policy (it takes over at zero velocity), and the right trigger for the
+IK tracking policy (it takes over at zero velocity), and the right trigger for the
 arm and head tracking; a release while the robot is still getting up does not
 count. When
 `src/agents/pico_teleop.onnx` fails its contract or startup self-test
@@ -31,7 +31,7 @@ switched off, and a policy package of the current contract must be installed
 to restore tracking.
 
 An explicit B press turns torque off. A changes to the neutral-return mode; R3
-selects the PICO policy for balance even with the left trigger released. Missing
+selects the IK tracking policy for balance even with the left trigger released. Missing
 tracking data and packet gaps do not synthesize A or B events. Before the first
 authenticated operator snapshot, the hardware gate stays in its startup state.
 The A/B servo-bus command is a broadcast sync-write. Because that packet has no

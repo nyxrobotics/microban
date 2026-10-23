@@ -12,7 +12,7 @@ fields) and runs its self-test in ONNX Runtime (CPU), then writes
 ``wholebody.onnx`` and ``wholebody_manifest.json`` into the agents directory,
 each atomically (the ONNX first: a manifest that names another file is
 refused at start) and loads the installed pair as the robot does.  The
-walk/get-up/PICO files and their manifest are not touched.  A trial export
+walk/get-up/IK tracking files and their manifest are not touched.  A trial export
 (``dry_run_not_deployable``) installs only with MICROBAN_ALLOW_DRYRUN_POLICY=1
 and then also runs only with it.
 """

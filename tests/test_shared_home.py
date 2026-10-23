@@ -16,7 +16,7 @@ from input.input_source import UserInput
 from moves.getup import GetupMove
 from moves.move import MotorCommand
 from observer import Observation, RobotState
-from pico_arm_contract import PICO_ARM_HOME_RAD, PICO_ARM_JOINT_NAMES
+from ik_tracking_arm_contract import IK_TRACKING_ARM_HOME_RAD, IK_TRACKING_ARM_JOINT_NAMES
 from policy_fixtures import (
     ACTION_COUNT,
     GETUP_OBS_WIDTH,
@@ -37,9 +37,9 @@ class SharedHomeTest(unittest.TestCase):
         self.assertEqual(SERVO_TARGET_RANGE_RAD, math.pi)
 
     def test_every_runtime_copy_derives_from_neutral_pose(self):
-        for side, names in PICO_ARM_JOINT_NAMES.items():
+        for side, names in IK_TRACKING_ARM_JOINT_NAMES.items():
             self.assertEqual(
-                PICO_ARM_HOME_RAD[side], tuple(NEUTRAL_POSE[name] for name in names)
+                IK_TRACKING_ARM_HOME_RAD[side], tuple(NEUTRAL_POSE[name] for name in names)
             )
 
 

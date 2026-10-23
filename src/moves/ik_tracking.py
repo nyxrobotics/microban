@@ -1,25 +1,26 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright 2026 nyxrobotics
 
-"""Runtime for the Microban PICO hybrid teleoperation policy.
+"""Runtime for the Microban IK tracking policy.
 
-The PICO policy observes all 21 encoders, the locomotion command, the PICO
-foot targets and the six arm servo targets of the direct-arm overlay (81
-values).  It drives the 12 leg joints with the raw-action rule every Microban
-policy shares: target = clip(HOME + raw, -pi, +pi), the raw output of all 18
-body joints fed back as the previous action.  The arms are never driven by the
-policy: they hold the overlay's last targets (``PicoArmTargetHold``), which the
-overlay then overwrites in the same cycle while it runs, exactly as in
-training.  On a two-foot target the legs work around its crouch pose
-(crouch_feedforward, the training's code): the leg targets are
-clip(HOME + offset + raw, -pi, +pi) and the policy observes the leg joints
-minus HOME and the same offset; the previous action stays the raw output.
+The IK tracking policy observes all 21 encoders, the locomotion command, the
+foot targets of the PICO bridge and the six arm servo targets of the
+direct-arm overlay (81 values).  It drives the 12 leg joints with the
+raw-action rule every Microban policy shares: target = clip(HOME + raw, -pi,
++pi), the raw output of all 18 body joints fed back as the previous action.
+The arms are never driven by the policy: they hold the overlay's last targets
+(``IkTrackingArmTargetHold``), which the overlay then overwrites in the same
+cycle while it runs, exactly as in training.  On a two-foot target the legs
+work around its crouch pose (crouch_feedforward, the training's code): the
+leg targets are clip(HOME + offset + raw, -pi, +pi) and the policy observes
+the leg joints minus HOME and the same offset; the previous action stays the
+raw output.
 The offset in use follows the target offset of the received foot targets at
 a bounded rate per policy step (``crouch_feedforward.follow``), from zero at
 the start: the observation uses the offset the same cycle's action keeps.
 Its contract (src/policy_contract.py)
 is checked before any torque is used; an unusable output raises
-``PicoHybridPolicyRuntimeError`` before any target is written so the selector
+``IkTrackingPolicyRuntimeError`` before any target is written so the selector
 can hold the body in the same control cycle.
 """
 
@@ -43,7 +44,7 @@ from constants import (
 )
 from controller import ControllerProtocol
 from moves.move import MotorCommand, Move, MoveState
-from moves.pico_arms import PICO_ARM_JOINT_ORDER, PicoArmTargetHold
+from moves.ik_tracking_arms import IK_TRACKING_ARM_JOINT_ORDER, IkTrackingArmTargetHold
 from observer import Observation
 from policy_contract import (
     ACTION_WIDTH,
@@ -64,7 +65,7 @@ SUPPORT_FOOT_FLOOR_BAND_M = 0.0025
 ALL_MOTOR_IDS = list(MOTOR_TO_ID.values())
 
 
-class PicoHybridPolicyRuntimeError(RuntimeError):
+class IkTrackingPolicyRuntimeError(RuntimeError):
     """Inference produced a result that is unsafe to send to actuators."""
 
 
@@ -72,12 +73,12 @@ def _bounded_targets(
     values: Sequence[float], lower: Sequence[float], upper: Sequence[float]
 ) -> list[float]:
     if len(values) != len(lower) or len(lower) != len(upper):
-        raise PicoHybridPolicyRuntimeError("body target has the wrong width")
+        raise IkTrackingPolicyRuntimeError("body target has the wrong width")
     result: list[float] = []
     for value, lo, hi in zip(values, lower, upper):
         numeric = float(value)
         if not math.isfinite(numeric):
-            raise PicoHybridPolicyRuntimeError(
+            raise IkTrackingPolicyRuntimeError(
                 "body target contains a non-finite value"
             )
         # Clipping at the policy's training support is safer than extrapolating a
@@ -92,8 +93,8 @@ def _raw_imu_gyro(gyro_sensor_xyz: Sequence[float]) -> Sequence[float]:
     return gyro_sensor_xyz
 
 
-class PicoHybridMove(Move):
-    """Run the 81-observation PICO policy.
+class IkTrackingMove(Move):
+    """Run the 81-observation IK tracking policy.
 
     The ``hmd_head`` move continues to own the head/neck targets.  This move
     owns exactly ``OBSERVATION_DOF_ORDER`` (the arms at the held overlay
@@ -109,12 +110,12 @@ class PicoHybridMove(Move):
         *,
         session: Any | None = None,
         gyro_transform: Callable[[Sequence[float]], Sequence[float]] | None = None,
-        arm_target_hold: PicoArmTargetHold | None = None,
+        arm_target_hold: IkTrackingArmTargetHold | None = None,
     ) -> None:
         super().__init__()
         self._controller = controller
         self._arm_target_hold = (
-            arm_target_hold if arm_target_hold is not None else PicoArmTargetHold()
+            arm_target_hold if arm_target_hold is not None else IkTrackingArmTargetHold()
         )
         self._neutral_return_duration_s = neutral_return_duration_s
         if session is None:
@@ -128,10 +129,10 @@ class PicoHybridMove(Move):
             # here; load_installed_policy is the deployment path.
             contract = parse_policy("pico", session)
             self._self_test_rows = 0
-        assert contract.pico is not None
+        assert contract.ik_tracking is not None
         self._session = session
         self._contract = contract
-        self._targets = contract.pico
+        self._targets = contract.ik_tracking
         self._gyro_transform = gyro_transform or _raw_imu_gyro
         self._observation_defaults = tuple(
             float(NEUTRAL_POSE[name]) for name in contract.observation_joint_names
@@ -165,7 +166,7 @@ class PicoHybridMove(Move):
     def _physical_target(value: float) -> float:
         numeric = float(value)
         if not math.isfinite(numeric):
-            raise PicoHybridPolicyRuntimeError(
+            raise IkTrackingPolicyRuntimeError(
                 "physical motor target became non-finite"
             )
         return numeric
@@ -180,11 +181,11 @@ class PicoHybridMove(Move):
                     obs.robot_state.motor_positions.get(name, NEUTRAL_POSE[name])
                 )
             except (TypeError, ValueError, OverflowError) as exc:
-                raise PicoHybridPolicyRuntimeError(
+                raise IkTrackingPolicyRuntimeError(
                     f"motor position for {name} is not numeric"
                 ) from exc
             if not math.isfinite(value):
-                raise PicoHybridPolicyRuntimeError(
+                raise IkTrackingPolicyRuntimeError(
                     f"motor position for {name} is non-finite"
                 )
             positions[name] = value
@@ -209,7 +210,7 @@ class PicoHybridMove(Move):
         for start in (0, 3):
             vector = tuple(float(value) for value in foot_values[start : start + 3])
             if vector[2] <= SUPPORT_FOOT_FLOOR_BAND_M and vector != (0.0, 0.0, 0.0):
-                raise PicoHybridPolicyRuntimeError(
+                raise IkTrackingPolicyRuntimeError(
                     "support-foot floor-band target must be exact XYZ zero"
                 )
         active_feet = [
@@ -229,14 +230,14 @@ class PicoHybridMove(Move):
                 value < live_lower[index] or value > live_upper[index]
                 for index, value in enumerate(foot_values)
             ):
-                raise PicoHybridPolicyRuntimeError(
+                raise IkTrackingPolicyRuntimeError(
                     "simultaneous foot targets exceed their conservative live bound"
                 )
             if any(
                 float(obs.user_input.velocity[axis]) != 0.0
                 for axis in ("vx", "vy", "vtheta")
             ):
-                raise PicoHybridPolicyRuntimeError(
+                raise IkTrackingPolicyRuntimeError(
                     "simultaneous foot targets require zero locomotion command"
                 )
         return _bounded_targets(
@@ -248,7 +249,7 @@ class PicoHybridMove(Move):
 
         held = self._arm_target_hold.targets()
         return _bounded_targets(
-            [held[name] - float(NEUTRAL_POSE[name]) for name in PICO_ARM_JOINT_ORDER],
+            [held[name] - float(NEUTRAL_POSE[name]) for name in IK_TRACKING_ARM_JOINT_ORDER],
             self._targets.arm_lower,
             self._targets.arm_upper,
         )
@@ -272,12 +273,12 @@ class PicoHybridMove(Move):
                 float(value) for value in self._gyro_transform(obs.robot_state.gyro)
             ]
         except (TypeError, ValueError, OverflowError) as exc:
-            raise PicoHybridPolicyRuntimeError(
+            raise IkTrackingPolicyRuntimeError(
                 "failed to map gyro to the policy frame"
             ) from exc
         gravity = [float(value) for value in obs.robot_state.projected_gravity]
         if len(gyro_policy) != 3 or len(gravity) != 3:
-            raise PicoHybridPolicyRuntimeError(
+            raise IkTrackingPolicyRuntimeError(
                 "gyro and projected gravity must be 3-vectors"
             )
 
@@ -301,7 +302,7 @@ class PicoHybridMove(Move):
         if len(values) != OBSERVATION_WIDTH or not all(
             math.isfinite(value) for value in values
         ):
-            raise PicoHybridPolicyRuntimeError(
+            raise IkTrackingPolicyRuntimeError(
                 f"unsafe policy observation (width={len(values)})"
             )
         return values
@@ -313,7 +314,7 @@ class PicoHybridMove(Move):
         if len(gravity) != 3 or not all(
             math.isfinite(float(value)) for value in gravity
         ):
-            raise PicoHybridPolicyRuntimeError("projected gravity is invalid")
+            raise IkTrackingPolicyRuntimeError("projected gravity is invalid")
         if float(gravity[2]) > -0.5:
             measured_positions = self._measured_action_positions(obs)
             for name in OBSERVATION_DOF_ORDER:
@@ -327,21 +328,21 @@ class PicoHybridMove(Move):
         with np.errstate(over="ignore", invalid="ignore"):
             policy_input = np.asarray([observation], dtype=np.float32)
         if not np.isfinite(policy_input).all():
-            raise PicoHybridPolicyRuntimeError(
+            raise IkTrackingPolicyRuntimeError(
                 "policy observation is not finite in float32"
             )
         outputs = self._session.run(None, {self._contract.input_name: policy_input})
         if len(outputs) != 1:
-            raise PicoHybridPolicyRuntimeError("policy returned more than one output")
+            raise IkTrackingPolicyRuntimeError("policy returned more than one output")
         try:
             action = np.asarray(outputs[0], dtype=np.float64)
             finite = bool(np.isfinite(action).all())
         except (TypeError, ValueError, OverflowError) as exc:
-            raise PicoHybridPolicyRuntimeError(
+            raise IkTrackingPolicyRuntimeError(
                 "policy returned a non-numeric output"
             ) from exc
         if action.shape != (1, ACTION_WIDTH) or not finite:
-            raise PicoHybridPolicyRuntimeError(
+            raise IkTrackingPolicyRuntimeError(
                 f"unsafe policy output shape/value: {action.shape}"
             )
         # No actor transform: the same raw float32 action recurs in the next
@@ -355,7 +356,7 @@ class PicoHybridMove(Move):
         with np.errstate(over="ignore", invalid="ignore"):
             raw_action = action[0].astype(np.float32)
         if not np.isfinite(raw_action).all():
-            raise PicoHybridPolicyRuntimeError("raw action is not finite in float32")
+            raise IkTrackingPolicyRuntimeError("raw action is not finite in float32")
         for index, (name, raw_value, absolute_maximum) in enumerate(
             zip(
                 OBSERVATION_DOF_ORDER,
@@ -365,7 +366,7 @@ class PicoHybridMove(Move):
             )
         ):
             if abs(float(raw_value)) > absolute_maximum:
-                raise PicoHybridPolicyRuntimeError(
+                raise IkTrackingPolicyRuntimeError(
                     "raw action escaped the recorded finite-amplitude guard "
                     f"for {name} at action index {index}"
                 )
@@ -374,14 +375,14 @@ class PicoHybridMove(Move):
             for index, name in enumerate(OBSERVATION_DOF_ORDER)
         ]
         if not all(math.isfinite(target) for target in targets):
-            raise PicoHybridPolicyRuntimeError("raw action produced a non-finite target")
+            raise IkTrackingPolicyRuntimeError("raw action produced a non-finite target")
         for name, target in zip(OBSERVATION_DOF_ORDER, targets, strict=True):
             command.target_angles[name] = self._physical_target(
                 max(-SERVO_TARGET_RANGE_RAD, min(SERVO_TARGET_RANGE_RAD, target))
             )
         # The arm outputs only recur in the next observation; the arms hold the
         # overlay targets the policy observed (as in training).
-        for name, value in zip(PICO_ARM_JOINT_ORDER, arm_targets, strict=True):
+        for name, value in zip(IK_TRACKING_ARM_JOINT_ORDER, arm_targets, strict=True):
             command.target_angles[name] = self._physical_target(
                 float(NEUTRAL_POSE[name]) + value
             )

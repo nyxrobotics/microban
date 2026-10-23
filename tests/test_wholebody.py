@@ -40,7 +40,7 @@ from input.wholebody_reference import (
 from moves.move import MotorCommand, Move, MoveState
 from moves.hmd_head import HmdHeadTrackingMove
 from moves.move import WholebodyClaim
-from moves.pico_arms import PicoArmTrackingMove
+from moves.ik_tracking_arms import IkTrackingArmMove
 from moves.policy_selector import PolicySelectableWalkMove
 from moves.wholebody import (
     COAST_S,
@@ -164,12 +164,12 @@ class ContractTest(unittest.TestCase):
                 [[[0.0] * wc.OBSERVATION_WIDTH] * 10] * 8)},
             "too few rows": {"self_test_histories_json": json.dumps([[home_frame()] * 10] * 7),
                              "self_test_actions_json": json.dumps([[0.0] * 18] * 7)},
-            "the PICO input name": {},
+            "the microban-policy-1 input name": {},
         }
         for name, override in cases.items():
             with self.subTest(name):
                 session = Session(metadata(**override))
-                if name == "the PICO input name":
+                if name == "the microban-policy-1 input name":
                     session.get_inputs = lambda: [SimpleNamespace(name="obs", shape=[1, 10, 118])]
                 with self.assertRaises(PolicyContractError):
                     wc.parse_wholebody_policy(session)
@@ -643,7 +643,7 @@ class OverlayYieldTest(unittest.TestCase):
 
     def test_arms_yield_to_the_policy_and_the_neck_to_the_pcs_reference(self):
         claim = WholebodyClaim(active=True)
-        arms = PicoArmTrackingMove(wholebody_claim=claim)
+        arms = IkTrackingArmMove(wholebody_claim=claim)
         head = HmdHeadTrackingMove(wholebody_claim=claim)
         obs = tick_obs(0.0, moves=("walk", "pico_arms", "hmd_head"))
         obs.user_input.head_orientation = {"roll": 0.0, "pitch": 0.0, "yaw": 0.8}
@@ -692,13 +692,13 @@ class StandingMove(Move):
 
 
 class SelectorTest(unittest.TestCase):
-    """With the whole-body policy installed it stands the robot from R3 on; the PICO policy is not started."""
+    """With the whole-body policy installed it stands the robot from R3 on; the IK tracking policy is not started."""
 
     def selector(self, claim=None):
         ref = FakeReceiver()
         move = WholebodyMove(ref, session=Session(metadata()))
         standing = StandingMove()
-        selector = PolicySelectableWalkMove(pico_move=standing, wholebody_move=move,
+        selector = PolicySelectableWalkMove(ik_tracking_move=standing, wholebody_move=move,
                                             wholebody_claim=claim or WholebodyClaim())
         selector.preload()
         return selector, move, ref, standing
@@ -723,7 +723,7 @@ class SelectorTest(unittest.TestCase):
             self.tick(selector, ref, t, **kwargs)
         return t
 
-    def test_the_policy_stands_tracks_and_stands_again_without_pico(self):
+    def test_the_policy_stands_tracks_and_stands_again_without_ik_tracking(self):
         claim = WholebodyClaim()
         selector, move, ref, standing = self.selector(claim)
         self.tick(selector, ref, 0.0, flags=CALIBRATED)
@@ -792,7 +792,7 @@ class SelectorTest(unittest.TestCase):
         self.assertEqual(move.phase, Phase.STAND)  # the start it tracked is not joined again
         self.assertEqual(standing.starts, 0)
 
-    def test_an_inference_failure_stands_on_pico_until_the_next_start(self):
+    def test_an_inference_failure_stands_on_ik_tracking_until_the_next_start(self):
         claim = WholebodyClaim()
         selector, move, ref, standing = self.selector(claim)
         self.tick(selector, ref, 0.0)
@@ -810,9 +810,9 @@ class SelectorTest(unittest.TestCase):
         self.tick(selector, ref, t + 3 * DT)
         self.assertEqual(selector.effective_policy, "wholebody")
 
-    def test_without_the_whole_body_policy_pico_stands(self):
+    def test_without_the_whole_body_policy_ik_tracking_stands(self):
         standing = StandingMove()
-        selector = PolicySelectableWalkMove(pico_move=standing)
+        selector = PolicySelectableWalkMove(ik_tracking_move=standing)
         selector.preload()
         ref = FakeReceiver()
         self.tick(selector, ref, 0.0, send=False, policy="wholebody")
@@ -843,7 +843,7 @@ class FallWhileFollowingTest(unittest.TestCase):
         session = Session(metadata())
         move = WholebodyMove(ref, session=session)
         standing = StandingMove()
-        selector = PolicySelectableWalkMove(pico_move=standing, wholebody_move=move)
+        selector = PolicySelectableWalkMove(ik_tracking_move=standing, wholebody_move=move)
         selector.preload()
         h = Harness(selector)
         trace = []
