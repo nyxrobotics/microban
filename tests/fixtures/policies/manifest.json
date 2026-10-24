@@ -1,7 +1,7 @@
 {
  "checkpoints": {
   "getup": "model_17.pt",
-  "pico": "model_8.pt",
+  "ik_tracking": "model_8.pt",
   "walk": "model_7.pt"
  },
  "contract": "microban-policy-1",
@@ -16,10 +16,10 @@
    "file": "getup.onnx",
    "sha256": "955cba602f3e30c484b34cb5223c899a60a9592292e79825556d3e2d807c86ab"
   },
-  "pico": {
+  "ik_tracking": {
    "checkpoint_sha256": "7c2fa660f8ba5249d6bf52791b25bff827edac92fd512032ec38f01b20ae5d42",
-   "file": "pico_teleop.onnx",
-   "sha256": "c896af74f220e71582ed838fd4db9a6bba4f5edc9954895ff132e590cb46488e"
+   "file": "ik_tracking.onnx",
+   "sha256": "19c26b092d9e458853a87555c12eb45d1a6e09f13e61ff6d3b6e509cdded4a6a"
   },
   "walk": {
    "checkpoint_sha256": "67a6f2789db3ef120d10bb9218f3f1fbfb635f6d85927e37234da38672ce2804",
