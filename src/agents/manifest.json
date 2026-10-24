@@ -1,15 +1,15 @@
 {
  "checkpoints": {
   "getup": "model_17999.pt",
-  "pico": "model_14999.pt",
+  "ik_tracking": "model_14999.pt",
   "walk": "model_29999.pt"
  },
  "contract": "microban-policy-1",
- "created": "2026-10-24 01:55:59",
+ "created": "2026-10-24 18:05:45",
  "dry_run": false,
  "home_joint_hash": "481503d292",
  "home_tag": "forward_lean_home",
- "home_yaml_sha256": "5ce21e779bbb2b0834bd190c2ebe953f0aba18ca3a7da7db3d832d078850bd05",
+ "home_yaml_sha256": "2f3b2172de61d77f7b6a4abea6185e2c26ddadc5e5a30e4723b5a733deb234c6",
  "judgments": {
   "getup": {
    "failures": [],
@@ -80,7 +80,7 @@
     "standing_targets_on_clip": 0.009990112856030464
    }
   },
-  "pico": {
+  "ik_tracking": {
    "failures": [
     "tracking:foot_error",
     "soft_0.05_tracking:foot_error",
@@ -411,10 +411,10 @@
    "file": "getup.onnx",
    "sha256": "5097313090c0303b5677df7d22e2002c3a540b80cdc253d57600ae3372f65869"
   },
-  "pico": {
+  "ik_tracking": {
    "checkpoint_sha256": "ed335cf2de7869855b1ffaa1f8f33e508ee4877f571d2552b1cc00420ad63fd1",
-   "file": "pico_teleop.onnx",
-   "sha256": "70a34ab2d090c196ab20842f78af9eb2590113600782087de949f8b58e1926c3"
+   "file": "ik_tracking.onnx",
+   "sha256": "64b937f9828a21c9bfd5aafc10551e2e3f4607975cc5e408e2e9459422887a14"
   },
   "walk": {
    "checkpoint_sha256": "ff75da27f7bf7cfcd3e1753fe9a762120f728fe2751d46098a4f8fcee69d4e9e",
@@ -423,5 +423,5 @@
   }
  },
  "training_branch": "retrain-servo-floor",
- "training_commit": "e11f1b21e5e300c0df74e655621b684cddb64a0c"
+ "training_commit": "d71e0bd2866446991d5bd5071657beeba1b2c582"
 }
