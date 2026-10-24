@@ -54,7 +54,7 @@ from policy_contract import (
     tracking_waiver_lines,
 )
 
-AGENT_NAME = "pico_teleop.onnx"
+AGENT_NAME = "ik_tracking.onnx"
 OBSERVATION_WIDTH = 81
 FOOT_TARGET_COLUMNS = slice(69, 75)
 ARM_TARGET_COLUMNS = slice(75, 81)
@@ -119,7 +119,7 @@ class IkTrackingMove(Move):
         )
         self._neutral_return_duration_s = neutral_return_duration_s
         if session is None:
-            loaded = load_installed_policy("pico", policy_path)
+            loaded = load_installed_policy("ik_tracking", policy_path)
             session, contract = loaded.session, loaded.contract
             self._self_test_rows = loaded.self_test_rows
             for line in tracking_waiver_lines(contract):
@@ -127,7 +127,7 @@ class IkTrackingMove(Move):
         else:
             # An injected session (tests, tools) is checked but not self-tested
             # here; load_installed_policy is the deployment path.
-            contract = parse_policy("pico", session)
+            contract = parse_policy("ik_tracking", session)
             self._self_test_rows = 0
         assert contract.ik_tracking is not None
         self._session = session

@@ -137,7 +137,7 @@ PY
     safe_path "${repo_root}"
     safe_path "${service_home}"
     [[ -x "${repo_root}/.venv/bin/python" ]] || die "robot venv is missing; run 'uv sync --frozen'"
-    [[ -f "${repo_root}/src/agents/pico_teleop.onnx" && ! -L "${repo_root}/src/agents/pico_teleop.onnx" ]] || die "validated pico_teleop.onnx is missing"
+    [[ -f "${repo_root}/src/agents/ik_tracking.onnx" && ! -L "${repo_root}/src/agents/ik_tracking.onnx" ]] || die "validated ik_tracking.onnx is missing"
     if (( with_camera == 1 )); then
       systemctl cat microban-camera.service >/dev/null 2>&1 || die "install microban-camera.service first"
       for required in server.crt server.key client.crt; do

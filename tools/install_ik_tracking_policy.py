@@ -11,12 +11,12 @@ already-installed walk/get-up files, and validates that bundle before
 changing the worktree.
 
     PYTHONPATH=src uv run --locked python tools/install_ik_tracking_policy.py \
-        <release>/pico_teleop.onnx <release>/model_14999_gate.json \
+        <release>/ik_tracking.onnx <release>/model_14999_gate.json \
         --training-repo ../mjlab_microban \
         --training-branch tracking-v13c \
         --training-commit <40-hex-commit>
 
-Only ``src/agents/pico_teleop.onnx`` and ``src/agents/manifest.json`` are
+Only ``src/agents/ik_tracking.onnx`` and ``src/agents/manifest.json`` are
 published.  Existing walk/get-up bytes and their manifest entries must pass
 the runtime contract and are preserved exactly.
 """
@@ -191,7 +191,7 @@ def _load_ik_tracking(path: Path) -> tuple[bytes, PolicyContract, int, dict[str,
     session = open_session(data, providers=["CPUExecutionProvider"])
     if session.get_providers() != ["CPUExecutionProvider"]:
         raise RuntimeError("IK tracking installation check requires CPUExecutionProvider only")
-    contract = parse_policy("pico", session)
+    contract = parse_policy("ik_tracking", session)
     if contract.dry_run:
         raise PolicyContractError("a dry-run IK tracking policy cannot be installed")
     rows = run_self_test(session, contract)
@@ -339,7 +339,7 @@ def _training_provenance(
         )
 
     return {
-        "scope": "pico_only",
+        "scope": "ik_tracking_only",
         "policy_sha256": ik_tracking_sha256,
         "checkpoint": contract.checkpoint_filename,
         "checkpoint_path": checkpoint_relative,
@@ -367,19 +367,19 @@ def _updated_manifest(
 
     result = copy.deepcopy(current)
     result["dry_run"] = False
-    result["policies"]["pico"] = {
-        "file": POLICY_FILES["pico"],
+    result["policies"]["ik_tracking"] = {
+        "file": POLICY_FILES["ik_tracking"],
         "sha256": ik_tracking_sha256,
         "checkpoint_sha256": contract.checkpoint_sha256,
     }
     checkpoints = result.setdefault("checkpoints", {})
     if not isinstance(checkpoints, dict):
         raise PolicyContractError("manifest checkpoints record is malformed")
-    checkpoints["pico"] = contract.checkpoint_filename
+    checkpoints["ik_tracking"] = contract.checkpoint_filename
     judgments = result.setdefault("judgments", {})
     if not isinstance(judgments, dict):
         raise PolicyContractError("manifest judgments record is malformed")
-    judgments["pico"] = {
+    judgments["ik_tracking"] = {
         "failures": [],
         "passed": True,
         "checkpoint": contract.checkpoint_filename,
@@ -387,7 +387,7 @@ def _updated_manifest(
         "gate_report_sha256": contract.gate_report_sha256,
     }
     if contract.tracking_waiver is not None:
-        judgments["pico"].update(
+        judgments["ik_tracking"].update(
             failures=sorted(contract.tracking_waiver["checks"]),
             passed=False,
             waived_by_user=True,
@@ -396,7 +396,7 @@ def _updated_manifest(
     policy_provenance = result.setdefault("policy_provenance", {})
     if not isinstance(policy_provenance, dict):
         raise PolicyContractError("manifest policy_provenance record is malformed")
-    policy_provenance["pico"] = copy.deepcopy(ik_tracking_provenance)
+    policy_provenance["ik_tracking"] = copy.deepcopy(ik_tracking_provenance)
     return result
 
 
@@ -453,7 +453,7 @@ def _remove_stale_atomic_temps(agents_dir: Path) -> None:
         _IK_TRACKING_BACKUP_FILE,
         _MANIFEST_BACKUP_FILE,
         _TRANSACTION_FILE,
-        POLICY_FILES["pico"],
+        POLICY_FILES["ik_tracking"],
         "manifest.json",
     )
     changed = False
@@ -569,7 +569,7 @@ def _restore_transaction_old(
         or sha256_bytes(old_manifest) != expected["manifest_sha256"]
     ):
         raise RuntimeError("IK tracking install recovery backup hash differs from its journal")
-    ik_tracking_path = agents_dir / POLICY_FILES["pico"]
+    ik_tracking_path = agents_dir / POLICY_FILES["ik_tracking"]
     manifest_path = agents_dir / "manifest.json"
     _atomic_write(ik_tracking_path, old_policy)
     _atomic_write(manifest_path, old_manifest)
@@ -584,7 +584,7 @@ def _recover_pending_install(agents_dir: Path) -> str:
     """Finish or roll back a durable transaction left by an interrupted run."""
 
     journal, ik_tracking_backup, manifest_backup = _transaction_paths(agents_dir)
-    ik_tracking_path = agents_dir / POLICY_FILES["pico"]
+    ik_tracking_path = agents_dir / POLICY_FILES["ik_tracking"]
     manifest_path = agents_dir / "manifest.json"
     if not journal.exists():
         orphans = [path for path in (ik_tracking_backup, manifest_backup) if path.exists()]
@@ -639,7 +639,7 @@ def _publish_bundle(
     journal, ik_tracking_backup, manifest_backup = _transaction_paths(agents_dir)
     if any(path.exists() for path in (journal, ik_tracking_backup, manifest_backup)):
         raise RuntimeError("IK tracking install recovery must run before publication")
-    ik_tracking_path = agents_dir / POLICY_FILES["pico"]
+    ik_tracking_path = agents_dir / POLICY_FILES["ik_tracking"]
     manifest_path = agents_dir / "manifest.json"
     old_policy = ik_tracking_path.read_bytes()
     old_manifest = manifest_path.read_bytes()
@@ -700,7 +700,7 @@ def _install_locked(
     current_manifest_data = manifest_path.read_bytes()
     if _strict_json_object(current_manifest_data, f"policy manifest {manifest_path}") != current:
         raise RuntimeError("installed manifest changed while it was validated")
-    ik_tracking_path = agents_dir / POLICY_FILES["pico"]
+    ik_tracking_path = agents_dir / POLICY_FILES["ik_tracking"]
     old_ik_tracking_sha256 = sha256_file(ik_tracking_path)
     old_manifest_sha256 = sha256_bytes(current_manifest_data)
     # Validate the two files that this tool promises not to replace.
@@ -750,7 +750,7 @@ def _install_locked(
         candidate.mkdir()
         for kind in ("walk", "getup"):
             (candidate / POLICY_FILES[kind]).write_bytes(preserved[kind])
-        (candidate / POLICY_FILES["pico"]).write_bytes(ik_tracking_data)
+        (candidate / POLICY_FILES["ik_tracking"]).write_bytes(ik_tracking_data)
         (candidate / "manifest.json").write_bytes(manifest_data)
         policies = _validate_bundle(candidate)
 
@@ -808,7 +808,7 @@ def install(
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("source", type=Path, help="packaged pico_teleop.onnx")
+    parser.add_argument("source", type=Path, help="packaged ik_tracking.onnx")
     parser.add_argument("stage_gate", type=Path, help="the stage gate used by the packager")
     parser.add_argument("--agents-dir", type=Path, default=AGENTS_DIR)
     parser.add_argument("--training-repo", type=Path, required=True)

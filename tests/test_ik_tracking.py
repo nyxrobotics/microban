@@ -45,7 +45,7 @@ class FakeController:
 
 
 def ik_tracking_session(output=None, metadata=None):
-    session = fake_session("pico", metadata)
+    session = fake_session("ik_tracking", metadata)
     if output is not None:
         session.outputs = [np.asarray(output, dtype=np.float64).reshape(-1).tolist()]
     return session
@@ -91,7 +91,7 @@ def clipped_target(index, raw_value):
 class IkTrackingContractTest(unittest.TestCase):
     def test_contract_session_loads_with_the_trained_command_support(self):
         move = IkTrackingMove(session=ik_tracking_session())
-        self.assertEqual(move.contract.kind, "pico")
+        self.assertEqual(move.contract.kind, "ik_tracking")
         self.assertEqual(move.contract.ik_tracking.raw_action_guard, (IK_TRACKING_RAW_ACTION_GUARD,) * 18)
         self.assertEqual(move.contract.ik_tracking.foot_upper, (0.03, 0.03, 0.05) * 2)
 

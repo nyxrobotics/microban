@@ -49,7 +49,7 @@ import math
 
 import numpy as np
 
-CONTRACT = "microban_pico_crouch_feedforward_v2"
+CONTRACT = "microban_ik_tracking_crouch_feedforward_v2"
 # The twelve leg joints, in the order of the offsets.
 LEG_JOINT_NAMES = tuple(
     f"{side}_{joint}"

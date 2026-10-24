@@ -1,7 +1,7 @@
 """Synthetic sessions carrying contract microban-policy-1 at this process's HOME.
 
 ``contract_metadata(kind)`` is what the training exporter writes for a
-walk / getup / pico (IK tracking) policy trained at config/home_pose.yaml's
+walk / getup / ik_tracking policy trained at config/home_pose.yaml's
 HOME (or at another ``home``); ``FakeSession`` lets a test vary one metadata
 field or the outputs without an ONNX file, and ``LinearWalkSession`` is a tiny
 walk actor whose output a test can predict.  The real policy package of a training dry run
@@ -40,7 +40,7 @@ ACTION_COUNT = len(OBSERVATION_DOF_ORDER)
 WIDTHS = {kind: sum(width for _, width in schema) for kind, schema in pc.OBSERVATION_SCHEMAS.items()}
 WALK_OBS_WIDTH = WIDTHS["walk"]
 GETUP_OBS_WIDTH = WIDTHS["getup"]
-IK_TRACKING_OBS_WIDTH = WIDTHS["pico"]
+IK_TRACKING_OBS_WIDTH = WIDTHS["ik_tracking"]
 WALK_CHECKPOINT_SHA256 = "1" * 64
 IK_TRACKING_RAW_ACTION_GUARD = 24.0
 # The linear walk actor: action[i] = WALK_POSITION_GAIN * joint_pos_residual[i] + WALK_BIAS[i].
@@ -91,7 +91,7 @@ IK_TRACKING_TARGET_ROW_ARMS = [-0.8, 0.3, -0.5, 0.4, -0.2, 0.1]
 def self_test_rows(kind: str) -> list[list[float]]:
     """HOME rows; an IK tracking self-test also records a row with foot and arm targets."""
     rows = [home_observation(kind) for _ in range(pc.SELF_TEST_MIN_ROWS)]
-    if kind == "pico":
+    if kind == "ik_tracking":
         rows[0][69:81] = IK_TRACKING_TARGET_ROW_FOOT + IK_TRACKING_TARGET_ROW_ARMS
     return rows
 
@@ -130,16 +130,16 @@ def contract_metadata(
         "self_test_observations_json": json.dumps(rows),
         "self_test_actions_json": json.dumps(actions),
     }
-    if kind == "pico":
+    if kind == "ik_tracking":
         metadata.update(
             {
-                "pico_walk_checkpoint_sha256": WALK_CHECKPOINT_SHA256,
-                "pico_target_frame": pc.IK_TRACKING_TARGET_FRAME,
-                "pico_foot_target_lower_json": json.dumps(list(pc.IK_TRACKING_FOOT_TARGET_LOWER)),
-                "pico_foot_target_upper_json": json.dumps(list(pc.IK_TRACKING_FOOT_TARGET_UPPER)),
-                "pico_both_feet_target_lower_json": json.dumps(list(pc.IK_TRACKING_BOTH_FEET_TARGET_LOWER)),
-                "pico_both_feet_target_upper_json": json.dumps(list(pc.IK_TRACKING_BOTH_FEET_TARGET_UPPER)),
-                "pico_arm_target_json": json.dumps(
+                "ik_tracking_walk_checkpoint_sha256": WALK_CHECKPOINT_SHA256,
+                "ik_tracking_target_frame": pc.IK_TRACKING_TARGET_FRAME,
+                "ik_tracking_foot_target_lower_json": json.dumps(list(pc.IK_TRACKING_FOOT_TARGET_LOWER)),
+                "ik_tracking_foot_target_upper_json": json.dumps(list(pc.IK_TRACKING_FOOT_TARGET_UPPER)),
+                "ik_tracking_both_feet_target_lower_json": json.dumps(list(pc.IK_TRACKING_BOTH_FEET_TARGET_LOWER)),
+                "ik_tracking_both_feet_target_upper_json": json.dumps(list(pc.IK_TRACKING_BOTH_FEET_TARGET_UPPER)),
+                "ik_tracking_arm_target_json": json.dumps(
                     {
                         "contract": pc.IK_TRACKING_ARM_TARGET_CONTRACT,
                         "joint_names": list(pc.IK_TRACKING_ARM_TARGET_JOINTS),
@@ -149,8 +149,8 @@ def contract_metadata(
                     },
                     separators=(",", ":"),
                 ),
-                "pico_raw_action_guard_json": json.dumps([IK_TRACKING_RAW_ACTION_GUARD] * ACTION_COUNT),
-                "pico_curriculum_json": json.dumps(
+                "ik_tracking_raw_action_guard_json": json.dumps([IK_TRACKING_RAW_ACTION_GUARD] * ACTION_COUNT),
+                "ik_tracking_curriculum_json": json.dumps(
                     {
                         "critic_warmup": 1000,
                         "arm_start": 1000,
@@ -159,8 +159,8 @@ def contract_metadata(
                         "total": 9000,
                     }
                 ),
-                "pico_active_adapter_columns_json": json.dumps(list(pc.IK_TRACKING_ADAPTER_COLUMNS)),
-                "pico_crouch_feedforward_json": json.dumps(CROUCH_PROBES, separators=(",", ":")),
+                "ik_tracking_active_adapter_columns_json": json.dumps(list(pc.IK_TRACKING_ADAPTER_COLUMNS)),
+                "ik_tracking_crouch_feedforward_json": json.dumps(CROUCH_PROBES, separators=(",", ":")),
             }
         )
     return metadata
@@ -175,7 +175,7 @@ def getup_contract_metadata(home: dict[str, float] | None = None) -> dict[str, s
 
 
 def ik_tracking_contract_metadata(home: dict[str, float] | None = None) -> dict[str, str]:
-    return contract_metadata("pico", home)
+    return contract_metadata("ik_tracking", home)
 
 
 class FakeSession:

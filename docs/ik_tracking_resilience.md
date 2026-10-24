@@ -24,7 +24,7 @@ the left trigger once after the robot is upright to hand the legs back to the
 IK tracking policy (it takes over at zero velocity), and the right trigger for the
 arm and head tracking; a release while the robot is still getting up does not
 count. When
-`src/agents/pico_teleop.onnx` fails its contract or startup self-test
+`src/agents/ik_tracking.onnx` fails its contract or startup self-test
 (docs/policies.md), the legs fall back to the static position hold, which
 cannot balance: the get-up actor then keeps the robot standing until R3 is
 switched off, and a policy package of the current contract must be installed

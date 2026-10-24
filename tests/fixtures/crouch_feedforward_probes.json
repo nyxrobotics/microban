@@ -1,5 +1,5 @@
 {
- "contract": "microban_pico_crouch_feedforward_v2",
+ "contract": "microban_ik_tracking_crouch_feedforward_v2",
  "joint_names": [
   "right_hip_yaw",
   "right_hip_roll",

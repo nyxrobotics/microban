@@ -35,7 +35,7 @@ WAIVER = {
 
 def contract(*, gate_sha=GATE_SHA, checkpoint_sha=IK_TRACKING_SHA, tracking_waiver=None):
     return SimpleNamespace(
-        kind="pico",
+        kind="ik_tracking",
         tracking_waiver=tracking_waiver,
         checkpoint_filename="model_14999.pt",
         checkpoint_iteration=14999,
@@ -74,8 +74,8 @@ class IkTrackingPolicyInstallerTest(unittest.TestCase):
                     "sha256": "2" * 64,
                     "checkpoint_sha256": "3" * 64,
                 },
-                "pico": {
-                    "file": "pico_teleop.onnx",
+                "ik_tracking": {
+                    "file": "ik_tracking.onnx",
                     "sha256": "4" * 64,
                     "checkpoint_sha256": "5" * 64,
                 },
@@ -83,19 +83,19 @@ class IkTrackingPolicyInstallerTest(unittest.TestCase):
             "checkpoints": {
                 "walk": "model_29000.pt",
                 "getup": "model_17999.pt",
-                "pico": "model_8999.pt",
+                "ik_tracking": "model_8999.pt",
             },
             "judgments": {
                 "walk": {"passed": True},
                 "getup": {"passed": True},
-                "pico": {"passed": True},
+                "ik_tracking": {"passed": True},
             },
         }
 
     def test_manifest_replaces_only_ik_tracking_policy_entry(self):
         before = self.manifest()
         provenance = {
-            "scope": "pico_only",
+            "scope": "ik_tracking_only",
             "training_branch": "tracking-v13c",
             "training_commit": TRAINING_COMMIT,
             "training_home_yaml_sha256": "7" * 64,
@@ -111,15 +111,15 @@ class IkTrackingPolicyInstallerTest(unittest.TestCase):
         self.assertEqual(after["policies"]["getup"], before["policies"]["getup"])
         self.assertEqual(after["checkpoints"]["walk"], "model_29000.pt")
         self.assertEqual(after["checkpoints"]["getup"], "model_17999.pt")
-        self.assertEqual(after["policies"]["pico"]["sha256"], "6" * 64)
-        self.assertEqual(after["policies"]["pico"]["checkpoint_sha256"], IK_TRACKING_SHA)
-        self.assertEqual(after["checkpoints"]["pico"], "model_14999.pt")
+        self.assertEqual(after["policies"]["ik_tracking"]["sha256"], "6" * 64)
+        self.assertEqual(after["policies"]["ik_tracking"]["checkpoint_sha256"], IK_TRACKING_SHA)
+        self.assertEqual(after["checkpoints"]["ik_tracking"], "model_14999.pt")
         # The top-level fields still identify the preserved three-policy base
         # release.  The later IK tracking policy has its own, truthful
         # provenance record.
         for key in ("training_commit", "training_branch", "home_yaml_sha256", "created"):
             self.assertEqual(after[key], before[key])
-        self.assertEqual(after["policy_provenance"]["pico"], provenance)
+        self.assertEqual(after["policy_provenance"]["ik_tracking"], provenance)
 
     def test_stage_gate_must_be_the_one_embedded_in_onnx(self):
         gate = {
@@ -180,12 +180,12 @@ class IkTrackingPolicyInstallerTest(unittest.TestCase):
             self.manifest(),
             ik_tracking_sha256="6" * 64,
             contract=contract(tracking_waiver=WAIVER),
-            ik_tracking_provenance={"scope": "pico_only"},
+            ik_tracking_provenance={"scope": "ik_tracking_only"},
         )
-        self.assertEqual(after["judgments"]["pico"]["failures"], ["standing_still"])
-        self.assertFalse(after["judgments"]["pico"]["passed"])
-        self.assertTrue(after["judgments"]["pico"]["waived_by_user"])
-        self.assertEqual(after["judgments"]["pico"]["tracking_waiver"], WAIVER)
+        self.assertEqual(after["judgments"]["ik_tracking"]["failures"], ["standing_still"])
+        self.assertFalse(after["judgments"]["ik_tracking"]["passed"])
+        self.assertTrue(after["judgments"]["ik_tracking"]["waived_by_user"])
+        self.assertEqual(after["judgments"]["ik_tracking"]["tracking_waiver"], WAIVER)
 
     def test_stage_gate_hash_and_json_use_one_byte_snapshot(self):
         gate = {
@@ -328,7 +328,7 @@ class IkTrackingPolicyInstallerTest(unittest.TestCase):
         for crash_after_write in range(1, 6):
             with self.subTest(crash_after_write=crash_after_write), tempfile.TemporaryDirectory() as directory:
                 agents = Path(directory)
-                ik_tracking_path = agents / installer.POLICY_FILES["pico"]
+                ik_tracking_path = agents / installer.POLICY_FILES["ik_tracking"]
                 manifest_path = agents / "manifest.json"
                 ik_tracking_path.write_bytes(old_policy)
                 manifest_path.write_bytes(old_manifest)
@@ -343,7 +343,7 @@ class IkTrackingPolicyInstallerTest(unittest.TestCase):
                         raise SimulatedCrash()
 
                 with mock.patch.object(
-                    installer, "_validate_bundle", return_value={"pico": {}}
+                    installer, "_validate_bundle", return_value={"ik_tracking": {}}
                 ):
                     with mock.patch.object(installer, "_atomic_write", side_effect=crash_write):
                         with self.assertRaises(SimulatedCrash):
@@ -369,7 +369,7 @@ class IkTrackingPolicyInstallerTest(unittest.TestCase):
     def test_validation_failure_rolls_back_before_returning(self):
         with tempfile.TemporaryDirectory() as directory:
             agents = Path(directory)
-            ik_tracking_path = agents / installer.POLICY_FILES["pico"]
+            ik_tracking_path = agents / installer.POLICY_FILES["ik_tracking"]
             manifest_path = agents / "manifest.json"
             ik_tracking_path.write_bytes(b"old-policy")
             manifest_path.write_bytes(b"old-manifest")
@@ -391,7 +391,7 @@ class IkTrackingPolicyInstallerTest(unittest.TestCase):
     def test_startup_removes_only_its_stale_atomic_temps(self):
         with tempfile.TemporaryDirectory() as directory:
             agents = Path(directory)
-            stale = agents / ".pico_teleop.onnx.interrupted.tmp"
+            stale = agents / ".ik_tracking.onnx.interrupted.tmp"
             unrelated = agents / "keep.tmp"
             stale.write_bytes(b"incomplete")
             unrelated.write_bytes(b"keep")

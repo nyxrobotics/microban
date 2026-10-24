@@ -111,7 +111,7 @@ class PolicySelectorTest(unittest.TestCase):
         hold = IkTrackingArmTargetHold()
         selector = PolicySelectableWalkMove(arm_target_hold=hold)
         with mock.patch("moves.policy_selector.IkTrackingMove") as built:
-            selector._learned_move_factory(None, Path("pico_teleop.onnx"))
+            selector._learned_move_factory(None, Path("ik_tracking.onnx"))
         self.assertIs(built.call_args.kwargs["arm_target_hold"], hold)
 
     def test_bridge_packet_to_selector_is_trigger_only_without_x(self):
@@ -195,7 +195,7 @@ class PolicySelectorTest(unittest.TestCase):
     def test_contract_rejection_uses_existing_walk_fallback(self):
         walk = FakeMove(marker=10.0)
         with tempfile.TemporaryDirectory() as temp_dir:
-            path = Path(temp_dir) / "pico_teleop.onnx"
+            path = Path(temp_dir) / "ik_tracking.onnx"
             path.write_bytes(b"present but not a contract policy")
 
             def reject_contract(_controller, _path):
