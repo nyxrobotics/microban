@@ -38,6 +38,8 @@ def main() -> None:
     parser.add_argument("--network-port", type=int, default=5555, help="UDP port used with --input network")
     parser.add_argument("--wholebody-port", type=int, default=5556, help="UDP port of the whole-body reference stream (with --input network)")
     parser.add_argument("--headless", action="store_true", help="Run without the MuJoCo viewer")
+    parser.add_argument("--wholebody-head-roll-pitch", choices=("body", "world"), default="body",
+                        help="Whole-body tracking: the head's roll and pitch on the trunk (body) or in space (world)")
     args = parser.parse_args()
 
     # "walk" active from launch: standing purely on the neutral-pose position hold
@@ -93,6 +95,7 @@ def main() -> None:
                 arm_target_hold=arm_target_hold,
                 wholebody_reference=wholebody_reference,
                 wholebody_claim=wholebody_claim,
+                wholebody_head_roll_pitch=args.wholebody_head_roll_pitch,
             ),
             # Match production ordering: direct controller arms overwrite only
             # the six arm joints, and the IK tracking policy observes their

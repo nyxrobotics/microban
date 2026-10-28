@@ -179,6 +179,22 @@ FALL_LAG_S = 0.5
 # recordings: 0.05-0.09 m on the floor, 0.10-0.18 m bowing): a stop there
 # leaves the robot to the get-up.
 FLOOR_REF_HEIGHT_M = 0.10
+# The head's roll and pitch: ``body`` (the reference's neck angles) or
+# ``world`` (the reference head's roll and pitch in space).
+HEAD_ROLL_PITCH_FRAMES = ("body", "world")
+# ``world``: the neck also turns the head by the trunk's tilt off the
+# reference trunk's, that tilt low-passed in HEAD_WORLD_TAU_S and at most
+# HEAD_WORLD_MAX_RAD (a rotation vector).  The policy observes the neck it was
+# trained without moving, so only the slow tilt is taken off: in MuJoCo (the
+# servo model, the IMU's delays, PICO recordings, pushes) the trunk's tilt,
+# turn rate and falls stay those of ``body`` with any of 0.2-2 s, while the
+# head's tilt error grows in walking below 0.5 s (the neck answers the ~1 Hz
+# sway late) and after a push at 2 s (it answers the recovery late).  At 1 s,
+# with the neck at P900, a squat's error drops 3.5 -> 2.1 deg and a pushed
+# stand's 2.4 -> 1.6 deg; at the trained P125 the servo's friction leaves most
+# of it.
+HEAD_WORLD_TAU_S = 1.0
+HEAD_WORLD_MAX_RAD = math.radians(20.0)
 
 
 class WholebodyPolicyRuntimeError(RuntimeError):
@@ -411,6 +427,27 @@ def rotvec_from_quat(q: Sequence[float]) -> np.ndarray:
     return q[1:] / norm * 2.0 * math.atan2(norm, float(q[0]))
 
 
+def tilt_of(q: Sequence[float]) -> np.ndarray:
+    """``q`` without its heading (ZYX yaw): the trunk's roll and pitch."""
+    return quat_mul(quat_from_yaw(-yaw_of(q)), q)
+
+
+def neck_quat(angles: Sequence[float]) -> np.ndarray:
+    """The head's rotation in the trunk for (head, neck_roll, neck_pitch): Rz @ Rx @ Ry (robot.xml's chain)."""
+    head, roll, pitch = (0.5 * float(a) for a in angles)
+    z = np.array([math.cos(head), 0.0, 0.0, math.sin(head)])
+    x = np.array([math.cos(roll), math.sin(roll), 0.0, 0.0])
+    y = np.array([math.cos(pitch), 0.0, math.sin(pitch), 0.0])
+    return quat_mul(quat_mul(z, x), y)
+
+
+def neck_angles(q: Sequence[float]) -> np.ndarray:
+    """(head, neck_roll, neck_pitch) of a head rotation in the trunk (neck_quat's inverse)."""
+    m = matrix_from_quat(q)
+    roll = math.asin(max(-1.0, min(1.0, float(m[2, 1]))))
+    return np.array([math.atan2(-m[0, 1], m[1, 1]), roll, math.atan2(-m[2, 0], m[2, 2])])
+
+
 def smootherstep(u: float) -> float:
     u = min(max(u, 0.0), 1.0)
     return u * u * u * (u * (6.0 * u - 15.0) + 10.0)
@@ -508,8 +545,12 @@ class WholebodyMove(Move):
         *,
         session: Any | None = None,
         contract: WholebodyContract | None = None,
+        head_roll_pitch: str = "body",
     ) -> None:
         super().__init__()
+        if head_roll_pitch not in HEAD_ROLL_PITCH_FRAMES:
+            raise ValueError(f"head_roll_pitch must be one of {HEAD_ROLL_PITCH_FRAMES}, not {head_roll_pitch!r}")
+        self._head_world = head_roll_pitch == "world"
         self._reference = reference
         self._controller = controller
         self._neutral_return_duration_s = neutral_return_duration_s
@@ -555,6 +596,7 @@ class WholebodyMove(Move):
         self._stop_s: float | None = None
         self._stop_on_floor = False
         self._neck_target: np.ndarray | None = None
+        self._head_tilt = np.zeros(3)  # ``world``: the low-passed tilt the neck takes off (a rotation vector)
         self._last_time_s: float | None = None
         self._reference_fell_s: float | None = None  # last time the followed reference was past the fall angle
         self._stop_start_time_s: float | None = None
@@ -882,13 +924,28 @@ class WholebodyMove(Move):
             target = NEUTRAL_POSE[name] + float(raw[index])
             command.target_angles[name] = max(-SERVO_TARGET_RANGE_RAD, min(SERVO_TARGET_RANGE_RAD, target))
         self._last_action = raw.copy()
-        self._drive_neck(now, command)
+        self._drive_neck(now, command, robot_quat)
 
-    def _drive_neck(self, now: float, command: MotorCommand) -> None:
-        """The contract's neck: the reference's neck angles, clamped and slewed."""
+    def _drive_neck(self, now: float, command: MotorCommand, robot_quat: np.ndarray) -> None:
+        """The contract's neck: the reference's neck angles, clamped and slewed.
+
+        ``world``: the head's roll and pitch in space are the reference head's.
+        The neck turns the head back by the robot trunk's tilt off the
+        reference trunk's (zero while the trunk follows the reference), that
+        tilt low-passed and bounded so that the trunk's quick sway and the
+        IMU's noise do not shake the neck.
+        """
         assert self._current is not None and self._neck_target is not None
-        goal = np.clip(self._current.joint_pos[NECK_COLUMNS], self._neck_lower, self._neck_upper)
         dt = max(0.0, min(0.1, now - (self._last_time_s if self._last_time_s is not None else now)))
+        goal = self._current.joint_pos[NECK_COLUMNS]
+        if self._head_world:
+            tilt = rotvec_from_quat(quat_mul(quat_conj(tilt_of(robot_quat)), tilt_of(self._current.quat)))
+            self._head_tilt = self._head_tilt + (tilt - self._head_tilt) * (dt / (HEAD_WORLD_TAU_S + dt))
+            size = float(np.linalg.norm(self._head_tilt))
+            if size > HEAD_WORLD_MAX_RAD:
+                self._head_tilt = self._head_tilt * (HEAD_WORLD_MAX_RAD / size)
+            goal = neck_angles(quat_mul(quat_from_rotvec(self._head_tilt), neck_quat(goal)))
+        goal = np.clip(goal, self._neck_lower, self._neck_upper)
         step = self._neck_rate * dt
         self._neck_target = np.clip(
             self._neck_target + np.clip(goal - self._neck_target, -step, step), self._neck_lower, self._neck_upper

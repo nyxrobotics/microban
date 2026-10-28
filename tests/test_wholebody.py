@@ -47,6 +47,8 @@ from moves.wholebody import (
     DT,
     ENTER_S,
     FALL_LAG_S,
+    HEAD_WORLD_MAX_RAD,
+    HEAD_WORLD_TAU_S,
     HEADING_STEP_RAD,
     JOIN_S,
     MAX_HELD_FLAG_S,
@@ -59,6 +61,9 @@ from moves.wholebody import (
     Reference,
     WholebodyMove,
     coast_reference,
+    matrix_from_quat,
+    neck_angles,
+    neck_quat,
     quat_conj,
     quat_from_yaw,
     quat_mul,
@@ -349,10 +354,10 @@ def tick_obs(t, *, gravity=None, quat=None, moves=("walk",), balance_only=True, 
     )
 
 
-def started_move(action=0.01, obs=None):
+def started_move(action=0.01, obs=None, head_roll_pitch="body"):
     ref = FakeReceiver()
     session = Session(metadata(), action=action)
-    move = WholebodyMove(ref, session=session)
+    move = WholebodyMove(ref, session=session, head_roll_pitch=head_roll_pitch)
     move.state = MoveState.STARTING
     move.on_start(obs or tick_obs(0.0), MotorCommand())
     return move, ref, session
@@ -608,6 +613,51 @@ class MoveTest(unittest.TestCase):
         self.assertFalse(move.drives_neck)
         command, t = run(move, ref, t, t + STOP_HOLD_S + RETURN_S + 0.1, flags=CALIBRATED)
         np.testing.assert_allclose(neck(command), [0.0, 0.0, 0.0], atol=1e-9)
+
+    def test_the_head_rolls_and_pitches_in_space_with_world(self):
+        neck = lambda command: np.array([command.target_angles[n] for n in ("head", "neck_roll", "neck_pitch")])  # noqa: E731
+        down = lambda quat: matrix_from_quat(quat).T @ np.array([0.0, 0.0, -1.0])  # noqa: E731
+        reference_neck = (0.3, 0.1, -0.2)
+        # The PC's trunk at HOME's attitude, at another heading than the robot's.
+        reference_quat = quat_mul(quat_from_yaw(-0.4), pitched(HOME_TRUNK_PITCH_RAD)[0])
+        # Then the robot trunk leans 0.1 rad further forward and rolls 0.08 rad.
+        tilted = quat_mul(pitched(HOME_TRUNK_PITCH_RAD + 0.1)[0], [math.cos(0.04), math.sin(0.04), 0.0, 0.0])
+        robot = lambda t: tick_obs(t, quat=list(tilted), gravity=list(down(tilted)))  # noqa: E731
+        for mode in ("body", "world"):
+            with self.subTest(mode):
+                move, ref, _ = started_move(head_roll_pitch=mode)
+                t = to_track(move, ref, yaw=-0.4, neck=reference_neck)
+                command, t = run(move, ref, t, t + 1.0, yaw=-0.4, neck=reference_neck)
+                # On the reference's attitude both put the neck on the reference's angles.
+                np.testing.assert_allclose(neck(command), reference_neck, atol=1e-6)
+                command, t = run(move, ref, t, t + DT, obs=robot, yaw=-0.4, neck=reference_neck)
+                # Low-passed: one tick takes off a few percent of the tilt, not all of it.
+                self.assertLess(np.abs(neck(command) - reference_neck).max(), 0.01)
+                command, t = run(move, ref, t, t + 8.0 * HEAD_WORLD_TAU_S, obs=robot, yaw=-0.4, neck=reference_neck)
+                head = quat_mul(tilted, neck_quat(neck(command)))
+                wanted = quat_mul(reference_quat, neck_quat(reference_neck))
+                if mode == "body":
+                    np.testing.assert_allclose(neck(command), reference_neck, atol=1e-9)
+                    self.assertGreater(np.linalg.norm(down(head) - down(wanted)), 0.1)
+                else:
+                    # The head's gravity is the reference head's: its roll and pitch in space.
+                    np.testing.assert_allclose(down(head), down(wanted), atol=2e-3)
+
+    def test_world_takes_off_at_most_its_bound(self):
+        down = lambda quat: matrix_from_quat(quat).T @ np.array([0.0, 0.0, -1.0])  # noqa: E731
+        neck = lambda command: [command.target_angles[n] for n in ("head", "neck_roll", "neck_pitch")]  # noqa: E731
+        move, ref, _ = started_move(head_roll_pitch="world")
+        t = to_track(move, ref)
+        quat = pitched(HOME_TRUNK_PITCH_RAD + 0.6)[0]  # 0.6 rad forward of the reference, past the bound
+        command, t = run(move, ref, t, t + 8.0 * HEAD_WORLD_TAU_S, obs=lambda t: tick_obs(t, quat=quat, gravity=list(down(quat))))
+        self.assertEqual(move.phase, Phase.TRACK)
+        np.testing.assert_allclose(neck(command), [0.0, 0.0, -HEAD_WORLD_MAX_RAD], atol=1e-3)
+
+    def test_the_neck_chain_angles_round_trip(self):
+        for angles in ((0.0, 0.0, 0.0), (0.4, -0.3, 0.2), (-1.2, 0.35, -1.3)):
+            np.testing.assert_allclose(neck_angles(neck_quat(angles)), angles, atol=1e-12)
+        with self.assertRaises(ValueError):
+            WholebodyMove(FakeReceiver(), session=Session(metadata()), head_roll_pitch="space")
 
     def test_a_falling_trunk_holds_the_measured_pose(self):
         move, ref, session = started_move(action=0.5)

@@ -195,6 +195,7 @@ class PolicySelectableWalkMove(Move):
         wholebody_policy_path: str | Path = Path("src/agents") / WHOLEBODY_POLICY_FILE,
         wholebody_move: Move | None = None,
         wholebody_claim: WholebodyClaim | None = None,
+        wholebody_head_roll_pitch: str = "body",
     ) -> None:
         super().__init__()
         self._controller = controller
@@ -213,6 +214,8 @@ class PolicySelectableWalkMove(Move):
         # mode is unavailable (and requesting it stands on the standing policy).
         self._wholebody_reference = wholebody_reference
         self._wholebody_policy_path = Path(wholebody_policy_path)
+        # The whole-body move's head roll and pitch: ``body`` or ``world``.
+        self._wholebody_head_roll_pitch = wholebody_head_roll_pitch
         self._injected_wholebody = wholebody_move
         self.wholebody_unavailable_reason: str | None = None
         self._last_learned_targets: dict[str, float] | None = None
@@ -302,6 +305,7 @@ class PolicySelectableWalkMove(Move):
                 reference=self._wholebody_reference,
                 controller=self._controller,
                 policy_path=self._wholebody_policy_path,
+                head_roll_pitch=self._wholebody_head_roll_pitch,
             )
             child.preload()
         except Exception as exc:  # noqa: BLE001 - optional parser/runtime boundary

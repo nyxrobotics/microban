@@ -96,6 +96,21 @@ def build_wholebody_reference():
     )
 
 
+def wholebody_head_roll_pitch() -> str:
+    """The whole-body tracking head's roll and pitch (docs/wholebody.md).
+
+    MICROBAN_WHOLEBODY_HEAD_ROLL_PITCH: ``body`` (default, the operator's neck
+    angles on the trunk) or ``world`` (the operator's head roll and pitch in
+    space: the neck also takes off the trunk's tilt off the reference's).
+    """
+    from moves.wholebody import HEAD_ROLL_PITCH_FRAMES
+
+    value = os.environ.get("MICROBAN_WHOLEBODY_HEAD_ROLL_PITCH", "body").strip().lower()
+    if value not in HEAD_ROLL_PITCH_FRAMES:
+        raise ValueError(f"MICROBAN_WHOLEBODY_HEAD_ROLL_PITCH must be one of {HEAD_ROLL_PITCH_FRAMES}")
+    return value
+
+
 def ramp_to_neutral(controller: RobotController, duration_s: float = 2.0) -> None:
     """Ramp all motors smoothly to neutral position before starting the control loop."""
     motor_ids = list(MOTOR_TO_ID.values())
@@ -129,6 +144,7 @@ def main() -> None:
     try:
         input_source = build_input_source()
         wholebody_reference = build_wholebody_reference()
+        head_roll_pitch = wholebody_head_roll_pitch()
         controls_motor_power = bool(
             getattr(input_source, "controls_motor_power", False)
         )
@@ -197,6 +213,7 @@ def main() -> None:
                     arm_target_hold=arm_target_hold,
                     wholebody_reference=wholebody_reference,
                     wholebody_claim=wholebody_claim,
+                    wholebody_head_roll_pitch=head_roll_pitch,
                 ),
                 # Ordered after walk so the right-trigger direct IK path owns
                 # only the six arm joints in both standing and walking modes.
